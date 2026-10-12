@@ -1,0 +1,95 @@
+#!/bin/sh
+# Make a signed base update bundle from a released Raspberry Pi 5 image.
+#
+#   os/release/base-bundle stage <image.img.zst> <version> <out-dir>
+#     ... sign <out-dir>/manifest with os/release/sign-on, then:
+#   os/release/base-bundle finish <out-dir> <signature.b64>
+#
+# The bundle is what `furcate-os base-update` writes into the idle slot:
+#   usr.img.zst          the image's usr-a partition (erofs /usr)
+#   usr-verity.img.zst   its dm-verity hash partition
+#   boot.tar.zst         boot-a's files (kernel, initrd, device trees,
+#                        config.txt and its copy tryboot.txt, cmdline.txt
+#                        as a template) with
+#                        boot.sha256 listing them; no furcate-node.txt, the
+#                        board keeps its own
+#   furcate-base         the update tool, run from the state partition to
+#                        confirm the trial boot
+#   manifest             version, /usr root hash, the raw partition sizes and
+#                        sha256s, and the sha256 of each file above; signed by
+#                        the release key (manifest.p7s, detached DER)
+# The root hash comes from the image's own cmdline.txt and is checked against
+# the two partitions with veritysetup before the manifest is written. Run as
+# root (veritysetup on files) on the build host.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+step=${1:?usage: base-bundle stage <image.img.zst> <version> <out-dir> | finish <out-dir> <signature.b64>}
+
+case "$step" in
+stage)
+    img=${2:?image}; ver=${3:?version}; out=${4:?out-dir}
+    case "$img" in *"$ver"*) ;; *) echo "the image name does not carry $ver" >&2; exit 1 ;; esac
+    [ ! -e "$out" ] || { echo "$out exists" >&2; exit 1; }
+    work=$(mktemp -d "${FURCATE_BUNDLE_WORK:-/var/tmp}/base-bundle.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    mkdir -p "$out"
+    zstd -d -q "$img" -o "$work/disk.raw"
+    part() { # part LABEL -> "start size" in bytes
+        sfdisk -J "$work/disk.raw" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]; ss = t.get("sectorsize", 512)
+p = [p for p in t["partitions"] if p.get("name") == sys.argv[1]][0]
+print(p["start"] * ss, p["size"] * ss)' "$1"
+    }
+    extract() { # extract LABEL FILE
+        set -- "$1" "$2" $(part "$1")
+        dd if="$work/disk.raw" of="$2" bs=1M iflag=skip_bytes,count_bytes skip="$3" count="$4" status=none
+    }
+    extract usr-a "$work/usr.img"
+    extract usr-a-verity "$work/usr-verity.img"
+    set -- $(part boot-a)
+    boff=$1
+    mkdir "$work/boot"
+    mcopy -s -n -i "$work/disk.raw@@$boff" ::/ "$work/boot/"
+    rm -f "$work/boot/furcate-node.txt"
+    # tryboot.txt is an exact copy of config.txt (images before it carried none).
+    cp "$work/boot/config.txt" "$work/boot/tryboot.txt"
+    usrhash=$(tr ' ' '\n' < "$work/boot/cmdline.txt" | sed -n 's/^usrhash=//p')
+    [ -n "$usrhash" ] || { echo "boot-a's cmdline.txt carries no usrhash" >&2; exit 1; }
+    veritysetup verify "$work/usr.img" "$work/usr-verity.img" "$usrhash"
+    mkdir "$work/usr"
+    mount -t erofs -o ro,loop "$work/usr.img" "$work/usr"
+    osver=$(sed -n 's/^IMAGE_VERSION=//p' "$work/usr/lib/os-release" | tr -d '"')
+    umount "$work/usr"
+    [ "$osver" = "$ver" ] || { echo "usr-a says IMAGE_VERSION=$osver, not $ver" >&2; exit 1; }
+    (cd "$work/boot" && find . -type f ! -name boot.sha256 ! -name cmdline.txt | sed 's|^\./||' | sort | xargs -d '\n' sha256sum > boot.sha256)
+    tar -C "$work/boot" --sort=name --owner=0 --group=0 --numeric-owner -cf - . | zstd -q -T4 -12 -o "$out/boot.tar.zst"
+    zstd -q -T4 -12 "$work/usr.img" -o "$out/usr.img.zst"
+    zstd -q -T4 -12 "$work/usr-verity.img" -o "$out/usr-verity.img.zst"
+    install -m 0755 "$repo/os/rootfs/usr/libexec/furcate-os/base" "$out/furcate-base"
+    {
+        echo "FURCATE_BASE_VERSION=$ver"
+        echo "BOARD=rpi5"
+        echo "USRHASH=$usrhash"
+        echo "USR_SIZE=$(stat -c %s "$work/usr.img")"
+        echo "USR_SHA256=$(sha256sum "$work/usr.img" | cut -c1-64)"
+        echo "USRV_SIZE=$(stat -c %s "$work/usr-verity.img")"
+        echo "USRV_SHA256=$(sha256sum "$work/usr-verity.img" | cut -c1-64)"
+        echo "TOOL_COMMIT=$(git -C "$repo" rev-parse --short HEAD)"
+        (cd "$out" && sha256sum usr.img.zst usr-verity.img.zst boot.tar.zst furcate-base)
+    } > "$out/manifest"
+    cp "$repo/deploy/os/furcate-release.crt" "$out/furcate-release.crt"
+    cat "$out/manifest"
+    echo "next: sign $out/manifest with os/release/sign-on, then base-bundle finish $out <signature.b64>"
+    ;;
+finish)
+    out=${2:?out-dir}; sig=${3:?signature.b64}
+    base64 -d < "$sig" > "$out/manifest.p7s"
+    openssl smime -verify -inform DER -in "$out/manifest.p7s" -content "$out/manifest" \
+        -CAfile "$repo/deploy/os/furcate-release.crt" -purpose any -binary -out /dev/null
+    grep -E '^[0-9a-f]{64}  ' "$out/manifest" | (cd "$out" && sha256sum -c -)
+    echo "bundle: $out (manifest signed, every file matches)"
+    ;;
+*) echo "unknown step $step" >&2; exit 2 ;;
+esac

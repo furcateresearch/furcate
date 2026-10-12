@@ -1,0 +1,14 @@
+{
+  "id": "psu/fujitsu-c740-psu",
+  "kind": "psu",
+  "identity": { "vendor": "FUJITSU", "_match": "reported through the BMC rather than DMI, which carries no type 39 record on this machine" },
+  "instruments": {
+    "input_w": { "sensor": "PSU Power", "via": "ipmi", "_is": "what the utility bills" },
+    "output_w": { "sensor": "Total Power Out", "via": "ipmi", "_is": "what reaches the board" },
+    "_why_both": "the difference is supply efficiency, near 82% here, and it degrades before regulation does — so a widening gap is a supply telling you it is tiring."
+  },
+  "measured": {
+    "site_idle_w": 126,
+    "_correction": "a declared package-to-wall multiplier of 2.0 predicted about 28 W. The real ratio is 4.5-9x and is not a constant, which is the argument against declaring it at all. Every energy, cost and carbon figure produced before this was measured was understated by roughly that much."
+  }
+}

@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Resolve the hw-rpi5 package list against a base, download and unpack it.
+
+    resolve <packages-file> <base-usr-list> <work-dir> <arch>
+
+<base-usr-list> lists every path under /usr in the base (one per line), as
+`find /usr` prints it on the device or in the image tree. A package is in the
+base when its /usr/share/doc/<package> entry is. Everything the listed
+packages depend on that the base lacks is downloaded from the Ubuntu archive
+(resolute and resolute-updates), checked against the archive index's SHA256,
+and unpacked into <work-dir>/tree. <work-dir>/manifest records each package,
+version and sha256.
+"""
+import hashlib
+import lzma
+import os
+import re
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+MIRROR = "http://ports.ubuntu.com/ubuntu-ports"
+SUITES = ["resolute", "resolute-updates", "resolute-security"]
+COMPONENTS = ["main", "universe", "restricted"]
+
+
+def _order(c):
+    if c == "~":
+        return -1
+    if c.isdigit():
+        return 0
+    if c.isalpha():
+        return ord(c)
+    return ord(c) + 256
+
+
+def _cmp_part(a, b):
+    while a or b:
+        na = re.match(r"^\D*", a).group(0)
+        nb = re.match(r"^\D*", b).group(0)
+        for i in range(max(len(na), len(nb))):
+            ca = _order(na[i]) if i < len(na) else 0
+            cb = _order(nb[i]) if i < len(nb) else 0
+            if ca != cb:
+                return -1 if ca < cb else 1
+        a, b = a[len(na):], b[len(nb):]
+        da = re.match(r"^\d*", a).group(0)
+        db = re.match(r"^\d*", b).group(0)
+        if int(da or 0) != int(db or 0):
+            return -1 if int(da or 0) < int(db or 0) else 1
+        a, b = a[len(da):], b[len(db):]
+    return 0
+
+
+def vcmp(x, y):
+    """dpkg version comparison: -1, 0 or 1."""
+    def split(v):
+        epoch, _, rest = v.rpartition(":") if ":" in v else ("0", "", v)
+        up, _, rev = rest.rpartition("-") if "-" in rest else (rest, "", "0")
+        return int(epoch or 0), up, rev
+    ex, ux, rx = split(x)
+    ey, uy, ry = split(y)
+    if ex != ey:
+        return -1 if ex < ey else 1
+    return _cmp_part(ux, uy) or _cmp_part(rx, ry)
+
+
+def load_index(arch, cache):
+    pkgs, provides = {}, {}
+    for suite in SUITES:
+        for comp in COMPONENTS:
+            url = f"{MIRROR}/dists/{suite}/{comp}/binary-{arch}/Packages.xz"
+            path = os.path.join(cache, f"Packages-{suite}-{comp}.xz")
+            if not os.path.exists(path):
+                try:
+                    urllib.request.urlretrieve(url, path + ".part")
+                except urllib.error.HTTPError as e:
+                    if e.code == 404:
+                        continue
+                    raise
+                os.rename(path + ".part", path)
+            text = lzma.open(path, "rt", encoding="utf-8", errors="replace").read()
+            for stanza in text.split("\n\n"):
+                f = {}
+                key = None
+                for line in stanza.splitlines():
+                    if line.startswith(" ") and key:
+                        continue
+                    if ":" in line:
+                        key, val = line.split(":", 1)
+                        f[key] = val.strip()
+                name = f.get("Package")
+                if not name:
+                    continue
+                old = pkgs.get(name)
+                if old is None or vcmp(f["Version"], old["Version"]) > 0:
+                    pkgs[name] = f
+                for p in f.get("Provides", "").split(","):
+                    p = p.strip().split(" ")[0]
+                    if p:
+                        provides.setdefault(p, set()).add(name)
+    return pkgs, provides
+
+
+def deps(f):
+    out = []
+    for field in ("Pre-Depends", "Depends"):
+        for group in f.get(field, "").split(","):
+            group = group.strip()
+            if not group:
+                continue
+            alts = [a.strip().split(" ")[0].split(":")[0] for a in group.split("|")]
+            out.append(alts)
+    return out
+
+
+def main():
+    pkgfile, baselist, work, arch = sys.argv[1:5]
+    os.makedirs(work, exist_ok=True)
+    # A download cache may be shared between runs; every file is still
+    # checked against the index.
+    cache = os.environ.get("FURCATE_DEB_CACHE") or os.path.join(work, "cache")
+    os.makedirs(cache, exist_ok=True)
+    tree = os.path.join(work, "tree")
+    os.makedirs(tree, exist_ok=True)
+
+    base_docs = set()
+    for line in open(baselist):
+        m = re.match(r"^/usr/share/doc/([^/\n]+)", line)
+        if m:
+            base_docs.add(m.group(1))
+
+    def in_base(name):
+        if name in base_docs:
+            return True
+        return any(p in base_docs for p in provides_rev.get(name, ()))
+
+    pkgs, provides = load_index(arch, cache)
+    provides_rev = provides
+    wanted = [l.strip() for l in open(pkgfile) if l.strip() and not l.startswith("#")]
+
+    chosen, queue = [], list(wanted)
+    seen = set()
+    while queue:
+        name = queue.pop(0)
+        if name in seen:
+            continue
+        seen.add(name)
+        if in_base(name):
+            continue
+        if name not in pkgs:
+            real = sorted(provides.get(name, ()))
+            if not real:
+                sys.exit(f"resolve: no package or provider for {name}")
+            if any(r in seen or in_base(r) for r in real):
+                continue
+            queue.insert(0, real[0])
+            continue
+        chosen.append(name)
+        for alts in deps(pkgs[name]):
+            if any(in_base(a) or a in seen for a in alts):
+                continue
+            queue.append(alts[0])
+
+    manifest = []
+    for name in chosen:
+        f = pkgs[name]
+        deb = os.path.join(cache, os.path.basename(f["Filename"]))
+        if not os.path.exists(deb):
+            urllib.request.urlretrieve(f"{MIRROR}/{f['Filename']}", deb)
+        got = hashlib.sha256(open(deb, "rb").read()).hexdigest()
+        if got != f["SHA256"]:
+            sys.exit(f"resolve: {deb}: sha256 {got}, index says {f['SHA256']}")
+        subprocess.run(["dpkg-deb", "-x", deb, tree], check=True)
+        manifest.append(f"{name} {f['Version']} {f['SHA256']}")
+    with open(os.path.join(work, "manifest"), "w") as m:
+        m.write("\n".join(manifest) + "\n")
+    print(f"resolve: {len(chosen)} packages not in the base: {' '.join(chosen)}")
+
+
+if __name__ == "__main__":
+    main()

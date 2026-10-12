@@ -1,0 +1,21 @@
+[package]
+name = "furcate-authn"
+version.workspace = true
+edition.workspace = true
+description = "Authentication: who is asking."
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+data-encoding = { workspace = true }
+p256 = { workspace = true }
+ciborium = { workspace = true }
+
+[features]
+# The software authenticator other crates use in their tests. It holds a
+# private key, so nothing outside a test may enable it.
+test-authenticator = []

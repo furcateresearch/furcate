@@ -1,0 +1,78 @@
+#!/bin/sh
+# Choose which version of each Furcate extension this base will merge.
+#
+# systemd's own compatibility check refuses silently (exit 0, reason at debug
+# level), so Furcate extensions declare ID=_any and systemd checks only the
+# architecture. The decision that can legitimately change -- does this
+# extension fit the booted base? -- is made here, and a refusal is logged at
+# error level with the extension, the field and both values.
+#
+# Store:   /var/lib/furcate/extensions/<name>/<version>/<name>.raw
+#                                                      /<name>.release
+# Output:  /run/extensions/<name>.raw -> the chosen image
+#          /run/furcate-os/extensions.selected   "<name> <version>" per line
+#          /run/furcate-os/degraded              present when something was refused
+set -u
+
+STORE=${FURCATE_EXTENSION_STORE:-/var/lib/furcate/extensions}
+RUN=/run/furcate-os
+mkdir -p /run/extensions "$RUN"
+: > "$RUN/extensions.selected"
+rm -f "$RUN/degraded"
+
+val() { sed -n "s/^$2=//p" "$1" | tail -1 | tr -d '"'; }
+err() { echo "<3>furcate-extension-select: $*" >&2; echo "$*" >> "$RUN/degraded"; }
+info() { echo "<6>furcate-extension-select: $*" >&2; }
+
+base_abi=$(val /usr/lib/os-release FURCATE_ABI)
+base_board=$(val /usr/lib/os-release FURCATE_BOARD)
+case "$(uname -m)" in
+    aarch64) arch=arm64 ;;
+    x86_64) arch=x86-64 ;;
+    *) arch=$(uname -m) ;;
+esac
+[ -n "$base_abi" ] || { err "the base declares no FURCATE_ABI in /usr/lib/os-release"; exit 0; }
+
+[ -d "$STORE" ] || { info "no extension store at $STORE"; exit 0; }
+for dir in "$STORE"/*/; do
+    [ -d "$dir" ] || continue
+    name=$(basename "$dir")
+    chosen=""
+    for vdir in $(ls -1 "$dir" | sort -V -r); do
+        raw="$dir$vdir/$name.raw"
+        rel="$dir$vdir/$name.release"
+        [ -f "$raw" ] || continue
+        if [ ! -f "$rel" ]; then
+            err "refusing $name $vdir: no $name.release beside the image"; continue
+        fi
+        a=$(val "$rel" ARCHITECTURE); abi=$(val "$rel" FURCATE_REQUIRES_ABI)
+        board=$(val "$rel" FURCATE_REQUIRES_BOARD); ver=$(val "$rel" FURCATE_VERSION)
+        if [ "$ver" != "$vdir" ]; then
+            err "refusing $name $vdir: FURCATE_VERSION=$ver does not match its directory"; continue
+        fi
+        if [ "$a" != "$arch" ]; then
+            err "refusing $name $ver: ARCHITECTURE=$a, this machine is $arch"; continue
+        fi
+        if [ "$abi" != "$base_abi" ]; then
+            err "refusing $name $ver: FURCATE_REQUIRES_ABI=$abi, base FURCATE_ABI=$base_abi"; continue
+        fi
+        if [ -n "$board" ] && [ "$board" != "$base_board" ]; then
+            err "refusing $name $ver: FURCATE_REQUIRES_BOARD=$board, base FURCATE_BOARD=$base_board"; continue
+        fi
+        # Every block against the signed root hash: a changed byte would
+        # otherwise surface only when it is read (extension-verify).
+        if ! /usr/libexec/furcate-os/extension-verify "$raw"; then
+            err "refusing $name $ver: the image does not match its root hash (changed or damaged)"; continue
+        fi
+        chosen=$ver
+        ln -sfn "$raw" "/run/extensions/$name.raw"
+        echo "$name $ver" >> "$RUN/extensions.selected"
+        info "selected $name $ver"
+        break
+    done
+    if [ -z "$chosen" ]; then
+        rm -f "/run/extensions/$name.raw"
+        err "no version of $name fits this base (FURCATE_ABI=$base_abi, $arch); it is not merged"
+    fi
+done
+exit 0

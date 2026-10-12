@@ -1,0 +1,16 @@
+[package]
+name = "furcate-sql"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A small synchronous PostgreSQL client — simple query protocol and SCRAM-SHA-256."
+
+[dependencies]
+anyhow.workspace = true
+sha2.workspace = true
+data-encoding.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

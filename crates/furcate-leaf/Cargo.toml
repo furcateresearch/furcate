@@ -1,0 +1,19 @@
+[package]
+name = "furcate-leaf"
+version.workspace = true
+edition.workspace = true
+description = "Host-side simulator for the leaf firmware."
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "furcate-leaf"
+path = "src/main.rs"
+
+[dependencies]
+furcate-leaf-core = { path = "../furcate-leaf-core" }
+furcate-sense = { path = "../furcate-sense" }
+furcate-identity = { path = "../furcate-identity" }
+anyhow.workspace = true
+hex.workspace = true
+serde_json.workspace = true

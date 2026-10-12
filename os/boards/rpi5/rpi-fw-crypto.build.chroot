@@ -1,0 +1,33 @@
+#!/bin/sh
+# Build rpi-fw-crypto, the client for the Raspberry Pi firmware cryptography
+# service (the OTP device key), from raspberrypi/utils at a pinned commit.
+# The raspi-utils in the Ubuntu 26.04 archive (20250514) predates it.
+set -eu
+
+COMMIT=61371fa6d93463c5451131f7bb68ae145aaf1e7a
+SHA256=403c5e034bfa984807fdec6ba1f9940de13d9038fef509be03f5037b8cf86a07
+URL="https://codeload.github.com/raspberrypi/utils/tar.gz/$COMMIT"
+
+work="$(mktemp -d)/rpi-utils"
+rm -rf "$work"
+mkdir -p "$work"
+curl -fsSL -o "$work/src.tgz" "$URL"
+echo "$SHA256  $work/src.tgz" | sha256sum -c -
+tar -C "$work" -xzf "$work/src.tgz"
+cmake -S "$work/utils-$COMMIT/rpifwcrypto" -B "$work/build" \
+    -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
+cmake --build "$work/build" -j"$(nproc)"
+DESTDIR="$DESTDIR" cmake --install "$work/build"
+# The signing broker and its client (fwcrypto/furcate-fwcrypto.c), linked
+# against the same library: the only process that opens the firmware mailbox.
+lib=$(ls "$DESTDIR"/usr/lib/*/librpifwcrypto.a "$DESTDIR"/usr/lib/librpifwcrypto.a 2>/dev/null | head -1)
+cc -O2 -Wall -Wextra -Werror -D_FORTIFY_SOURCE=2 -fstack-protector-strong \
+    -I"$DESTDIR/usr/include" -o "$DESTDIR/usr/bin/furcate-fwcrypto" \
+    "$SRCDIR/boards/rpi5/fwcrypto/furcate-fwcrypto.c" "$lib" -lgnutls
+# Only the tools ship; the static library and header are build products.
+rm -rf "$DESTDIR/usr/include" "$DESTDIR/usr/lib/"*/librpifwcrypto.a "$DESTDIR/usr/lib/librpifwcrypto.a"
+install -D -m644 /dev/stdin "$DESTDIR/usr/share/doc/furcate-os/rpi-fw-crypto.source" <<EOF
+raspberrypi/utils $COMMIT rpifwcrypto
+$URL
+sha256 $SHA256
+EOF

@@ -1,0 +1,17 @@
+# The OTP device key's signing broker (furcate-fwcrypto serve). Only members
+# of furcate-fwcrypto can open the socket, and the broker answers only root
+# and the furcate user (SO_PEERCRED).
+[Unit]
+Description=Furcate OS: OTP key signing broker socket
+Documentation=file:/usr/share/doc/furcate-os/README.md
+
+[Socket]
+ListenStream=/run/furcate-os/fwcrypto.sock
+SocketUser=root
+SocketGroup=furcate-fwcrypto
+SocketMode=0660
+DirectoryMode=0755
+Accept=no
+
+[Install]
+WantedBy=sockets.target

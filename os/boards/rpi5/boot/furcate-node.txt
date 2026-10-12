@@ -1,0 +1,39 @@
+# Furcate node settings. Read once, at the first boot.
+#
+# Edit this file after writing the drive and before the first boot: on a Mac
+# it appears as the BOOT-A volume. Lines are key=value; leave a value empty to
+# use the default. Nothing here needs the internet.
+
+# operator: the operator's public key (the content of operator.pub from the
+# operator machine, or the key a hosted Furcate console shows when you add a node). It is
+# the key of a passkey or device key, never a server-held key. Pinned at first
+# boot: from then on, a new operator or a new parent must be authorised by a
+# message signed with this key. Empty: the node starts unenrolled and shows its
+# enrolment details on the console.
+operator=
+
+# parent: who authorises this node. "operator" (the operator machine or
+# a hosted Furcate console directly), or the node id of a Jetson or another node.
+parent=operator
+
+# role: gateway = parent of ESP32 leaf nodes (runs the leaf connector, relays
+# models down, aggregates leaf results up).
+role=gateway
+
+# ssh_authorized_key: one OpenSSH public key per line (repeat the key name),
+# installed for the `furcate` account at first boot. Development access only:
+# key login, no passwords, no root login. Production nodes are managed through
+# operator authorisations signed by a passkey or device key instead.
+# ssh_authorized_key=ssh-ed25519 AAAA... you@your-machine
+
+# mode: airgapped (updates come as signed bundles by USB or from a
+# neighbouring node) or cloud (a hosted Furcate console relays enrolment and updates).
+mode=airgapped
+
+# fwcrypto: how furcated reaches the OTP device key. "broker" (default): only
+# through the signing broker, the firmware mailbox stays root-only. "direct":
+# the transition path for a furcated that still opens the mailbox itself.
+fwcrypto=broker
+
+# JOURNAL_REMOTE_URL is not set here: put it in /etc/furcate/node.conf on the
+# node (an http:// URL on the Furcate overlay) to ship the journal live.

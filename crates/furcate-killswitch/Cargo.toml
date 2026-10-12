@@ -1,0 +1,19 @@
+[package]
+name = "furcate-killswitch"
+version.workspace = true
+edition.workspace = true
+description = "Signed orders to stop a machine, a domain or the cluster."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+furcate-topology = { path = "../furcate-topology" }
+furcate-authn = { path = "../furcate-authn" }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }

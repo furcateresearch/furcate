@@ -1,0 +1,92 @@
+#!/bin/sh
+# Establish this node's identity from its silicon, strongest source first.
+#
+# Raspberry Pi 5, in order:
+#   1. TPM 2.0 (a TPM HAT). furcated selects it by itself; nothing to do here.
+#   2. The OTP device key: an ECDSA P-256 key in the SoC's one-time-programmable
+#      memory, used through the firmware (sign, HMAC), its raw read blocked from
+#      the first instruction of each boot by lock_device_private_key=1 in
+#      config.txt. furcated selects it by itself (backend rpi-fw-crypto, class
+#      Device). Provisioning it is a one-time, irreversible owner step:
+#      `sudo furcate-os otp-provision`.
+#   3. The silicon fingerprint: board serial, revision code and device-unique
+#      id, as the firmware reads them from OTP. Not secret, so this proves
+#      continuity (the same board as enrolled), not possession. Class Soft.
+#      Taken automatically on a Pi 5 that has neither of the above (owner
+#      decision 2026-10-11), and replaced by 2 once the OTP key exists.
+#
+# The node id is derived from whichever of these is used, never random.
+#
+# Writes /run/furcate-os/identity and /etc/issue.d/furcate.issue (shown above
+# the login prompt), and prints the same summary.
+set -u
+RUN=/run/furcate-os
+STATE=/var/lib/furcate-os
+mkdir -p "$RUN" "$STATE" /etc/issue.d
+DT=/sys/firmware/devicetree/base
+out="$RUN/identity"
+: > "$out"
+say() { echo "$*" | tee -a "$out"; }
+
+model=$(tr -d '\0' < "$DT/model" 2>/dev/null || echo unknown)
+serial=$(tr -d '\0' < "$DT/serial-number" 2>/dev/null || echo unknown)
+
+source=none
+class=none
+node=""
+note=""
+
+if [ -e /dev/tpmrm0 ]; then
+    source=tpm; class="Tpm (key possession; boot unmeasured on a Pi)"
+    note="TPM present: furcated holds the node key in the TPM."
+elif command -v rpi-fw-crypto >/dev/null 2>&1 \
+     && pub=$(rpi-fw-crypto pubkey --key-id 1 --outform hex 2>/dev/null) \
+     && [ -n "$(echo "$pub" | tr -d '0 \n')" ]; then
+    source=otp; class="Device (OTP device key, used through the firmware)"
+    st=$(rpi-fw-crypto get-key-status 1 2>/dev/null | sed -n 's/.*status: //p')
+    note="OTP device key provisioned; key status $st."
+    case "$st" in
+        *READ_LOCKED*) ;;
+        *) note="$note WARNING: raw read of the OTP key is NOT locked this boot; check lock_device_private_key=1 in config.txt." ;;
+    esac
+    node="(reported by furcated at start: journalctl -u furcated | grep 'node id')"
+elif echo "$model" | grep -q "Raspberry Pi 5"; then
+    soft=/etc/furcate/soft-identity.json
+    if [ ! -f "$soft" ]; then
+        if ! command -v furcatectl >/dev/null 2>&1; then
+            say "identity: furcatectl is not available (the furcate extension is not merged); no identity created"
+            exit 1
+        fi
+        furcatectl identity soft-enroll "Raspberry Pi 5 without a TPM or a provisioned OTP device key: admitted on its silicon fingerprint (owner decision 2026-10-11). Upgrade with: sudo furcate-os otp-provision" \
+            > "$STATE/soft-enroll.log" 2>&1 || {
+            say "identity: fingerprint enrolment failed:"; sed 's/^/  /' "$STATE/soft-enroll.log" | tee -a "$out"; exit 1; }
+    fi
+    source=fingerprint; class="Soft (silicon fingerprint: continuity, not possession)"
+    node=$(sed -n 's/^node id *//p' "$STATE/soft-enroll.log" 2>/dev/null | head -1)
+    note="WEAKER: no secret key on this board yet. Provision the OTP device key (one-time, irreversible): sudo furcate-os otp-provision"
+else
+    note="Not a Raspberry Pi 5 ($model) and no TPM: no identity created."
+fi
+
+say "board       $model"
+say "serial      $serial"
+say "identity    $source"
+say "class       $class"
+[ -n "$node" ] && say "node id     $node"
+say "note        $note"
+
+{
+    echo "Furcate OS  $(sed -n 's/^IMAGE_VERSION=//p' /usr/lib/os-release)   board serial $serial"
+    echo "identity: $source, class $class"
+    [ -n "$node" ] && echo "node id: $node"
+    echo "$note"
+    printf 'address: \\4   ssh furcate@%s.local\n' "$(hostname)"
+    echo
+} > /etc/issue.d/furcate.issue
+
+# The node agent ships in the furcate extension, which merges after the boot
+# transaction is computed, so it is started here once the identity is settled.
+if [ "$source" != none ] && systemctl cat furcated.service >/dev/null 2>&1; then
+    systemctl start --no-block furcated.service
+fi
+exit 0

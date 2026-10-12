@@ -1,0 +1,328 @@
+# The parts of Furcate, declared once.
+#
+# An operating system organises itself into things a person recognises —
+# Network, Storage, Power, Security, Software Update — and every one of them
+# has a name, a place to look at it, and a way to change it. Furcate had the
+# pieces without the organisation: nine console panes, eleven units, thirteen
+# CLI verbs and sixty endpoints, grouped differently in each place.
+#
+# This is the grouping, and it is data rather than a diagram so that
+# `tests/arms.rs` can hold the code to it. An arm that grows a service without
+# a view, or a pane nobody declared, fails the build rather than drifting.
+#
+# ## Fields
+#
+#   category  where it belongs in the way a person thinks about a machine
+#   services  systemd units, without the .service suffix
+#   view      the console pane that shows it, or "" with `why_no_view` set
+#   cli       the `furcatectl` verb, or "" with `why_no_cli` set
+#
+# ## Rule
+#
+# Every arm has a view or says why not. A gap that is declared is a decision;
+# a gap that is absent is something nobody noticed.
+
+# ── One administration node ───────────────────────────────────────────────
+#
+# A site has exactly one machine administering it. Two is not a degraded
+# version of one: two verifiers admit different peers, two Merkle roots anchor
+# different histories, and two kill switches disagree about whether something
+# is running.
+#
+# It should be the most capable machine, because it is also the one that serves
+# the advisor. Capability is already attested rather than self-declared —
+# accelerated, compute, constrained, leaf, from the hardware inventory — so a
+# node cannot campaign for the job by claiming a GPU it does not have.
+#
+# It is now computed rather than configured, and deliberately not elected:
+# consensus belongs to the network a machine joins, not to the layer that runs
+# the machine. Given the same appraised members every node reaches the same
+# answer without exchanging a message, so there is no protocol to disagree
+# about. A partial or half-appraised view names nobody at all.
+#
+# What remains configuration is which controller a node reports to. The rule
+# says who it should be; moving it is still an operator's act.
+
+[[arm]]
+name = "machine"
+category = "About"
+title = "This machine"
+summary = "What the hardware is, and whether it is still what it was"
+services = ["furcated", "control-netconsole", "furcate-sysext-units", "furcated@", "furcate-platform-reader", "furcate-accelerator-reader", "furcate-mouse", "furcate-vtpalette@"]
+view = "machine"
+section = "state"
+cli = "selftest"
+
+[[arm]]
+name = "storage"
+category = "Resources"
+title = "Storage"
+summary = "Disks, and which of them are failing"
+services = ["furcate-storage-check"]
+view = "resources"
+section = "storage"
+cli = ""
+why_no_cli = "nothing here is changed by an operator; the disks report themselves"
+
+[[arm]]
+name = "capacity"
+category = "Resources"
+title = "Capacity"
+summary = "What is left after what is already spoken for"
+services = []
+view = "resources"
+section = "capacity"
+cli = "resources"
+
+[[arm]]
+name = "tenants"
+category = "Resources"
+title = "Tenants"
+summary = "Who has been given what, and how each of them would leave"
+services = ["furcate-identity"]
+view = "resources"
+section = "tenants"
+cli = "grant"
+
+[[arm]]
+name = "bindings"
+category = "Resources"
+title = "Bindings"
+summary = "Which workloads reach which resources, and under what names"
+services = []
+view = "resources"
+section = "bindings"
+cli = "bind"
+
+[[arm]]
+name = "inference"
+category = "Resources"
+title = "Inference"
+summary = "Models a workload can ask, answered here or by the network"
+services = []
+view = "resources"
+section = "inference"
+cli = "bind"
+
+[[arm]]
+name = "energy"
+category = "Power"
+title = "Power and energy"
+summary = "Draw measured at the supply, what it costs, and what would reduce it"
+services = ["furcate-power-reader", "furcate-actuator"]
+view = "power"
+section = "draw"
+cli = "energy"
+
+[[arm]]
+name = "thermal"
+category = "Power"
+title = "Cooling"
+summary = "Temperatures, fans, and the headroom left"
+services = ["furcate-quiet-hours-enforce"]
+view = "power"
+section = "cooling"
+cli = ""
+why_no_cli = "read through the energy verb; a separate one would be two names for one subsystem"
+
+[[arm]]
+name = "quiet"
+category = "Power"
+title = "Quiet hours"
+summary = "When this machine may make noise, and what is stopped while it may not"
+services = ["furcate-quiet-hours-enforce"]
+view = "power"
+section = "cooling"
+cli = ""
+why_no_cli = "it is /usr/libexec/furcate/quiet-hours, run by the operator and by the build guard; a furcatectl verb would be a second way to set one window"
+
+[[arm]]
+name = "lan"
+category = "Network"
+title = "The local network"
+summary = "Interfaces, addresses, neighbours, and the filter rules this machine owns"
+services = ["furcate-broker-fw", "furcate-kms-fw"]
+view = "network"
+section = "lan"
+cli = "network"
+
+[[arm]]
+name = "fabric"
+category = "Network"
+title = "Overlay"
+summary = "The private fabric, and who is admitted to it"
+services = ["furcate-wg", "furcate-overlay-guard", "furcate-names", "furcate-names-link", "furcate-overlay-reflect", "furcate-egress-relay-udp", "furcate-egress", "furcate-egress-relay"]
+view = "network"
+section = "private network"
+cli = "overlay"
+
+[[arm]]
+name = "role"
+category = "Network"
+title = "Position in the cluster"
+summary = "Which machine administers the site, and whether that is the one the rule names"
+services = []
+view = "network"
+section = "administration"
+cli = "site"
+
+[[arm]]
+name = "tunnels"
+category = "Connectivity"
+title = "Tunnels"
+summary = "Encrypted links out of this machine, and when each last spoke"
+services = ["furcate-tunnel-heal"]
+view = "connectivity"
+section = "tunnels"
+cli = "tunnels"
+
+[[arm]]
+name = "routing"
+category = "Connectivity"
+title = "Routing"
+summary = "How the outside reaches the names this machine serves"
+services = []
+view = "connectivity"
+section = "routing"
+cli = "routing"
+
+[[arm]]
+name = "publishing"
+category = "Connectivity"
+title = "Publishing"
+summary = "What this machine serves, and at what name"
+services = ["furcate-edge", "furcate-gitdeploy", "furcate-os-http", "furcate-site@", "furcate-cdn", "furcate-source-prune"]
+view = "connectivity"
+section = "published"
+cli = "deploy"
+
+[[arm]]
+name = "keys"
+category = "Security"
+title = "Keys"
+summary = "The key material this machine holds, and the certificates about to lapse"
+services = ["furcate-ssh-hostcert", "furcate-cert-renew", "furcate-wildcard-renew@", "furcate-kms", "furcate-kms-unseal", "furcate-kms-renew", "furcate-kms-snapshot"]
+view = "security"
+section = "keys"
+cli = "keys"
+
+[[arm]]
+name = "authority"
+category = "Security"
+title = "Authority"
+summary = "Identity, policy, attestation, and the record of what was refused"
+services = ["furcate-otp", "furcate-roster-expiry", "furcate-exec-guard"]
+view = "security"
+section = "authority"
+cli = "policy"
+
+[[arm]]
+name = "identity"
+category = "Security"
+title = "Identity"
+summary = "Who this machine is, and what it has been delegated"
+services = []
+view = "security"
+section = "identity"
+cli = "identity"
+
+[[arm]]
+name = "custody"
+category = "Security"
+title = "Custody"
+summary = "Backups, drift, and the checks that run on their own"
+services = ["furcate-ops-drift", "furcate-verity-check"]
+view = "security"
+section = "custody"
+cli = "custody"
+
+[[arm]]
+name = "record"
+category = "Security"
+title = "The record"
+summary = "What this machine did and what it refused, and whether the chain still recomputes"
+services = []
+view = "security"
+section = "the record"
+cli = "ledger"
+
+[[arm]]
+name = "workloads"
+category = "Workloads"
+title = "Workloads"
+summary = "What is placed here, and where it survives a failure"
+services = []
+view = "workloads"
+section = "placed"
+cli = "workload"
+
+[[arm]]
+name = "boxes"
+category = "Workloads"
+title = "Boxes"
+summary = "Workloads isolated here, what bounds them, and what they have consumed"
+services = []
+view = "workloads"
+section = "boxes"
+cli = "box"
+
+[[arm]]
+name = "advisor"
+category = "System"
+title = "The advisor"
+summary = "Furcate's own model: what this machine reasons with about itself"
+services = []
+view = "system"
+section = "advisor"
+cli = "advisor"
+
+[[arm]]
+name = "updates"
+category = "System"
+title = "Software update"
+summary = "This machine: the base and Furcate"
+services = ["furcate-update", "furcate-wake-arm", "furcate-apt"]
+view = "system"
+section = "updates"
+cli = "update"
+
+[[arm]]
+name = "settings"
+category = "System"
+title = "Setup"
+summary = "What this machine is, which site it joins, and how it proves who it is"
+services = []
+view = ""
+why_no_view = "deliberate — setup is a flow with an end, not a surface to sit on. It is offered on first run and available as `furcate setup`."
+cli = "setup"
+
+[[arm]]
+name = "findings"
+category = "Management"
+title = "Findings"
+summary = "What the machine noticed about itself, what it would cost, and how to undo it"
+services = []
+view = "management"
+section = "findings"
+cli = ""
+why_no_cli = "OPEN — findings are readable on the console and nowhere else"
+
+[[arm]]
+name = "loops"
+category = "Management"
+title = "Loops"
+summary = "The checks that run on their own, and when each last succeeded"
+services = ["furcate-cluster-watch", "furcate-health-monitor", "furcate-peer-watch", "furcate-deadman", "notify-failure@"]
+view = "management"
+section = "loops"
+cli = "custody"
+
+[[arm]]
+name = "proposals"
+category = "Management"
+title = "Proposals"
+summary = "Changes the machine has proposed and is waiting on a person for"
+services = ["furcate-order-actuator"]
+view = "management"
+section = "proposals"
+cli = "policy"

@@ -1,0 +1,62 @@
+[package]
+name = "furcated"
+version.workspace = true
+edition.workspace = true
+description = "The Furcate node agent."
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "furcated"
+path = "src/main.rs"
+
+# Same agent, built for constrained hardware. The `lite` feature drops the
+# model runtime and the proving-ground hooks: a Pi or a Jetson is a worker,
+# never a site controller, and shipping code it will not run is dead weight.
+[[bin]]
+name = "furcated-lite"
+path = "src/lite.rs"
+
+[dependencies]
+furcate-authn = { path = "../furcate-authn" }
+furcate-paths = { path = "../furcate-paths" }
+furcate-api = { path = "../furcate-api" }
+furcate-siteview = { path = "../furcate-siteview" }
+serde_norway.workspace = true
+furcate-identity = { path = "../furcate-identity" }
+furcate-ledger = { path = "../furcate-ledger" }
+furcate-health = { path = "../furcate-health" }
+furcate-host = { path = "../furcate-host" }
+furcate-power = { path = "../furcate-power" }
+furcate-sched = { path = "../furcate-sched" }
+furcate-resource = { path = "../furcate-resource" }
+furcate-sense = { path = "../furcate-sense" }
+furcate-membership = { path = "../furcate-membership" }
+furcate-mesh = { path = "../furcate-mesh" }
+furcate-net = { path = "../furcate-net" }
+furcate-deploy = { path = "../furcate-deploy" }
+furcate-policy = { path = "../furcate-policy" }
+furcate-vault = { path = "../furcate-vault" }
+furcate-topology = { path = "../furcate-topology" }
+furcate-killswitch = { path = "../furcate-killswitch" }
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+tss = ["furcate-identity/tss"]
+lite = []
+
+# An edition adds to this daemon through `furcated::extension`, from a crate
+# that depends on this one. Nothing here names it, so the open daemon is
+# complete on its own and the licence boundary is held by the compiler.
+
+[dev-dependencies]
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }

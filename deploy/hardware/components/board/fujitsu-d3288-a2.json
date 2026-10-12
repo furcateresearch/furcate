@@ -1,0 +1,35 @@
+{
+  "id": "board/fujitsu-d3288-a2",
+  "kind": "board",
+  "identity": {
+    "vendor": "FUJITSU",
+    "product": "D3288-A2",
+    "version": "S26361-D3288-A21 WGS02 GS01",
+    "_match": "DMI type 2 — baseboard manufacturer and product, from /sys/class/dmi/id/board_*"
+  },
+  "chipset": { "vendor": "Intel", "family": "C610/X99", "pch": "C612" },
+  "memory": {
+    "slots": 8,
+    "type": "DDR4",
+    "ecc": "multi-bit",
+    "max_capacity_gb": 1024,
+    "_note": "registered ECC. A machine reporting single-bit corrections here is telling you about a DIMM before it fails, which is why the counter is worth watching."
+  },
+  "expansion": { "pcie_slots": 4 },
+  "onboard": {
+    "ethernet": "Intel I217-LM",
+    "sata": "Intel C610/X99 6-port AHCI + sSATA",
+    "tpm": { "present": true, "vendor": "Infineon", "spec": "2.0" }
+  },
+  "firmware": {
+    "bios_version": "V5.0.0.11 R1.8.0 for D3288-A2x",
+    "bios_date": "2018-03-14",
+    "_age": "ancient by any measure. Age is the signal here, not the version string: a version means nothing without the vendor's release history, and eight years is long enough that the blind-sensor behaviour above may simply be fixed upstream."
+  },
+  "attestation": {
+    "pcrs_extended": [4, 7],
+    "pcrs_zero": [8, 9, 11, 14],
+    "_means": "the boot chain is measured as far as the firmware and no further. A changed BIOS is detectable; a swapped kernel, initramfs or command line is not.",
+    "_lifts_to": "UKI plus PCR 11 would close it"
+  }
+}

@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/furcate-api",
+    "crates/furcate-attest",
+    "crates/furcate-authn",
+    "crates/furcate-breakglass",
+    "crates/furcate-build",
+    "crates/furcate-console",
+    "crates/furcate-deploy",
+    "crates/furcate-health",
+    "crates/furcate-host",
+    "crates/furcate-identity",
+    "crates/furcate-killswitch",
+    "crates/furcate-leaf",
+    "crates/furcate-leaf-core",
+    "crates/furcate-ledger",
+    "crates/furcate-machine",
+    "crates/furcate-membership",
+    "crates/furcate-mesh",
+    "crates/furcate-net",
+    "crates/furcate-paths",
+    "crates/furcate-policy",
+    "crates/furcate-power",
+    "crates/furcate-resource",
+    "crates/furcate-sched",
+    "crates/furcate-sense",
+    "crates/furcate-session",
+    "crates/furcate-siteview",
+    "crates/furcate-sql",
+    "crates/furcate-topology",
+    "crates/furcate-vault",
+    "crates/furcatectl",
+    "crates/furcated",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/furcateresearch/furcate"
+
+[workspace.dependencies]
+anyhow = "1"
+hex = "0.4"
+sha2 = "0.11"
+data-encoding = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# YAML for the files humans write. serde_yaml and serde_yml are both
+# deprecated; serde_norway is the maintained fork, named for the hazard it
+# handles — `no` parsing as boolean false, which is exactly the kind of thing
+# a policy file must not do quietly.
+serde_norway = "0.9"
+ed25519-dalek = { version = "3", features = ["rand_core"] }
+x25519-dalek = { version = "3", features = ["static_secrets"] }
+chacha20poly1305 = "0.11"
+hkdf = "0.13"
+getrandom = "0.4"
+# Passkey assertions: ES256 verification and the COSE keys credentials carry.
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
+ciborium = "0.2"
+# Platform declarations, not a wrapper. furcate-console hand-rolled
+# `struct termios` and got the Linux layout, which is a stack overrun on
+# macOS (60 bytes vs 72). See furcate-console/src/term.rs for the table.
+libc = "0.2"
+
+# Workspace-level integration tests (see tests/).

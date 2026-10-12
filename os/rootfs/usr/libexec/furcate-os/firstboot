@@ -1,0 +1,108 @@
+#!/bin/sh
+# First boot of a freshly written Furcate OS disk.
+#
+#  1. Grow the state partition (/, holding /etc and /var) to the end of the
+#     disk, so one image fits any USB drive or SSD it is written to.
+#  2. Create this device's SSH host keys (the image ships none).
+#  3. Create the users and directories the merged extensions declare.
+#
+# The node identity is handled on every boot by furcate-identity.service.
+set -u
+STATE=/var/lib/furcate-os
+mkdir -p "$STATE"
+log() { echo "furcate-firstboot: $*"; }
+
+# 1. Grow the state partition.
+part=$(findmnt -no SOURCE /)
+name=$(basename "$(readlink -f "$part")")
+disk=$(lsblk -no PKNAME "/dev/$name" 2>/dev/null | head -1)
+num=$(cat "/sys/class/block/$name/partition" 2>/dev/null || echo "")
+if [ -n "$disk" ] && [ -n "$num" ]; then
+    # The image's backup GPT sits where the image ended, not where the disk ends.
+    sfdisk --quiet --relocate gpt-bak-std "/dev/$disk" 2>/dev/null || true
+    before=$(blockdev --getsize64 "/dev/$name")
+    if echo ", +" | sfdisk --quiet --no-reread --no-tell-kernel -N "$num" "/dev/$disk" >/dev/null 2>&1 \
+        && partx -u "/dev/$disk" 2>/dev/null; then
+        resize2fs "/dev/$name" >/dev/null 2>&1 || log "resize2fs /dev/$name failed"
+    else
+        log "could not grow partition $num on /dev/$disk"
+    fi
+    after=$(blockdev --getsize64 "/dev/$name")
+    log "state partition /dev/$name: $((before / 1048576)) MiB -> $((after / 1048576)) MiB"
+else
+    log "could not find the disk under / ($part); state partition left as written"
+fi
+
+# 2. SSH host keys, generated here, on this device.
+ssh-keygen -A >/dev/null 2>&1 && log "SSH host keys created"
+
+# 3. Users and directories from the merged extensions.
+systemd-sysusers >/dev/null 2>&1 || true
+systemd-tmpfiles --create >/dev/null 2>&1 || true
+
+# 4. Node settings: operator key, parent, role, mode. Read once from
+# furcate-node.txt on the boot partition, which the owner can edit on any
+# computer after writing the drive and before the first boot. The operator key
+# is pinned here; afterwards a change of operator or parent is an
+# authorisation signed by the pinned operator key, not an edit of this file.
+# No network is needed for any of this.
+slot=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^furcate.slot=//p')
+bootdev=/dev/disk/by-partlabel/boot-${slot:-a}
+mnt=$(mktemp -d)
+settings=""
+if [ -b "$bootdev" ] && mount -o ro -t vfat "$bootdev" "$mnt" 2>/dev/null; then
+    [ -f "$mnt/furcate-node.txt" ] && settings=$(tr -d '\r' < "$mnt/furcate-node.txt")
+    umount "$mnt"
+fi
+rmdir "$mnt"
+setting() { printf '%s\n' "$settings" | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" | tail -1 | sed 's/[[:space:]]*$//'; }
+operator=$(setting operator)
+parent=$(setting parent)
+role=$(setting role)
+mode=$(setting mode)
+mkdir -p /etc/furcate
+if [ -n "$operator" ]; then
+    if [ -f /etc/furcate/operator.pub ]; then
+        log "operator key already pinned; furcate-node.txt operator line ignored"
+    else
+        printf '%s\n' "$operator" > /etc/furcate/operator.pub
+        chmod 644 /etc/furcate/operator.pub
+        log "operator key pinned in /etc/furcate/operator.pub"
+    fi
+else
+    log "no operator key in furcate-node.txt: the node waits to be enrolled by an operator"
+fi
+# fwcrypto=direct: the transition path for a furcated that opens the
+# firmware mailbox itself instead of using the signing broker
+# (60-furcate-fwcrypto.rules). Default: the broker only.
+if [ "$(setting fwcrypto)" = direct ]; then
+    : > /etc/furcate/fwcrypto-direct
+    log "fwcrypto=direct: the furcate-fwcrypto group gets the firmware mailbox (transition path)"
+fi
+cat > /etc/furcate/node.conf <<EOF
+# Written at first boot from furcate-node.txt. Changing the parent or the
+# operator after this is an authorisation signed by the pinned operator key.
+parent=${parent:-operator}
+role=${role:-gateway}
+mode=${mode:-airgapped}
+EOF
+log "parent ${parent:-operator}, role ${role:-gateway}, mode ${mode:-airgapped}"
+
+# 5. Development access: SSH public keys for the furcate account. Public keys
+# only; anything that is not a single OpenSSH public key line is ignored.
+keys=$(printf '%s\n' "$settings" | sed -n 's/^[[:space:]]*ssh_authorized_key[[:space:]]*=[[:space:]]*//p' \
+    | grep -E '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) [A-Za-z0-9+/=]+( .*)?$' || true)
+if [ -n "$keys" ] && id furcate >/dev/null 2>&1; then
+    install -d -m700 -o furcate -g furcate /home/furcate/.ssh
+    printf '%s\n' "$keys" >> /home/furcate/.ssh/authorized_keys
+    sort -u -o /home/furcate/.ssh/authorized_keys /home/furcate/.ssh/authorized_keys
+    chown furcate:furcate /home/furcate/.ssh/authorized_keys
+    chmod 600 /home/furcate/.ssh/authorized_keys
+    log "$(printf '%s\n' "$keys" | wc -l) SSH public key(s) authorised for furcate"
+else
+    log "no SSH public key in furcate-node.txt: no SSH access until one is added"
+fi
+
+date -u +%Y-%m-%dT%H:%M:%SZ > "$STATE/firstboot.done"
+log "done"
+exit 0

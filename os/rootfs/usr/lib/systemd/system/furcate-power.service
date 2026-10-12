@@ -1,0 +1,18 @@
+# One power reading (power-monitor): /run/furcate-os/power.status, load
+# shedding on undervoltage. Runs as root: vcgencmd needs the firmware mailbox
+# (/dev/vcio) and the CPU caps are written to sysfs.
+[Unit]
+Description=Furcate OS: power and throttling reading
+Documentation=file:/usr/share/doc/furcate-os/README.md
+ConditionPathExists=/proc/device-tree/chosen/power
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/furcate-os/power-monitor
+# Every 5 s: keep the manager's own start/finish lines for this unit out of
+# the journal; the monitor logs state changes at notice and above.
+LogLevelMax=notice
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full

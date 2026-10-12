@@ -1,0 +1,61 @@
+{
+  "_": "A machine is not a component. It is an arrangement of them, plus the facts that only exist once they are arranged — how many of each, in which slots, and what the combination does that no part does alone. This file carries the arrangement and nothing that belongs to a part, so a component fixed here is fixed for every machine that references it.",
+
+  "id": "machine/fujitsu-celsius-c740",
+  "schema": 1,
+
+  "identity": {
+    "vendor": "FUJITSU",
+    "product": "CELSIUS C740",
+    "family": "CELSIUS-FTS",
+    "chassis": "CC740BR",
+    "_match": {
+      "by": "dmi",
+      "sys_vendor": "FUJITSU",
+      "product_name": "CELSIUS C740",
+      "_why": "DMI is world-readable and present before anything else is running, so a machine can be recognised with no privilege, no agent and no network — which is the only useful moment to recognise it in."
+    },
+    "_not_matched_on": "serial number. That identifies one machine; this describes a model, and a profile keyed to a serial would need writing again for every unit."
+  },
+
+  "components": [
+    { "ref": "board/fujitsu-d3288-a2", "count": 1 },
+    { "ref": "cpu/intel-xeon-e5-2620-v4", "count": 1, "sockets_populated": 1, "sockets_free": 1 },
+    { "ref": "memory/hynix-hma82gr7afr8n-uh", "count": 2, "slots": ["DIMM 1A", "DIMM 1B"],
+      "_note": "two of eight slots used, 32 GB of a 1 TB ceiling. Headroom is a fact about this arrangement, not about the part." },
+    { "ref": "bmc/fujitsu-irmc-s4", "count": 1 },
+    { "ref": "psu/fujitsu-c740-psu", "count": 1 },
+    { "ref": "fan/fujitsu-c740-fans", "count": 6 },
+    { "ref": "disk/samsung-mzvkw512hmjp", "count": 1, "_note": "quantity varies per unit; the profile describes the part, the site's own inventory describes what is fitted" }
+  ],
+
+  "sensors": {
+    "total": 92,
+    "blind": ["GPU", "RAID Controller", "CPU 1.05V", "System Mgmt SW", "System BIOS"],
+    "_blind_means": "the part behind the sensor is absent, not that the sensor is broken. Read the count, not the names, and a machine with a GPU fitted will not have this problem."
+  },
+
+  "what_can_be_asked": {
+    "cpu_performance": true,
+    "cpu_turbo": true,
+    "fan_speed": false,
+    "power_cap": "partial",
+    "wake_on_lan": { "supported": true, "_caution": "the NIC ships `Wake-on: d` while advertising `Supports Wake-on: pumbg`. Reading the capability line reports a whole fleet as ready to wake when none of it is — read the state line." },
+    "measured_boot": false
+  },
+
+  "known_faults": [
+    {
+      "ref": "bmc/fujitsu-irmc-s4#blind-sensors-force-max-airflow",
+      "_why_here_as_well": "the cost is a property of the arrangement. The controller's behaviour is the same in any box; that it accounts for 60% of this machine's electricity bill is true because this machine has no GPU and no RAID card fitted, and would not be true of one that had."
+    }
+  ],
+
+  "measured_on": {
+    "site": "two units, adopted in place",
+    "idle_wall_w": 126,
+    "cpu_package_w": 27,
+    "temperatures_c": { "cpu": 41, "ambient": 22 },
+    "_read_this_as": "one site's numbers, not a specification. They are here because a profile with no measurements in it cannot tell an operator whether their machine is behaving like the others."
+  }
+}

@@ -1,0 +1,164 @@
+#!/bin/sh
+# Install what deploy/release/manifest says a release ships, for one consumer.
+#
+#   install deb   <edition> <bin-dir> <root-pattern>   root-pattern holds %p,
+#                                                       the package: debian/%p
+#   install ext   <edition> <bin-dir> <root>            the board extension
+#   install stage <edition> <bin-dir> <root>            a host rollout stage
+#   install model <edition> <bin-dir> <root>            the model-server extension
+#   install --list <deb|ext|stage|model> <edition>      print "<package> <dest>"
+#                                                       for every file, install
+#                                                       nothing
+#
+# <edition> is open or full. Files land at <root><dest>.
+#
+# A runtime/<component> row is a tree deploy/runtimes.sh assembles, for the
+# architecture in $FURCATE_RUNTIME_ARCH (x86_64 or aarch64). It is required
+# rather than taken from this machine: the board's extension is staged on a
+# build host of another architecture.
+#
+# POSIX sh, because debian/rules runs it in a build chroot and the board
+# extension runs it on a build host, and neither should need more than sh and
+# coreutils to say what a release contains.
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+manifest="$here/manifest"
+full_manifest="$here/manifest.full"
+
+die() { echo "release/install: $*" >&2; exit 1; }
+
+list=0
+if [ "${1:-}" = --list ]; then list=1; shift; fi
+target=${1:?usage: install [--list] deb|ext|stage|model <edition> [<bin-dir> <root>]}
+edition=${2:?edition: open or full}
+case "$target" in deb|ext|stage|model) ;; *) die "unknown target $target" ;; esac
+case "$edition" in open|full) ;; *) die "edition must be open or full, not $edition" ;; esac
+bins= root=
+if [ "$list" = 0 ]; then
+    bins=${3:?bin-dir}
+    root=${4:?root}
+fi
+
+selected() { # selected <ships> <edition>
+    case "$target:$1" in
+        deb:pkg|deb:all|stage:pkg|stage:all|ext:all|ext:ext|model:model) ;;
+        *:pkg|*:ext|*:all|*:model) return 1 ;;
+        *) die "ships must be pkg, ext, all or model, not $1" ;;
+    esac
+    case "$2" in
+        any|each) return 0 ;;
+        full) [ "$edition" = full ] ;;
+        *) die "edition column must be any, each or full, not $2" ;;
+    esac
+}
+
+# The mark every full-edition program carries.
+# Read from the file, not by running it: the bin directory may be built for
+# another architecture.
+mark=furcate-edition=full
+edition_of() { # edition_of <file>: full or open, by the mark
+    if LC_ALL=C grep -a -q -F "$mark" "$1"; then echo full; else echo open; fi
+}
+
+place() { # place <package> <dest>: where <dest> lands for this consumer
+    if [ "$target" = deb ]; then
+        printf '%s%s' "$(printf '%s' "$root" | sed "s|%p|$1|g")" "$2"
+    else
+        printf '%s%s' "$root" "$2"
+    fi
+}
+
+put() { # put <package> <mode> <file> <dest>
+    if [ "$list" = 1 ]; then echo "$1 $4"; return; fi
+    install -D -m "$2" "$3" "$(place "$1" "$4")"
+}
+
+n=0
+# Globbing is off while lines are split, and on only where a source is
+# expanded, so a pattern in a comment or a column never matches by accident.
+set -f
+scan() { # scan <manifest file> <open|full>: the rows of one part of the manifest
+part=$2
+while read -r pkg ships ed mode src dest rest; do
+    case "$pkg" in ''|'#'*) continue ;; esac
+    case "$part:$ed" in
+        open:full) die "$src is a full-edition row; it belongs in ${full_manifest#"$repo/"}" ;;
+        full:full) ;;
+        full:*) die "$src is in ${full_manifest#"$repo/"} but its edition is $ed, not full" ;;
+    esac
+    [ -n "$dest" ] && [ -z "$rest" ] || die "malformed line for $pkg $src"
+    case "$dest" in /usr/*) ;; *) die "$dest is outside /usr; a release ships /usr only" ;; esac
+    selected "$ships" "$ed" || continue
+    case "$mode" in
+        link)
+            n=$((n + 1))
+            if [ "$list" = 1 ]; then echo "$pkg $dest"; continue; fi
+            at=$(place "$pkg" "$dest")
+            mkdir -p "$(dirname "$at")"
+            ln -sfn "$src" "$at"
+            ;;
+        644|755)
+            case "$src" in
+                runtime/*)
+                    comp=${src#runtime/}
+                    case "$dest" in */) ;; *) die "$src is a tree, so $dest must end in /" ;; esac
+                    n=$((n + 1))
+                    if [ "$list" = 1 ]; then echo "$pkg $dest"; continue; fi
+                    [ -n "${FURCATE_RUNTIME_ARCH:-}" ] \
+                        || die "$src needs FURCATE_RUNTIME_ARCH, the architecture the runtime is for"
+                    rt=$(mktemp -d "${TMPDIR:-/var/tmp}/furcate-runtime.XXXXXX")
+                    sh "$repo/deploy/runtimes.sh" --arch "$FURCATE_RUNTIME_ARCH" --only "$comp" "$rt" >&2 \
+                        || { rm -rf "$rt"; die "deploy/runtimes.sh could not assemble $comp"; }
+                    [ -d "$rt/lib/furcate/runtimes/$comp" ] || { rm -rf "$rt"; die "deploy/runtimes.sh produced no $comp"; }
+                    at=$(place "$pkg" "$dest")
+                    mkdir -p "$at"
+                    cp -a "$rt/lib/furcate/runtimes/$comp/." "$at"
+                    rm -rf "$rt"
+                    ;;
+                bin/*)
+                    f="$bins/${src#bin/}"
+                    [ "$list" = 1 ] || [ -x "$f" ] || die "missing binary $f"
+                    if [ "$list" = 0 ] && [ "$ed" = each ]; then
+                        got=$(edition_of "$f")
+                        [ "$got" = "$edition" ] || die "$f is the $got edition's ${src#bin/}, not the $edition edition's; lay the binaries out with deploy/edition-bins $edition"
+                    fi
+                    n=$((n + 1))
+                    put "$pkg" "$mode" "$f" "$dest"
+                    ;;
+                *'*'*)
+                    case "$dest" in */) ;; *) die "$src globs, so $dest must end in /" ;; esac
+                    prefix=${src%%\**}
+                    prefix=${prefix%/*}
+                    set +f
+                    found=0
+                    for f in "$repo"/$src; do
+                        [ -f "$f" ] || continue
+                        found=1
+                        n=$((n + 1))
+                        put "$pkg" "$mode" "$f" "$dest${f#"$repo/$prefix/"}"
+                    done
+                    set -f
+                    [ "$found" = 1 ] || die "$src matches nothing"
+                    ;;
+                *)
+                    [ -f "$repo/$src" ] || die "missing $src"
+                    n=$((n + 1))
+                    put "$pkg" "$mode" "$repo/$src" "$dest"
+                    ;;
+            esac
+            ;;
+        *) die "mode must be 644, 755 or link, not $mode" ;;
+    esac
+done < "$1"
+}
+scan "$manifest" open
+if [ "$edition" = full ]; then
+    [ -f "$full_manifest" ] || die "${full_manifest#"$repo/"} is not in this tree; it builds the open edition only"
+    scan "$full_manifest" full
+fi
+set +f
+
+[ "$n" -gt 0 ] || die "nothing selected for $target $edition"
+[ "$list" = 1 ] || echo "release/install: $n file(s) for $target ($edition)" >&2

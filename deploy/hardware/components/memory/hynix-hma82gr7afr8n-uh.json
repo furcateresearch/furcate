@@ -1,0 +1,6 @@
+{
+  "id": "memory/hynix-hma82gr7afr8n-uh",
+  "kind": "memory_module",
+  "identity": { "vendor": "Hynix Semiconductor", "part": "HMA82GR7AFR8N-UH", "_match": "DMI type 17 part number" },
+  "spec": { "size_gb": 16, "type": "DDR4", "speed_mts": 2400, "ranks": 2, "ecc": true, "form": "RDIMM" }
+}

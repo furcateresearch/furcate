@@ -1,0 +1,153 @@
+#!/bin/sh
+# Build the `furcate` system extension: a dm-verity DDI whose root hash is
+# signed by the release key held in a TPM.
+#
+#   os/extensions/furcate/build stage <bin-dir> <out-dir> <version> <arch> [edition]
+#   os/extensions/furcate/build seal  <out-dir> <signature.b64>
+#
+# stage: <bin-dir> holds furcated, furcatectl, furcate-console and
+# furcate-overlay built for <arch> (arm64 or x86-64) from the commit <version>
+# names, laid out for [edition] (open, the default, or full; see
+# deploy/edition-bins). The release install refuses programs whose edition mark
+# does not match it. Run as root on the build host (systemd-repart 255 or newer). Writes
+# <out-dir>/furcate.unsigned.raw, furcate.release (read by the selector before
+# merging) and roothash.
+#
+# The root hash is then signed on a host whose TPM holds the release key, with
+# os/release/tpm-sign (os/build.sh does this over ssh). No key of any kind
+# exists on the build host, not even a throwaway one.
+#
+# seal: writes the signature into the image's signature partition, checks it
+# against deploy/os/furcate-release.crt and produces <out-dir>/furcate.raw and
+# furcate.raw.sha256.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../../.." && pwd)
+cert="$repo/deploy/os/furcate-release.crt"
+
+partition_extent() { # partition_extent <image> <index from 0>: "<start> <size>" in 512-byte sectors
+    sfdisk -J "$1" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]
+p = t["partitions"][int(sys.argv[1])]
+print(p["start"], p["size"])' "$2"
+}
+
+seal() {
+    out=${1:?usage: build seal <out-dir> <signature.b64>}
+    sigfile=${2:?usage: build seal <out-dir> <signature.b64>}
+    img="$out/furcate.unsigned.raw"
+    roothash=$(cat "$out/roothash")
+    work=$(mktemp -d /var/tmp/furcate-seal.XXXXXX)
+    trap 'rm -rf "$work"' EXIT
+    base64 -d < "$sigfile" > "$work/sig.der"
+    printf '%s' "$roothash" > "$work/roothash.txt"
+    openssl smime -verify -inform DER -in "$work/sig.der" -CAfile "$cert" \
+        -purpose any -content "$work/roothash.txt" -binary -out /dev/null
+    fpr=$(openssl x509 -in "$cert" -outform DER | sha256sum | cut -d' ' -f1)
+    python3 -c '
+import base64, json, sys
+print(json.dumps({"rootHash": sys.argv[1], "certificateFingerprint": sys.argv[2],
+                  "signature": base64.b64encode(open(sys.argv[3], "rb").read()).decode()}), end="")
+' "$roothash" "$fpr" "$work/sig.der" > "$work/sig.json"
+    set -- $(partition_extent "$img" 2)
+    start=$1 size=$2
+    [ "$(stat -c %s "$work/sig.json")" -le $((size * 512)) ] || { echo "signature larger than its partition" >&2; exit 1; }
+    dd if=/dev/zero of="$img" bs=512 seek="$start" count="$size" conv=notrunc status=none
+    dd if="$work/sig.json" of="$img" bs=512 seek="$start" conv=notrunc status=none
+    mv "$img" "$out/furcate.raw"
+    (cd "$out" && sha256sum furcate.raw > furcate.raw.sha256)
+    echo "furcate: sealed, roothash $roothash"
+}
+
+cmd=${1:?usage: build stage|seal ...}
+shift
+case "$cmd" in
+    seal) seal "$@"; exit 0 ;;
+    stage) ;;
+    *) echo "usage: build stage|seal ..." >&2; exit 2 ;;
+esac
+
+bins=${1:?usage: build stage <bin-dir> <out-dir> <version> <arch> [edition]}
+out=${2:?}
+version=${3:?}
+arch=${4:?}
+edition=${5:-open}
+case "$edition" in open|full) ;; *) echo "edition must be open or full" >&2; exit 2 ;; esac
+case "$arch" in arm64|x86-64) ;; *) echo "arch must be arm64 or x86-64" >&2; exit 2 ;; esac
+
+for b in furcated furcatectl furcate-console furcate-overlay; do
+    [ -x "$bins/$b" ] || { echo "missing $bins/$b" >&2; exit 1; }
+done
+case "$arch:$(file -b "$bins/furcated")" in
+    arm64:*aarch64*|x86-64:*x86-64*) ;;
+    *) echo "$bins/furcated is not an $arch binary" >&2; exit 1 ;;
+esac
+
+work=$(mktemp -d /var/tmp/furcate-sysext.XXXXXX)
+trap 'rm -rf "$work"' EXIT
+tree="$work/tree"
+mkdir -p "$out"
+
+# 1. The tree: /usr only, exactly the rows of deploy/release/manifest that
+# ship in the board extension. The units and the overlay are shipped, never
+# enabled: an extension carries no .wants links, so nothing here starts until
+# the operator enables it.
+sh "$repo/deploy/release/install" ext "$edition" "$bins" "$tree"
+
+# 2. The release file. ID=_any: systemd matches on ARCHITECTURE only, and
+# Furcate's selector checks FURCATE_REQUIRES_ABI against the booted base,
+# loudly. The file name must be extension-release.<image name>.
+rel="$tree/usr/lib/extension-release.d/extension-release.furcate"
+install -d "$(dirname "$rel")"
+cat > "$rel" <<EOF
+ID=_any
+ARCHITECTURE=$arch
+EXTENSION_RELOAD_MANAGER=1
+FURCATE_REQUIRES_ABI=1
+FURCATE_VERSION=$version
+EOF
+
+# 3. The image: root (erofs) + verity hash + an empty signature partition.
+defs="$work/repart.d"
+mkdir -p "$defs"
+cat > "$defs/10-root.conf" <<'EOF'
+[Partition]
+Type=root
+Format=erofs
+CopyFiles=/usr:/usr
+Verity=data
+VerityMatchKey=root
+Minimize=best
+EOF
+cat > "$defs/20-root-verity.conf" <<'EOF'
+[Partition]
+Type=root-verity
+Verity=hash
+VerityMatchKey=root
+Minimize=best
+EOF
+cat > "$defs/30-root-verity-sig.conf" <<'EOF'
+[Partition]
+Type=root-verity-sig
+SizeMinBytes=16K
+SizeMaxBytes=16K
+EOF
+seed=$(printf '%s' "furcate-$version-$arch" | sha256sum | cut -c1-32 \
+    | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/')
+img="$work/furcate.raw"
+systemd-repart --empty=create --size=auto --dry-run=no --offline=yes \
+    --architecture="$arch" --definitions="$defs" --copy-source="$tree" \
+    --seed="$seed" --json=short "$img" > "$work/repart.json"
+roothash=$(python3 -c '
+import json, sys
+for p in json.load(open(sys.argv[1])):
+    if p.get("roothash"):
+        print(p["roothash"]); break
+' "$work/repart.json")
+case "$roothash" in ""|*[!0-9a-f]*) echo "no root hash from repart" >&2; exit 1 ;; esac
+
+cp "$img" "$out/furcate.unsigned.raw"
+cp "$rel" "$out/furcate.release"
+printf "%s" "$roothash" > "$out/roothash"
+echo "furcate $version ($arch): staged, roothash $roothash"

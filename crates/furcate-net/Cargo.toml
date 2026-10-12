@@ -1,0 +1,20 @@
+[package]
+name = "furcate-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Authenticated transport between Furcate nodes: signed envelopes, short-lived credentials, replay defence."
+
+[dependencies]
+furcate-identity = { path = "../furcate-identity" }
+furcate-policy = { path = "../furcate-policy" }
+anyhow.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+p256.workspace = true

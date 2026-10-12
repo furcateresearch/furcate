@@ -1,0 +1,79 @@
+{
+ "leaf_id": "1d3d319e958177e5a4f2d8fb58c11cfe",
+ "parent": "pi-lab",
+ "assurance": "soft",
+ "public_key": "04749d5173ee808e288b9aca1d31293c6af71d9cf83e819e562c296213e40cdc5499984bda9ad16b84abb6f68c286906173299c98eeea1b2916a573b1d240e6be9",
+ "attached_at": 1791783303,
+ "leaf": {
+  "public_key_type": "ecdsa-p256-uncompressed",
+  "leaf_id_full_sha256": "1d3d319e958177e5a4f2d8fb58c11cfe0df9df66f4a3d4389b951280dc7c9774",
+  "leaf_id_rule": "first 16 bytes of SHA-256 of the public key",
+  "assurance_reported": "silicon-fingerprint/development",
+  "assurance_note": "Key derived from the SRAM fingerprint on a development ESP32 (D0WD-V3 rev 3.1): no secure boot, no flash encryption, no fuses burned. Recorded as soft so it is never overclaimed.",
+  "hardware": "ESP32-D0WD-V3 rev 3.1, 4 MB flash, CP210x USB serial"
+ },
+ "trust": {
+  "operator_keys": [
+   {
+    "name": "fl-operator",
+    "holder": "node-b TPM",
+    "public_key": "0482414a2a7ce2e139117f5881607b3dc1887741ccd12f29e03846ae9080a6561050b3da7f9286ebc5609b7b4afe4716eafff5eb61159fb0fc722194df80d1fe46"
+   }
+  ],
+  "release_keys": [
+   {
+    "index": 0,
+    "name": "fl-release-s1",
+    "holder": "node-a TPM",
+    "public_key": "0484e7e84763d69093f31de2d0a1532fa2e60369b81fa9885954d9dcf1feec944db9fa955b291eb3e47f134295ed9918300af7ccde6c6437eaf2dabda837e38147"
+   },
+   {
+    "index": 1,
+    "name": "fl-release-s2",
+    "holder": "node-b TPM",
+    "public_key": "0428f3af83349536a7dee0fe1efd91da46754ebf6bffc6689b3b50f9109aec14edee46d6ec9dc4d7d723aa3960e6572f9546ad2952dfdf5d1846965c6f41a376c2"
+   }
+  ],
+  "release_threshold": 2,
+  "min_grant_generation": 1
+ },
+ "firmware": {
+  "version": "0.1.9",
+  "seq": 9,
+  "min_seq": 9,
+  "running": "ota_1",
+  "image_sha256": "7abb714fa9da5ff0b0eaffdb1c8460b69091804fbee7651abc672d3856c8d1b3"
+ },
+ "capabilities": {
+  "model_server": {
+   "runtime": "tflite-micro",
+   "slots": 2,
+   "models_loaded": [
+    {
+     "slot": 0,
+     "id": "person-detect",
+     "version": 3,
+     "state": "good"
+    }
+   ]
+  },
+  "sensors": [],
+  "ota": true,
+  "signed_config": true
+ },
+ "link": {
+  "protocol": "FL1",
+  "wifi": {
+   "transport": "tcp",
+   "direction": "leaf dials the gateway",
+   "endpoint": "192.0.2.10:7781",
+   "ssid": "example-2g",
+   "state": "joined"
+  },
+  "usb": {
+   "gateway_device": "/dev/ttyUSB0",
+   "baud": 115200,
+   "role": "power, flashing, recovery, fallback session"
+  }
+ }
+}

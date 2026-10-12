@@ -1,0 +1,3 @@
+# Services this extension ships, enabled as a base would enable them.
+enable iwd.service
+enable bluetooth.service

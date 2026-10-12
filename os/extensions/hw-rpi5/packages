@@ -1,0 +1,12 @@
+# Ubuntu 26.04 (resolute) packages carried by the hw-rpi5 extension: the
+# board's userspace for Wi-Fi, Bluetooth, audio, I2C, GPIO and the camera,
+# and `wg` for the overlay's interface manager (furcate-wg).
+# The base image installs the same list (mkosi.conf, mkosi.conf.d/10-rpi5.conf);
+# this extension brings it to a base that predates it, without a reinstall.
+iwd
+wireless-regdb
+bluez
+alsa-utils
+i2c-tools
+gpiod
+wireguard-tools

@@ -1,0 +1,56 @@
+[package]
+name = "furcatectl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Operator CLI for Furcate."
+
+[[bin]]
+name = "furcatectl"
+path = "src/main.rs"
+
+[dependencies]
+furcate-sched = { path = "../furcate-sched" }
+furcate-authn = { path = "../furcate-authn" }
+furcate-api = { path = "../furcate-api" }
+furcate-paths = { path = "../furcate-paths" }
+furcate-identity = { path = "../furcate-identity" }
+furcate-host = { path = "../furcate-host" }
+furcate-topology = { path = "../furcate-topology" }
+furcate-sense = { path = "../furcate-sense" }
+furcate-killswitch = { path = "../furcate-killswitch" }
+furcate-breakglass = { path = "../furcate-breakglass" }
+furcate-session = { path = "../furcate-session" }
+furcate-ledger = { path = "../furcate-ledger" }
+furcate-siteview = { path = "../furcate-siteview" }
+furcate-attest = { path = "../furcate-attest" }
+furcate-machine = { path = "../furcate-machine" }
+furcate-vault = { path = "../furcate-vault" }
+anyhow.workspace = true
+hex.workspace = true
+furcate-net = { path = "../furcate-net" }
+# For administration::Appointment — the client signs exactly the bytes the
+# site verifies, from one definition rather than two that drift apart.
+furcate-mesh = { path = "../furcate-mesh" }
+furcate-deploy = { path = "../furcate-deploy" }
+furcate-policy = { path = "../furcate-policy" }
+serde_norway.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+
+[features]
+# The open build is the default. Everything Apache-2.0 must compile with no
+# feature flags at all — that is what makes the licence boundary checkable by the
+# compiler rather than by reading LICENSING.md and hoping.
+default = []
+tss = ["furcate-identity/tss"]
+
+# An edition adds commands through `furcatectl::extension`, from a crate that
+# depends on this one. Nothing here names it.
+
+[dev-dependencies]
+p256.workspace = true

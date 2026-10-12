@@ -1,0 +1,17 @@
+[Unit]
+Description=Furcate OS: first boot (grow storage, host keys, node identity)
+Documentation=file:/usr/share/doc/furcate-os/README.md
+ConditionPathExists=!/var/lib/furcate-os/firstboot.done
+After=systemd-sysext.service local-fs.target systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=getty.target serial-getty@ttyAMA10.service ssh.service furcated.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/furcate-os/firstboot
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=multi-user.target

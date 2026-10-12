@@ -1,0 +1,102 @@
+[Unit]
+Description=Furcate node agent
+Documentation=https://github.com/furcateresearch/furcate
+# The agent needs its root of trust, and nothing else. It must start even when
+# the site controller is absent: staying up without a controller is the
+# designed behaviour, not a degraded one.
+After=network.target
+Wants=network.target
+
+[Service]
+# Held in `activating` until the socket is bound, not merely until the process
+# is spawned. This one reads its identity from the TPM before binding, and
+# under Type=simple systemd reported `active` for that whole window while
+# every request was refused. The site controller had the same problem far
+# worse — 47 seconds of it on this hardware.
+Type=notify
+# Long enough for a slow TPM with room to spare; a hang is still caught.
+TimeoutStartSec=180
+User=furcate
+Group=furcate
+Environment=FURCATE_LISTEN=127.0.0.1:7616
+# Per-host overrides. Absent is fine: the defaults above are a working
+# single-machine configuration.
+EnvironmentFile=-/etc/furcate/env
+# Which units and containers this site cannot do without. Declared per host
+# rather than inferred: nothing in a process table says which of them is
+# load-bearing, and guessing would either cordon a node over a scratch
+# container or stay quiet when a validator dies.
+EnvironmentFile=-/etc/furcate/workloads.env
+# Backups this host expects and the configuration files whose contents decide
+# what it does. Both declared per host: a discovered set would drift on every
+# package update and teach everyone to ignore it.
+EnvironmentFile=-/etc/furcate/custody.env
+ExecStart=/usr/sbin/furcated
+Restart=always
+RestartSec=5
+
+# The agent reads the TPM and its own state. It does not need anything else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# Denied outright, not merely read-only. Nothing resolves a path from a home
+# directory any more, so there is no longer a reason for this service to be able
+# to see one — and the identity key that used to live in one is now state.
+ProtectHome=yes
+# Declared here so the directory's lifecycle stays attached to the service that
+# owns it. Mode 0750: the privileged helpers read the plan and the intent from
+# here as root, and nothing else has business in it.
+StateDirectory=furcate
+# 0755, not 0750, and this is load-bearing.
+#
+# The overlay's privileged helper holds CAP_NET_ADMIN and nothing else. Dropping
+# the bounding set costs it CAP_DAC_OVERRIDE, so it cannot traverse a directory
+# it does not own — and this is the exchange point where the agent writes the
+# WireGuard plan for it to apply. At 0750 the helper gets EACCES on a directory
+# root could otherwise read, the overlay silently stops reconciling, and the
+# cause is invisible from either side alone.
+#
+# The hand-installed unit had this right and the packaged one regressed it. What
+# is inside stays 0640 by default; the directory itself has to be traversable.
+StateDirectoryMode=0755
+ConfigurationDirectory=furcate
+# Declared, not inherited. systemd creates this directory when it is missing and
+# otherwise leaves whatever mode it finds — so a machine where /etc/furcate
+# already existed at 0700 gives the service a directory it cannot traverse, and
+# every configuration file reads as absent. That happened on a site controller:
+# it ran compiled-in policy while the operator's file sat beside it.
+#
+# 0755 because nothing secret lives here. Keys are sealed to the TPM and live in
+# the state directory; what is here is an operator's declarations, which several
+# services and a human all need to read.
+ConfigurationDirectoryMode=0755
+# /run/furcate belongs to tmpfiles (furcate-runtime.conf), never to a unit.
+# RuntimeDirectory= re-chowns it recursively on EVERY start, so one User=furcate
+# unit declaring it locked every root unit without CAP_DAC_OVERRIDE out of the
+# directory: furcate-wg failed "cannot create /run/furcate/wg.json.tmp" every
+# 10s on three hosts. The directory is root:furcate 2775; write via the group.
+ReadWritePaths=/run/furcate
+UMask=0002
+# Binding to an overlay address that does not exist yet is a start-time
+# failure a restart policy does rescue, because the address appears within
+# seconds and the next attempt succeeds.
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+DeviceAllow=/dev/tpmrm0 rw
+# The management controller, read-only. It is the only way to see the fans and
+# the twelve temperatures Linux does not expose — this machine reported one
+# sensor while six fans ran at eighteen thousand RPM.
+# /dev/ipmi0 is deliberately NOT allowed. The management controller can power
+# off the chassis, and the agent's own design keeps it away from that: it reads
+# fans and temperatures from /run/furcate/cooling.txt, which the privileged
+# reader publishes, and only ever checks whether /dev/ipmi0 *exists*. The
+# device is root-only (0600) in any case, so this line granted nothing while
+# suggesting the agent does something it must not.
+# Reading the kernel log needs journal access. Granted as a group rather than
+# by relaxing the sandbox, so the agent gains one readable thing rather than a
+# class of capability.
+SupplementaryGroups=systemd-journal
+
+[Install]
+WantedBy=multi-user.target

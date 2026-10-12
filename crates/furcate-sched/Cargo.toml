@@ -1,0 +1,12 @@
+[package]
+name = "furcate-sched"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One scheduler for everything that runs on a timer."
+
+[dependencies]
+furcate-host = { path = "../furcate-host" }
+serde.workspace = true
+serde_json.workspace = true

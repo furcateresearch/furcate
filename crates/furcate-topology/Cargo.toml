@@ -1,0 +1,24 @@
+[package]
+name = "furcate-topology"
+version.workspace = true
+edition.workspace = true
+description = "The failure-domain tree and placement rules."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+ed25519-dalek.workspace = true
+furcate-authn = { path = "../furcate-authn" }
+furcate-identity = { path = "../furcate-identity" }
+furcate-policy = { path = "../furcate-policy" }
+furcate-sense = { path = "../furcate-sense" }
+sha2.workspace = true
+
+
+[dev-dependencies]
+p256.workspace = true
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Sign a short message with this host's TPM-held release key.
+#
+# Runs ON the signing host, as root, fed through ssh so nothing is installed
+# there:   ssh <signer> "sudo sh -s -- <base64 message>" < os/release/tpm-sign
+#
+# Prints the detached PKCS#7 signature (DER, base64, one line). The key is a
+# TSS2 key blob sealed to that host's TPM: it never leaves the TPM, and this
+# script never sees key material. The signature is checked against the
+# host's certificate before it is printed.
+#
+# Today's signer is node-b (/etc/furcate/signing), whose certificate is
+# deploy/os/furcate-release.crt. Threshold signing by two hosts replaces this
+# single signer (os/README.md, "Release signing").
+set -eu
+KEYDIR=${FURCATE_SIGNING_DIR:-/etc/furcate/signing}
+KEY="$KEYDIR/verity-sign.key.pem"
+CRT="$KEYDIR/verity-sign.crt.pem"
+[ -r "$KEY" ] && [ -r "$CRT" ] || { echo "tpm-sign: no signing key in $KEYDIR" >&2; exit 1; }
+grep -q "TSS2 PRIVATE KEY" "$KEY" || { echo "tpm-sign: $KEY is not a TPM-held key; refusing" >&2; exit 1; }
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+printf '%s' "${1:?usage: tpm-sign <base64 message>}" | base64 -d > "$work/msg"
+openssl smime -sign -provider tpm2 -provider default -md sha256 -binary \
+    -signer "$CRT" -inkey "$KEY" -in "$work/msg" -outform DER -out "$work/sig.der"
+openssl smime -verify -inform DER -in "$work/sig.der" -CAfile "$CRT" -purpose any \
+    -content "$work/msg" -binary -out /dev/null 2>/dev/null \
+    || { echo "tpm-sign: the signature just made does not verify" >&2; exit 1; }
+base64 -w0 "$work/sig.der"
+echo

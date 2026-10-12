@@ -1,0 +1,8 @@
+[package]
+name = "furcate-paths"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Where Furcate's state, configuration and runtime files live"
+
+[dependencies]

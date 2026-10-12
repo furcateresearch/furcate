@@ -1,0 +1,31 @@
+# Furcate OS, Raspberry Pi 5. One copy per boot slot (partition 2 = A, 3 = B).
+[all]
+arm_64bit=1
+kernel=vmlinuz
+cmdline=cmdline.txt
+initramfs initrd.img followkernel
+dtoverlay=vc4-kms-v3d
+disable_overscan=1
+# The 40-pin header's I2C bus (GPIO 2/3) as /dev/i2c-1.
+dtparam=i2c_arm=on
+
+# The SoC watchdog. systemd arms it (RuntimeWatchdogSec=30s): a hung board
+# resets itself instead of staying down until someone pulls the power.
+dtparam=watchdog=on
+
+# Serial console on the Pi 5 debug UART connector (Raspberry Pi Debug Probe).
+enable_uart=1
+
+# USB boot media: let USB devices draw up to 1.6 A with supplies that do not
+# announce 5 A (the official 27 W supply does). This does not make a weaker
+# supply stronger: with one that announces 3 A or less, undervoltage under
+# load is the supply, and the fix is the 27 W supply (os/README.md, "Power").
+# PSU_MAX_CURRENT is never set to claim a supply the board does not have.
+usb_max_current_enable=1
+
+# Hardware identity. The firmware blocks raw reads of the OTP device private
+# key from the first instruction of every boot, so the key is only ever used
+# through the firmware (sign, HMAC) and never handed to Linux. This does not
+# stop someone who can edit this file and reboot: see os/README.md, "What an
+# attacker can read".
+lock_device_private_key=1

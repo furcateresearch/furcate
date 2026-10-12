@@ -1,0 +1,16 @@
+[Unit]
+Description=Furcate OS boot trail: userspace reached
+DefaultDependencies=no
+After=local-fs.target systemd-udev-trigger.service
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionKernelCommandLine=furcate.slot
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/libexec/furcate-os/breadcrumb userspace
+TimeoutStartSec=45
+
+# Enabled from /usr (sysinit.target.wants in this directory), not /etc: a
+# base A/B update replaces /usr and keeps the state partition's /etc, so an
+# /etc symlink would never reach a board updated in place.

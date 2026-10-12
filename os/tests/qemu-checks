@@ -1,0 +1,191 @@
+#!/bin/sh
+# Checks that run INSIDE the guest during os/tests/qemu-boot. Not part of the
+# image: qemu-boot copies this file onto the test's own copy of the disk and
+# starts it from the kernel command line (systemd.run). It prints
+#   FURCATE-CHECK PASS|FAIL|SKIP <name>
+# on the console and ends with FURCATE-CHECKS-DONE.
+#
+# Phase 1 (first boot): health layer, journal upload, power monitor, signing
+# broker, tampered extensions without a checksum, board userspace. Then, if
+# an emulated watchdog is armed, it hangs the kernel (panic with panic=0 on
+# the qemu command line) so only the watchdog can bring the machine back.
+# Phase 2 (the boot after): the reboot happened and the journal of the hung
+# boot, synced every 5 s, kept its last lines.
+exec > /dev/console 2>&1
+P=/var/lib/furcate-qemu-checks
+mkdir -p "$P"
+pass() { echo "FURCATE-CHECK PASS $*"; }
+fail() { echo "FURCATE-CHECK FAIL $*"; }
+skip() { echo "FURCATE-CHECK SKIP $*"; }
+ok() { name=$1; shift; if "$@" >/dev/null 2>&1; then pass "$name"; else fail "$name"; fi; }
+has() { printf '%s' "$1" | grep -q -- "$2"; }
+
+systemctl is-system-running --wait >/dev/null 2>&1
+sleep 12   # a couple of power readings
+
+if [ -f "$P/hung" ]; then
+    marker=$(cat "$P/hung")
+    pass "the machine came back after the hang (watchdog reset)"
+    if journalctl -b -1 -o cat 2>/dev/null | grep -q "$marker"; then
+        pass "the hung boot's last journal lines survived (persistent, 5 s sync)"
+    else
+        fail "the hung boot's last journal lines are missing"
+    fi
+    rm -f "$P/hung"
+    echo "FURCATE-CHECKS-DONE"
+    exit 0
+fi
+
+# 1. Watchdog and journald configuration.
+[ "$(systemctl show -p RuntimeWatchdogUSec --value)" = 30s ] && pass "RuntimeWatchdogSec=30s" || fail "RuntimeWatchdogSec is $(systemctl show -p RuntimeWatchdogUSec --value)"
+[ "$(systemctl show -p RebootWatchdogUSec --value)" = 10min ] && pass "RebootWatchdogSec=10min" || fail "RebootWatchdogSec is $(systemctl show -p RebootWatchdogUSec --value)"
+ok "journal is persistent (/var/log/journal)" test -d /var/log/journal/"$(cat /etc/machine-id)"
+ok "journald SyncIntervalSec=5s" sh -c 'systemd-analyze cat-config systemd/journald.conf | grep -qx "SyncIntervalSec=5s"'
+ok "journald SystemMaxUse=256M" sh -c 'systemd-analyze cat-config systemd/journald.conf | grep -qx "SystemMaxUse=256M"'
+
+# 2. Journal upload: off until set, refuses URLs off the overlay, runs with one.
+ok "journal upload enabled, off without a URL" sh -c \
+    'systemctl is-enabled -q systemd-journal-upload.service && ! systemctl is-active -q systemd-journal-upload.service && journalctl -b -u systemd-journal-upload -o cat | grep -q "journal upload off: no JOURNAL_REMOTE_URL"'
+ok "journal receiver not running on the node" sh -c '! systemctl is-active -q systemd-journal-remote.socket'
+cp /etc/furcate/node.conf "$P/node.conf.orig"
+echo "JOURNAL_REMOTE_URL=http://192.0.2.31:19532/upload" >> /etc/furcate/node.conf
+sleep 4
+ok "journal upload refuses a URL off the overlay" sh -c \
+    'journalctl -b -u systemd-journal-upload -o cat | grep -q "is not an http:// URL on the overlay" && ! systemctl is-active -q systemd-journal-upload.service'
+cp "$P/node.conf.orig" /etc/furcate/node.conf
+echo "JOURNAL_REMOTE_URL=http://10.90.0.20:19532/upload" >> /etc/furcate/node.conf
+sleep 6
+ok "journal upload starts for an overlay URL (follows node.conf)" sh -c \
+    'journalctl -b -u systemd-journal-upload -o cat | grep -q "journal upload to http://10.90.0.20:19532/upload"'
+st=$(furcate-os status)
+has "$st" "journal     persistent.*upload to http://10.90.0.20:19532/upload" && pass "status shows the journal upload" || fail "status journal line: $(printf '%s' "$st" | grep '^journal')"
+cp "$P/node.conf.orig" /etc/furcate/node.conf
+sleep 4
+systemctl stop systemd-journal-upload.service 2>/dev/null
+
+# 3. Power monitor (qemu's device tree carries a supply node; no firmware).
+s=$(cat /run/furcate-os/power.status 2>/dev/null)
+has "$s" '"supply_max_current_ma":1500,' && pass "power.status: supply max current from the device tree" || fail "power.status: $s"
+has "$s" '"undervoltage_now":null' && has "$s" '"load_shed":false' && pass "power.status: no firmware reading is null, no shedding" || fail "power.status flags: $s"
+ok "power readings every 5 s" sh -c 'a=$(sed -n "s/.*\"ts\":\([0-9]*\).*/\1/p" /run/furcate-os/power.status); sleep 6; b=$(sed -n "s/.*\"ts\":\([0-9]*\).*/\1/p" /run/furcate-os/power.status); [ "$b" -gt "$a" ]'
+n=$(journalctl -b -o cat _PID=1 2>/dev/null | grep -c "furcate-power.service\|power and throttling reading")
+[ "$n" = 0 ] && pass "the 5 s runs do not fill the journal" || fail "$n manager lines about furcate-power.service in the journal"
+has "$st" "power       supply 1500 mA" && pass "status shows power" || fail "status power line missing"
+has "$st" "watchdog    " && pass "status shows the watchdog" || fail "status watchdog line missing"
+
+# 4. Signing broker.
+sock=/run/furcate-os/fwcrypto.sock
+[ "$(stat -c '%U:%G %a' "$sock" 2>/dev/null)" = "root:furcate-fwcrypto 660" ] && pass "broker socket root:furcate-fwcrypto 0660" || fail "broker socket: $(stat -c '%U:%G %a' "$sock" 2>&1)"
+r=$(furcate-fwcrypto pubkey)
+has "$r" '"ok":false,"error":"the firmware returned no public key' && pass "broker answers root (no firmware in qemu: an error, not a hang)" || fail "broker pubkey as root: $r"
+r=$(echo '{"op":"privkey","key_id":1}' | furcate-fwcrypto request)
+has "$r" '"error":"only sign and pubkey are served"' && pass "broker refuses other operations" || fail "privkey: $r"
+r=$(echo '{"op":"sign","key_id":2,"alg":"ecdsa-p256-sha256","msg_b64":"aGk="}' | furcate-fwcrypto request)
+has "$r" '"error":"only key_id 1 is served"' && pass "broker refuses other keys" || fail "key 2: $r"
+r=$(echo '{"op":"sign","key_id":1,"alg":"rsa","msg_b64":"aGk="}' | furcate-fwcrypto request)
+has "$r" '"error":"alg must be ecdsa-p256-sha256"' && pass "broker refuses other algorithms" || fail "alg: $r"
+r=$(echo '{"op":"sign","key_id":1,"alg":"ecdsa-p256-sha256","msg_b64":"a!!="}' | furcate-fwcrypto request)
+has "$r" '"error":"msg_b64 is not base64' && pass "broker refuses bad base64" || fail "base64: $r"
+r=$(head -c 1048577 /dev/zero | furcate-fwcrypto sign 2>&1)
+has "$r" "over 1 MiB" && pass "client refuses a message over 1 MiB" || fail "1 MiB: $r"
+big=$(head -c 1048577 /dev/zero | base64 -w0)
+r=$(printf '{"op":"sign","key_id":1,"alg":"ecdsa-p256-sha256","msg_b64":"%s"}\n' "$big" | furcate-fwcrypto request)
+has "$r" '"error":"message larger than 1 MiB"' && pass "broker refuses a message over 1 MiB" || fail "broker 1 MiB: $r"
+r=$(echo hello | setpriv --reuid=furcate --regid=furcate --groups=furcate-fwcrypto furcate-fwcrypto sign 2>&1)
+has "$r" '"error":"the firmware did not sign' && pass "broker serves the furcate user (peer credentials)" || fail "furcate user: $r"
+r=$(setpriv --reuid=nobody --regid=furcate-fwcrypto --groups=furcate-fwcrypto furcate-fwcrypto pubkey 2>&1)
+has "$r" '"error":"peer not allowed"' && pass "broker refuses another user in the group (SO_PEERCRED)" || fail "nobody in group: $r"
+r=$(setpriv --reuid=nobody --regid=nogroup --clear-groups furcate-fwcrypto pubkey 2>&1)
+has "$r" "Permission denied" && pass "socket refuses users outside the group" || fail "nobody: $r"
+ok "firmware mailbox not granted without the transition flag" sh -c \
+    'grep -q "TEST==\"/etc/furcate/fwcrypto-direct\"" /usr/lib/udev/rules.d/60-furcate-fwcrypto.rules && [ ! -e /etc/furcate/fwcrypto-direct ]'
+has "$st" "fwcrypto    broker active" && pass "status shows the broker" || fail "status fwcrypto line: $(printf '%s' "$st" | grep '^fwcrypto')"
+
+# 5. Tampered extension images WITHOUT a checksum file.
+ver=$(awk '$1 == "furcate" {print $2}' /run/furcate-os/extensions.selected)
+src=/var/lib/furcate/extensions/furcate/$ver
+t=/var/tmp/tamper; rm -rf "$t"; mkdir -p "$t"
+cp "$src/furcate.raw" "$t/furcate.raw"
+sed "s/^FURCATE_VERSION=.*/FURCATE_VERSION=$ver.t/" "$src/furcate.release" > "$t/furcate.release"
+ok "an untampered copy verifies block by block" /usr/libexec/furcate-os/extension-verify "$t/furcate.raw"
+start=$(sfdisk -d "$t/furcate.raw" | awk '/type=B921B045-1DF0-41C3-AF44-4C6F280D3FAE/ {sub(/.*start= */, ""); sub(/,.*/, ""); print}')
+off=$((start * 512 + 4096 * 7 + 100))
+b=$(dd if="$t/furcate.raw" bs=1 skip="$off" count=1 status=none | od -An -tu1 | tr -d ' ')
+printf "\\$(printf '%03o' $(( (b + 1) % 256 )))" | dd of="$t/furcate.raw" bs=1 seek="$off" conv=notrunc status=none
+ok "one byte of the data partition changed" sh -c "! cmp -s '$t/furcate.raw' '$src/furcate.raw'"
+out=$(furcate-os extension install "$t" 2>&1); rc=$?
+if [ "$rc" != 0 ] && has "$out" "does not match its root hash"; then pass "install refuses the tampered image with no checksum file"; else fail "install of the tampered image: rc $rc: $out"; fi
+echo "  $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
+[ ! -e "/var/lib/furcate/extensions/furcate/$ver.t" ] && grep -qx "furcate $ver" /run/furcate-os/extensions.selected \
+    && grep -q "^ok" /run/furcate-os/extensions.status && pass "store, selection and merge unchanged" || fail "state changed after the refusal"
+# At boot: a tampered image placed in the store directly (not through install).
+mkdir -p "/var/lib/furcate/extensions/furcate/$ver.t"
+cp "$t/furcate.raw" "$t/furcate.release" "/var/lib/furcate/extensions/furcate/$ver.t/"
+/usr/libexec/furcate-os/extension-select 2>/dev/null
+if grep -qx "furcate $ver" /run/furcate-os/extensions.selected && grep -q "refusing furcate $ver.t: the image does not match its root hash" /run/furcate-os/degraded; then
+    pass "the boot selector refuses a tampered image in the store and keeps the good one"
+else
+    fail "selector: $(cat /run/furcate-os/extensions.selected /run/furcate-os/degraded 2>&1 | tr '\n' ' ')"
+fi
+rm -rf "/var/lib/furcate/extensions/furcate/$ver.t" "$t"
+/usr/libexec/furcate-os/extension-select 2>/dev/null
+[ ! -f /run/furcate-os/degraded ] && pass "selection clean again" || fail "still degraded"
+
+# 6. The /etc bridges are retired by the base.
+mkdir -p /etc/systemd/system/systemd-sysext.service.d /etc/systemd/system/systemd-networkd.service.d
+echo '# bridge' > /etc/systemd/system/systemd-sysext.service.d/20-post-merge-bridge.conf
+echo '# bridge' > /etc/systemd/system/systemd-networkd.service.d/20-after-sysext-bridge.conf
+systemd-tmpfiles --remove /usr/lib/tmpfiles.d/furcate-os.conf 2>/dev/null
+ok "the two /etc bridges are removed by the base" sh -c \
+    '[ ! -e /etc/systemd/system/systemd-sysext.service.d/20-post-merge-bridge.conf ] && [ ! -e /etc/systemd/system/systemd-networkd.service.d/20-after-sysext-bridge.conf ]'
+ok "post-merge runs from the base drop-in" sh -c 'systemctl cat systemd-sysext.service | grep -q "ExecStartPost=-/usr/libexec/furcate-os/post-merge"'
+ok "networkd ordered after systemd-sysext" sh -c 'systemctl show -p After --value systemd-networkd.service | grep -q systemd-sysext.service'
+
+# 7. Board userspace and boot files.
+ok "Hailo PCIe module for the running kernel" modinfo -n hailo_pci
+ok "Hailo firmware" test -s /usr/lib/firmware/hailo/hailo8_fw.bin
+ok "hailortcli runs" hailortcli --version
+ok "rpicam-apps runs" rpicam-hello --version
+ok "Wi-Fi, Bluetooth, audio, I2C, GPIO tools" sh -c 'command -v iwctl && command -v bluetoothctl && command -v aplay && command -v i2cdetect && command -v gpiodetect'
+ok "pinned bootloader release matches its sha256" sh -c \
+    '. /usr/lib/furcate-os/rpi5/eeprom/release; cd /usr/lib/furcate-os/rpi5/eeprom && echo "$IMAGE_SHA256  $IMAGE" | sha256sum -c --quiet && echo "$RECOVERY_SHA256  recovery.bin" | sha256sum -c --quiet'
+r=$(furcate-os eeprom-update 2>&1)
+has "$r" "cannot read the running bootloader version" && pass "eeprom-update stops without the firmware (stages nothing)" || fail "eeprom-update: $r"
+m=$(mktemp -d); mount -o ro /dev/disk/by-partlabel/boot-a "$m"
+ok "config.txt: dtparam=watchdog=on" grep -qx "dtparam=watchdog=on" "$m/config.txt"
+ok "config.txt: header I2C" grep -qx "dtparam=i2c_arm=on" "$m/config.txt"
+ok "overlay_map.dtb and hat_map.dtb in the boot slot" test -s "$m/overlays/overlay_map.dtb" -a -s "$m/overlays/hat_map.dtb"
+ok "config.txt never claims a supply" sh -c "! grep -qi '^[^#]*psu_max_current' '$m/config.txt'"
+umount "$m"; rmdir "$m"
+ok "i2c-dev loads at boot" sh -c 'grep -qx i2c-dev /usr/lib/modules-load.d/furcate-os.conf'
+
+# 7b. Packet filter: mechanism only.
+ok "nf_tables loaded at boot" sh -c 'grep -q "^nf_tables " /proc/modules'
+ok "nftables.service disabled" sh -c '! systemctl is-enabled -q nftables.service'
+r=$(nft list ruleset 2>&1); rc=$?
+[ "$rc" = 0 ] && [ -z "$r" ] && pass "nft list ruleset works and is empty" || fail "nft list ruleset: rc $rc: $r"
+
+# 8. The watchdog brings a hung machine back. On the Pi the SoC watchdog is
+# built into the kernel and armed from boot. qemu's watchdog sits on PCIe,
+# whose host driver this kernel has as a module that nothing loads on the
+# virt board, so the checks load it and have systemd re-arm (daemon-reexec).
+w=/sys/class/watchdog/watchdog0
+if [ ! -d "$w" ]; then
+    modprobe pci-host-generic 2>/dev/null; modprobe i6300esb 2>/dev/null
+    sleep 2
+    systemctl daemon-reexec
+    sleep 3
+fi
+if [ -d "$w" ] && [ "$(cat "$w/state" 2>/dev/null)" = active ]; then
+    pass "hardware watchdog armed by systemd: $(cat "$w/identity"), timeout $(cat "$w/timeout")s"
+    marker="furcate-qemu-checks-marker-$(od -An -tx8 -N8 /dev/urandom | tr -d ' ')"
+    echo "$marker" > "$P/hung"; sync
+    logger -t furcate-qemu-checks "$marker"
+    sleep 7    # longer than SyncIntervalSec=5s
+    echo "FURCATE-CHECK INFO hanging the kernel now (panic, panic=0: no self-reboot)"
+    echo 1 > /proc/sys/kernel/sysrq
+    echo c > /proc/sysrq-trigger
+    sleep 600
+fi
+skip "watchdog reset: no armed watchdog in this guest ($(ls /sys/class/watchdog 2>/dev/null | tr '\n' ' '))"
+echo "FURCATE-CHECKS-DONE"

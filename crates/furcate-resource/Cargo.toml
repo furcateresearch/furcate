@@ -1,0 +1,12 @@
+[package]
+name = "furcate-resource"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pressure, control-group accounting, and limits that were set by guessing."
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true

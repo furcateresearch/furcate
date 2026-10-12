@@ -1,0 +1,16 @@
+{
+  "id": "fan/fujitsu-c740-fans",
+  "kind": "fan",
+  "layout": {
+    "gfx": ["FAN1 GFX", "FAN2 GFX", "FAN3 GFX"],
+    "system": ["FAN4 SYS", "FAN5 SYS", "FAN6 SYS"]
+  },
+  "observed_rpm": { "gfx": [9800, 10000], "system": [19200, 19200] },
+  "control": {
+    "by": "bmc",
+    "by_operator": false,
+    "_why": "see bmc/fujitsu-irmc-s4 — the controller refuses the OEM fan command outright. Nothing in the operating system can move these."
+  },
+  "power_w": 38,
+  "_note": "the single largest consumer in this machine, larger than the processor it is cooling."
+}

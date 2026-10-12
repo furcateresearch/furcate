@@ -1,0 +1,119 @@
+#!/bin/sh
+# One power reading, run every 5 s by furcate-power.timer.
+#
+# Writes /run/furcate-os/power.status (JSON, replaced atomically):
+#   ts, supply_max_current_ma, usb_high_current   what the firmware negotiated
+#                                                  with the supply (device tree)
+#   undervoltage_now, undervoltage_since_boot,
+#   freq_capped_now, throttled_now,
+#   soft_temp_limit_now, throttled_raw             vcgencmd get_throttled
+#   ext5v_v                                        vcgencmd pmic_read_adc EXT5V_V
+#   soc_temp_c                                     thermal zone 0
+#   load_shed, shed_since, cpu_max_khz             this monitor's load shedding
+# A reading this board cannot make is null.
+#
+# Load shedding: while the supply is under voltage the CPUs are capped
+# (scaling_max_freq, FURCATE_POWER_SHED_KHZ, default 1500000) and
+# /run/furcate-os/shed-load exists, which the model server reads as "stop
+# taking work". When undervoltage has been clear for 60 s the caps are put
+# back and the file is removed. Changes of state are logged (journal).
+#
+# It never tells the firmware the supply is better than it is (no
+# PSU_MAX_CURRENT, no usb_max_current_enable): the fix for undervoltage is a
+# supply that delivers 5 A at 5.1 V (the official 27 W supply).
+#
+# FURCATE_POWER_ROOT prefixes /proc, /sys and /run, and FURCATE_POWER_VCGENCMD
+# names vcgencmd, for os/tests/power-monitor.
+set -u
+R=${FURCATE_POWER_ROOT:-}
+VC=${FURCATE_POWER_VCGENCMD:-vcgencmd}
+RUN=$R/run/furcate-os
+SHED_KHZ=${FURCATE_POWER_SHED_KHZ:-1500000}
+CLEAR_S=${FURCATE_POWER_CLEAR_S:-60}
+now=${FURCATE_POWER_NOW:-$(date +%s)}
+mkdir -p "$RUN"
+state="$RUN/power.state"
+log() { echo "<$1>furcate-power: $2" >&2; }
+
+# Persisted between runs (tmpfs): previous flags, shedding, saved caps.
+p_uv=""; p_cap=""; p_thr=""; p_soft=""; shed=0; shed_since=""; clear_since=""
+[ -f "$state" ] && . "$state"
+
+u32() { [ -f "$1" ] && od -An -tu4 --endian=big -N4 "$1" 2>/dev/null | tr -d ' \n'; }
+maxcur=$(u32 "$R/proc/device-tree/chosen/power/max_current")
+usbhc=$(u32 "$R/proc/device-tree/chosen/power/usb_max_current_enable")
+
+thr=$("$VC" get_throttled 2>/dev/null | sed -n 's/^throttled=\(0x[0-9a-fA-F]*\)$/\1/p')
+volts=$("$VC" pmic_read_adc EXT5V_V 2>/dev/null | sed -n 's/.*=\([0-9.]*\)V.*/\1/p' | head -1)
+temp=""
+[ -r "$R/sys/class/thermal/thermal_zone0/temp" ] && temp=$(awk '{printf "%.1f", $1 / 1000}' "$R/sys/class/thermal/thermal_zone0/temp")
+
+bit() { [ -n "$thr" ] || { echo null; return; }; [ $(( $thr >> $1 & 1 )) = 1 ] && echo true || echo false; }
+uv=$(bit 0); cap=$(bit 1); thrn=$(bit 2); soft=$(bit 3); uvb=$(bit 16)
+
+# Transitions.
+change() { # change <name> <old> <new> <level-when-true>
+    [ "$2" = "$3" ] && return
+    [ -z "$2" ] && [ "$3" != true ] && return
+    case "$3" in true) log "$4" "$1: now" ;; false) log 5 "$1: cleared" ;; *) log 5 "$1: no reading" ;; esac
+}
+change undervoltage "$p_uv" "$uv" 3
+change "CPU frequency capped" "$p_cap" "$cap" 4
+change throttled "$p_thr" "$thrn" 4
+change "soft temperature limit" "$p_soft" "$soft" 4
+
+policies=$(ls -d "$R"/sys/devices/system/cpu/cpufreq/policy* 2>/dev/null)
+if [ "$uv" = true ]; then
+    clear_since=""
+    if [ "$shed" != 1 ]; then
+        shed=1; shed_since=$now; : > "$state.saved"
+        n=0
+        for p in $policies; do
+            [ -w "$p/scaling_max_freq" ] || continue
+            orig=$(cat "$p/scaling_max_freq"); min=$(cat "$p/cpuinfo_min_freq" 2>/dev/null || echo 0)
+            capk=$SHED_KHZ; [ "$capk" -lt "$min" ] && capk=$min
+            [ "$capk" -lt "$orig" ] && echo "$capk" > "$p/scaling_max_freq"
+            echo "saved_$(basename "$p")=$orig" >> "$state.saved"
+            n=$((n + 1))
+        done
+        : > "$RUN/shed-load"
+        log 3 "undervoltage: shedding load (CPU max ${SHED_KHZ} kHz on $n policies, $RUN/shed-load set); the supply cannot deliver what the board draws"
+    fi
+elif [ "$shed" = 1 ]; then
+    [ -n "$clear_since" ] || clear_since=$now
+    if [ $((now - clear_since)) -ge "$CLEAR_S" ]; then
+        if [ -f "$state.saved" ]; then
+            while IFS='=' read -r k v; do
+                p="$R/sys/devices/system/cpu/cpufreq/${k#saved_}"
+                [ -w "$p/scaling_max_freq" ] && echo "$v" > "$p/scaling_max_freq"
+            done < "$state.saved"
+            rm -f "$state.saved"
+        fi
+        rm -f "$RUN/shed-load"
+        log 5 "undervoltage clear for ${CLEAR_S} s: load restored (was shedding since $shed_since)"
+        shed=0; shed_since=""; clear_since=""
+    fi
+fi
+
+cpumax=$(cat "$R/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq" 2>/dev/null)
+js() { [ -n "$1" ] && echo "$1" || echo null; }
+bool() { case "$1" in 1) echo true ;; 0) echo false ;; *) echo null ;; esac; }
+if [ "$shed" = 1 ]; then ls=true; ss=$shed_since; else ls=false; ss=null; fi
+if [ -n "$thr" ]; then raw="\"$thr\""; else raw=null; fi
+tmp="$RUN/.power.status.$$"
+printf '{"ts":%s,"supply_max_current_ma":%s,"usb_high_current":%s,"undervoltage_now":%s,"undervoltage_since_boot":%s,"freq_capped_now":%s,"throttled_now":%s,"soft_temp_limit_now":%s,"throttled_raw":%s,"ext5v_v":%s,"soc_temp_c":%s,"load_shed":%s,"shed_since":%s,"cpu_max_khz":%s}\n' \
+    "$now" "$(js "$maxcur")" "$(bool "$usbhc")" "$uv" "$uvb" "$cap" "$thrn" "$soft" "$raw" \
+    "$(js "$volts")" "$(js "$temp")" "$ls" "$ss" "$(js "$cpumax")" > "$tmp"
+mv -f "$tmp" "$RUN/power.status"
+
+cat > "$state.new" <<EOF
+p_uv=$uv
+p_cap=$cap
+p_thr=$thrn
+p_soft=$soft
+shed=$shed
+shed_since=$shed_since
+clear_since=$clear_since
+EOF
+mv -f "$state.new" "$state"
+exit 0

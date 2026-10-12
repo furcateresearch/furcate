@@ -1,0 +1,18 @@
+[package]
+name = "furcate-sense"
+version.workspace = true
+edition.workspace = true
+description = "Sensors, actuators and leaf devices."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ed25519-dalek.workspace = true
+furcate-identity = { path = "../furcate-identity" }
+furcate-policy = { path = "../furcate-policy" }
+p256.workspace = true

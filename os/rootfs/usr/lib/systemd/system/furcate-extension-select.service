@@ -1,0 +1,15 @@
+[Unit]
+Description=Furcate OS: choose the extensions this base can run
+Documentation=file:/usr/share/doc/furcate-os/README.md
+DefaultDependencies=no
+RequiresMountsFor=/var/lib/furcate
+Before=systemd-sysext.service sysinit.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/furcate-os/extension-select
+
+[Install]
+WantedBy=sysinit.target

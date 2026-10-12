@@ -1,0 +1,63 @@
+#!/bin/bash
+# fl-tpm: TPM 2.0 P-256 signing keys for a Furcate node, operator or release
+# signer on Linux. Same interface as host/se/fl-se.swift.
+#
+# The private key is created inside the TPM (fixedTPM, fixedParent,
+# sensitiveDataOrigin) under the storage primary at $FL_TPM_PARENT and never
+# leaves it. What is kept on disk is the TPM-wrapped blob, which only this
+# TPM can load; it is not key material. No persistent handle is created or
+# evicted.
+#
+#   fl-tpm create <name>   create a key, print its public key (SEC1 uncompressed, hex)
+#   fl-tpm pub <name>      print the public key
+#   fl-tpm sign <name>     sign stdin (ECDSA P-256 over SHA-256), print DER signature hex
+#
+# Blobs live in $FL_TPM_DIR (default ~/.furcate-leaf/tpm).
+set -euo pipefail
+export TPM2TOOLS_TCTI="${TPM2TOOLS_TCTI:-device:/dev/tpmrm0}"
+DIR="${FL_TPM_DIR:-$HOME/.furcate-leaf/tpm}"
+PARENT="${FL_TPM_PARENT:-0x81000100}"
+die() { echo "fl-tpm: $*" >&2; exit 1; }
+[ $# -eq 2 ] || die "usage: fl-tpm create|pub|sign <name>"
+cmd=$1; name=$2
+case "$name" in *[!A-Za-z0-9_-]*|"") die "bad key name";; esac
+mkdir -p "$DIR"; chmod 700 "$DIR"
+pub="$DIR/$name.pub"; priv="$DIR/$name.priv"
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+
+# A loaded key is kept as a saved TPM context (encrypted by the TPM's own
+# context key, usable only by this TPM until its next reset), so a signature
+# does not pay for a full load each time. A stale context is reloaded.
+ctx="$DIR/$name.ctx"
+load() {
+    [ -f "$pub" ] && [ -f "$priv" ] || die "no key $name"
+    if [ -f "$ctx" ]; then cp "$ctx" "$T/k.ctx"; return; fi
+    tpm2_load -Q -C "$PARENT" -u "$pub" -r "$priv" -c "$T/k.ctx"
+    cp "$T/k.ctx" "$ctx"; chmod 600 "$ctx"
+}
+print_pub() {
+    tpm2_readpublic -Q -c "$T/k.ctx" -f der -o "$T/k.der"
+    # SubjectPublicKeyInfo for P-256 ends with the 65-byte uncompressed point.
+    tail -c 65 "$T/k.der" | od -An -v -tx1 | tr -d ' \n'; echo
+}
+
+case "$cmd" in
+create)
+    [ -e "$pub" ] && die "key $name exists"
+    tpm2_create -Q -C "$PARENT" -G ecc256:ecdsa-sha256 \
+        -a "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|sign" -u "$pub" -r "$priv"
+    load; print_pub ;;
+pub)
+    load; print_pub ;;
+sign)
+    # The message is hashed straight from stdin and never written to disk
+    # (a configuration body can carry a site credential).
+    openssl dgst -sha256 -binary > "$T/d"
+    load
+    if ! tpm2_sign -Q -c "$T/k.ctx" -g sha256 -s ecdsa -d -f plain -o "$T/s" "$T/d" 2>/dev/null; then
+        rm -f "$ctx"; load
+        tpm2_sign -Q -c "$T/k.ctx" -g sha256 -s ecdsa -d -f plain -o "$T/s" "$T/d"
+    fi
+    od -An -v -tx1 "$T/s" | tr -d ' \n'; echo ;;
+*) die "usage: fl-tpm create|pub|sign <name>" ;;
+esac

@@ -1,0 +1,48 @@
+[Unit]
+# Apply the overlay peer set on behalf of the unprivileged agent.
+#
+# Creating a network interface is a net-admin operation. The agent does not hold
+# that capability and must not: an agent able to reconfigure the interface it
+# reports on could lie about the network it is describing. So it writes a plan
+# and this applies it — the fifth instrument on this host to need the same
+# split, after the energy counters, the management controller, the interface
+# wake setting and the disks.
+#
+# The interface's private key is generated here and never leaves. The agent
+# publishes only the public half.
+Description=Furcate overlay interface manager
+Documentation=https://github.com/furcateresearch/furcate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/furcate/wg
+Restart=always
+RestartSec=10
+# /run/furcate belongs to tmpfiles (furcate-runtime.conf), never to a unit.
+# RuntimeDirectory= re-chowns it recursively on EVERY start, so one User=furcate
+# unit declaring it locked every root unit without CAP_DAC_OVERRIDE out of the
+# directory: furcate-wg failed "cannot create /run/furcate/wg.json.tmp" every
+# 10s on three hosts. The directory is root:furcate 2775; write via the group.
+UMask=0002
+SupplementaryGroups=furcate
+# Everything except what a WireGuard interface needs.
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# "-" because a machine without wireguard-tools has no /etc/wireguard, and a
+# missing ReadWritePaths= entry fails the unit at NAMESPACE before the script
+# runs -- so it crash-looped every 10s instead of reporting the thing it exists
+# to report: {"ok":false,"why":"wireguard-tools not installed"}.
+ReadWritePaths=/run/furcate -/etc/wireguard
+# The agent writes the plan here; this only reads it.
+ReadOnlyPaths=/var/lib/furcate
+ProtectKernelModules=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+SystemCallFilter=@system-service @network-io
+
+[Install]
+WantedBy=multi-user.target

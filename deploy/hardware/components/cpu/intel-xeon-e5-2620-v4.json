@@ -1,0 +1,32 @@
+{
+  "_": "One component, described once and referenced by every machine that carries it. A CPU is the same CPU in whatever box it is bolted into, so what is written here is what is true of the part — never of a particular machine.",
+  "id": "cpu/intel-xeon-e5-2620-v4",
+  "kind": "cpu",
+  "identity": {
+    "vendor": "Intel",
+    "model": "Xeon E5-2620 v4",
+    "family": 6,
+    "model_id": 79,
+    "stepping": 1,
+    "codename": "Broadwell-EP",
+    "_match": "cpu family, model and stepping from /proc/cpuinfo. Not the model *string*, which vendors reword between microcode releases."
+  },
+  "topology": { "cores": 8, "threads_per_core": 2, "sockets_supported": 2 },
+  "power": {
+    "tdp_w": 85,
+    "_measured": "package draw on this site idles near 27 W, which is what makes the fan finding below so stark"
+  },
+  "levers": {
+    "max_perf_pct": { "path": "/sys/devices/system/cpu/intel_pstate/max_perf_pct", "range": [1, 100], "floor_enforced_at": 40 },
+    "no_turbo": { "path": "/sys/devices/system/cpu/intel_pstate/no_turbo", "_note": "the kernel spells this inverted; Furcate carries the operator's meaning and inverts at the write" },
+    "governor": { "path": "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor" }
+  },
+  "thermal": {
+    "prochot_c": 100,
+    "_observed": "zero PROCHOT events on this site, ever — the silicon has never been near its limit"
+  },
+  "instruments": {
+    "package_power": { "via": "RAPL", "path": "/sys/class/powercap/intel-rapl:0/energy_uj", "privileged": true },
+    "temperature": { "via": "coretemp" }
+  }
+}

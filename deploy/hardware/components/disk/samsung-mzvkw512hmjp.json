@@ -1,0 +1,15 @@
+{
+  "id": "disk/samsung-mzvkw512hmjp",
+  "kind": "disk",
+  "identity": { "vendor": "Samsung", "model": "MZVKW512HMJP-00000", "_match": "smartctl model name" },
+  "spec": { "capacity_gb": 512, "interface": "NVMe" },
+  "instruments": {
+    "via": "smartctl",
+    "privileged": true,
+    "_why": "smartctl refuses an unprivileged caller for the whole query, so an agent without privilege sees a machine with no disks rather than an error. Furcate reads it from the privileged publisher instead."
+  },
+  "health": {
+    "_judge_by": "movement, not magnitude. Forty reallocations static for two years is a working drive; twelve last week is not.",
+    "observed": { "used_pct": 2, "spare_pct": 100, "spare_floor_pct": 10, "power_on_hours": 13476 }
+  }
+}

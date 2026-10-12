@@ -1,0 +1,93 @@
+#!/usr/bin/python3
+"""Tests for furcate-os wifi (os/rootfs/usr/libexec/furcate-os/wifi).
+
+    os/tests/wifi-profile
+
+Runs anywhere with python3; writes profiles under a temporary directory.
+"""
+import hashlib
+import importlib.machinery
+import importlib.util
+import io
+import os
+import sys
+import tempfile
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SRC = os.path.join(HERE, "..", "rootfs", "usr", "libexec", "furcate-os", "wifi")
+loader = importlib.machinery.SourceFileLoader("fwifi", SRC)
+spec = importlib.util.spec_from_loader("fwifi", loader)
+wifi = importlib.util.module_from_spec(spec)
+loader.exec_module(wifi)
+
+
+class Names(unittest.TestCase):
+    def test_plain_and_spaces_stay_as_is(self):
+        self.assertEqual(wifi.profile_name(b"Home"), "Home")
+        self.assertEqual(wifi.profile_name(b"Example-Home 5GHZ"), "Example-Home 5GHZ")
+        self.assertEqual(wifi.profile_name(b"a_b-c d"), "a_b-c d")
+
+    def test_dot_is_hex(self):
+        self.assertEqual(wifi.profile_name(b"Example-Home 2.4GHZ"),
+                         "=4578616d706c652d486f6d6520322e3447485a")
+
+    def test_other_characters_are_hex(self):
+        for s in (b"caf\xc3\xa9", b"a/b", b"x'y", b"pi@home"):
+            self.assertEqual(wifi.profile_name(s), "=" + s.hex())
+
+    def test_round_trip(self):
+        for s in (b"Home", b"Example-Home 2.4GHZ", b"caf\xc3\xa9"):
+            self.assertEqual(wifi.ssid_of(wifi.profile_name(s)), s)
+
+
+class Keys(unittest.TestCase):
+    def test_known_vector(self):
+        # IEEE 802.11i-2004, H.4.3: "password", SSID "IEEE".
+        self.assertEqual(wifi.psk_for(b"password", b"IEEE"),
+                         "f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e")
+
+    def test_key_depends_on_the_ssid(self):
+        p = b"one passphrase"
+        self.assertNotEqual(wifi.psk_for(p, b"Example-Home 5GHZ"),
+                            wifi.psk_for(p, b"Example-Home 2.4GHZ"))
+
+
+class Files(unittest.TestCase):
+    def run_add(self, state, ssid, passphrase):
+        wifi.STATE = state
+        old_stdin = sys.stdin
+        sys.stdin = io.TextIOWrapper(io.BytesIO(passphrase))
+        try:
+            wifi.add(ssid)
+        finally:
+            sys.stdin = old_stdin
+
+    def test_add_writes_the_key_for_this_ssid_0600(self):
+        with tempfile.TemporaryDirectory() as d:
+            for ssid in ("Example-Home 5GHZ", "Example-Home 2.4GHZ"):
+                self.run_add(d, ssid, b"correct horse battery\n")
+                path = os.path.join(d, wifi.profile_name(ssid.encode()) + ".psk")
+                body = open(path).read()
+                want = hashlib.pbkdf2_hmac("sha1", b"correct horse battery", ssid.encode(), 4096, 32).hex()
+                self.assertEqual(body, "[Security]\nPreSharedKey=" + want + "\n")
+                self.assertNotIn("correct horse", body)
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+            self.assertEqual(sorted(os.listdir(d)),
+                             ["=4578616d706c652d486f6d6520322e3447485a.psk", "Example-Home 5GHZ.psk"])
+
+    def test_remove(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_add(d, "a.b", b"12345678")
+            wifi.remove("a.b")
+            self.assertEqual(os.listdir(d), [])
+
+    def test_short_passphrase_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit):
+                self.run_add(d, "x", b"short")
+            self.assertEqual(os.listdir(d), [])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

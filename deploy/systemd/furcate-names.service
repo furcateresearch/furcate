@@ -1,0 +1,52 @@
+[Unit]
+# Overlay names: answer <member>.<site>.internal on this node's fur0 address,
+# from this node's own peer set.
+#
+# There is no DNS server for the site. Every node answers for the zone from the
+# peers it carries, so a node that has lost everything else still resolves
+# every peer it still holds, and an entry stops resolving on the date its
+# authorization runs out. Anything outside the zone is refused, never
+# forwarded.
+#
+# SHIPS DISABLED. Answering on port 53 of the overlay address changes nothing
+# else on the host, but whether a node serves names is an operator's decision:
+#   1. write /etc/furcate/overlay.env (see /usr/share/furcate/overlay.env.example)
+#   2. systemctl enable --now furcate-names
+#   3. route the zone to it: systemctl enable --now furcate-names-link
+Description=Furcate overlay names (<member>.<site>.internal)
+Documentation=https://github.com/furcateresearch/furcate
+After=furcate-wg.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/furcate/overlay.env
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/furcate/overlay.env
+ExecStart=/usr/libexec/furcate/overlay names
+# fur0 may not have its address yet at boot; binding fails until it does, and
+# the restart picks it up. Not a hard dependency on the interface: a node whose
+# overlay is down should not also have this unit wedged in a failed state.
+Restart=on-failure
+RestartSec=10
+User=furcate
+Group=furcate
+# Port 53 and nothing else.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+ReadOnlyPaths=/var/lib/furcate /etc/furcate
+
+[Install]
+WantedBy=multi-user.target

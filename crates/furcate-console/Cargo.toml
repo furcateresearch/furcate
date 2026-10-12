@@ -1,0 +1,18 @@
+[package]
+name = "furcate-console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One terminal for the machine and the network it belongs to"
+
+[[bin]]
+name = "furcate-console"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+libc.workspace = true
+
+# An edition adds to the console through `furcate_console::extension`, from a
+# crate that depends on this one. Nothing here names it.

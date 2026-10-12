@@ -1,0 +1,20 @@
+[package]
+name = "furcate-siteview"
+version.workspace = true
+edition.workspace = true
+description = "One read-only view of a site, assembled from its nodes."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+furcate-api = { path = "../furcate-api" }
+furcate-paths = { path = "../furcate-paths" }
+furcate-sched = { path = "../furcate-sched" }
+furcate-topology = { path = "../furcate-topology" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+furcate-authn = { path = "../furcate-authn" }
+furcate-identity = { path = "../furcate-identity" }

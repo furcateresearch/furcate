@@ -1,0 +1,23 @@
+#!/bin/sh
+# The Pi 5 bootloader release that `furcate-os eeprom-update` stages, pinned by
+# tag and sha256 (git blobs f703cf1e pieeprom, 2c1d28a5 recovery.bin). Ubuntu's
+# rpi-eeprom lags the upstream releases.
+set -eu
+TAG=v2026.09.25-2712
+BIN=pieeprom-2026-09-25.bin
+BIN_SHA256=02c4daa25df5af66af50da63ee97dfd03b21a40ac5b495a1c447979a2aa00edd
+REC_SHA256=29bbbbba21b532fbde8943adf6ad1e657c8ac0013b66e6d60f8212894d86b024
+base="https://raw.githubusercontent.com/raspberrypi/rpi-eeprom/$TAG/firmware-2712/latest"
+dest="$DESTDIR/usr/lib/furcate-os/rpi5/eeprom"
+mkdir -p "$dest"
+curl -fsSL -o "$dest/$BIN" "$base/$BIN"
+curl -fsSL -o "$dest/recovery.bin" "$base/recovery.bin"
+echo "$BIN_SHA256  $dest/$BIN" | sha256sum -c -
+echo "$REC_SHA256  $dest/recovery.bin" | sha256sum -c -
+cat > "$dest/release" <<EOT
+TAG=$TAG
+IMAGE=$BIN
+IMAGE_SHA256=$BIN_SHA256
+RECOVERY_SHA256=$REC_SHA256
+SOURCE=$base
+EOT

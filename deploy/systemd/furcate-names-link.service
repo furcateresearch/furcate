@@ -1,0 +1,45 @@
+[Unit]
+# Route the site zone to this node's own overlay resolver, on the fur0 link only.
+#
+# The per-link equivalent of a resolved drop-in: DNS=<fur0 address> and
+# Domains=~<site>.internal, set on fur0 through resolvectl. A routing-only
+# domain (the ~) sends just that zone there; every other name keeps resolving
+# exactly as before, through whatever the host already uses. fur0 is created by
+# the overlay helper rather than by networkd, so there is no .network file for
+# it to live in, and per-link settings are dropped whenever the link goes away
+# -- hence a unit bound to the interface: it stops when fur0 goes, and starts
+# with furcate-wg, which creates fur0, once the fur0 device exists.
+#
+# Pulled in by furcate-wg.service rather than by the device unit. A device unit
+# has no unit file, so enabling against it warns that it does not exist and
+# leaves the symlink in a .wants directory of a unit that only appears once
+# udev has seen the interface. furcate-wg always exists, starts at boot, and is
+# what makes fur0 appear; BindsTo= and After= on the device then hold the start
+# until fur0 is really there (or the device timeout passes). If fur0 is ever
+# deleted by hand, restarting furcate-wg re-creates it and re-applies this.
+#
+# SHIPS DISABLED, because this changes how the host resolves names (one zone of
+# them). Enable per host, after furcate-names is answering:
+#   systemctl enable --now furcate-names-link
+# Undo: systemctl disable --now furcate-names-link (reverts the link settings).
+Description=Furcate overlay names: route <site>.internal to fur0
+Documentation=https://github.com/furcateresearch/furcate
+BindsTo=sys-subsystem-net-devices-fur0.device
+After=sys-subsystem-net-devices-fur0.device furcate-wg.service systemd-resolved.service furcate-names.service
+ConditionPathExists=/etc/furcate/overlay.env
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/furcate/overlay.env
+# Refuses, with the reason, rather than routing the zone to an empty address.
+# $$ is a literal $ to systemd, so the shell -- not systemd -- expands these.
+ExecStart=/bin/sh -c 'site="$${FURCATE_OVERLAY_SITE}"; addr="$${FURCATE_OVERLAY_ADDR%%/*}"; \
+  [ -n "$$site" ] || { echo "FURCATE_OVERLAY_SITE is not set in /etc/furcate/overlay.env" >&2; exit 1; }; \
+  [ -n "$$addr" ] || { echo "FURCATE_OVERLAY_ADDR is not set in /etc/furcate/overlay.env" >&2; exit 1; }; \
+  resolvectl dns fur0 "$$addr" && resolvectl domain fur0 "~$$site.internal" && \
+  echo "fur0: $$site.internal -> $$addr"'
+ExecStop=/usr/bin/resolvectl revert fur0
+
+[Install]
+WantedBy=furcate-wg.service

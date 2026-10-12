@@ -1,0 +1,13 @@
+[package]
+name = "furcate-health"
+version.workspace = true
+edition.workspace = true
+description = "Node lifecycle, health signals and bounded remediation."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+furcate-topology = { path = "../furcate-topology" }

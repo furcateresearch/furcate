@@ -1,0 +1,44 @@
+#!/bin/sh
+# After systemd-sysext merged, check that what is merged is what was selected.
+#
+# A green systemd-sysext unit proves nothing: it exits 0 when it merged no
+# extension at all. The proof is the extension's own release file appearing
+# in /usr with the version the selector chose.
+#
+# Result: /run/furcate-os/extensions.status, first word "ok" or "FAILED".
+set -u
+RUN=/run/furcate-os
+mkdir -p "$RUN"
+status=ok
+detail=""
+val() { sed -n "s/^$2=//p" "$1" | tail -1 | tr -d '"'; }
+
+if [ -s "$RUN/extensions.selected" ]; then
+    while read -r name ver; do
+        merged=/usr/lib/extension-release.d/extension-release.$name
+        if [ ! -f "$merged" ]; then
+            status=FAILED; detail="$detail $name=$ver:not-merged"
+            echo "<3>furcate-extension-check: $name $ver was selected but is not merged; see: SYSTEMD_LOG_LEVEL=debug systemd-sysext refresh" >&2
+            continue
+        fi
+        got=$(val "$merged" FURCATE_VERSION)
+        abi=$(val "$merged" FURCATE_REQUIRES_ABI)
+        base_abi=$(val /usr/lib/os-release FURCATE_ABI)
+        if [ "$got" != "$ver" ]; then
+            status=FAILED; detail="$detail $name:merged=$got,selected=$ver"
+            echo "<3>furcate-extension-check: $name merged version $got, selected $ver" >&2
+        elif [ "$abi" != "$base_abi" ]; then
+            status=FAILED; detail="$detail $name:abi=$abi,base=$base_abi"
+            echo "<3>furcate-extension-check: $name requires ABI $abi, base is $base_abi" >&2
+        else
+            detail="$detail $name=$got"
+        fi
+    done < "$RUN/extensions.selected"
+else
+    status=FAILED; detail=" nothing-selected"
+    echo "<3>furcate-extension-check: no extension was selected; Furcate is not on this machine" >&2
+fi
+[ -f "$RUN/degraded" ] && { status=FAILED; detail="$detail refused:$(wc -l < "$RUN/degraded")"; }
+echo "$status$detail" > "$RUN/extensions.status"
+echo "<6>furcate-extension-check: $status$detail" >&2
+exit 0

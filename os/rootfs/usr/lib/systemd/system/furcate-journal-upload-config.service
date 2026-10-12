@@ -1,0 +1,6 @@
+[Unit]
+Description=Furcate OS: apply the journal upload setting in node.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart systemd-journal-upload.service

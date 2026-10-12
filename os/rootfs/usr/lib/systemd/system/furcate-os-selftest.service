@@ -1,0 +1,18 @@
+# Prints `furcate-os status` to the console when the kernel command line
+# carries furcate.selftest. Used by the image test in qemu and for diagnosis
+# on a device with a serial console attached.
+[Unit]
+Description=Furcate OS: self-test report on the console
+ConditionKernelCommandLine=furcate.selftest
+After=furcate-firstboot.service systemd-sysext.service furcate-identity.service ssh.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/furcate-os status --selftest
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/console
+
+[Install]
+WantedBy=multi-user.target

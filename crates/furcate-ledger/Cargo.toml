@@ -1,0 +1,17 @@
+[package]
+name = "furcate-ledger"
+version.workspace = true
+edition.workspace = true
+description = "Hash-chained proofs of chip-level operations."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+furcate-identity = { path = "../furcate-identity" }

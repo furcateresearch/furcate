@@ -1,0 +1,15 @@
+#!/bin/sh
+# ExecCondition of systemd-journal-upload.service: is a controller URL set,
+# and is it on the overlay? Exit 0 = upload, 1 = stay off (the unit is then
+# skipped, not failed). JOURNAL_REMOTE_URL comes from /etc/furcate/node.conf.
+url=${JOURNAL_REMOTE_URL:-}
+if [ -z "$url" ]; then
+    echo "journal upload off: no JOURNAL_REMOTE_URL in /etc/furcate/node.conf"
+    exit 1
+fi
+host=$(printf '%s' "$url" | sed -n 's|^http://\([^/:]*\)\(:[0-9]*\)\{0,1\}/.*$|\1|p')
+case "$host" in
+    10.90.[0-9]*.[0-9]*|*.internal) echo "journal upload to $url"; exit 0 ;;
+esac
+echo "journal upload off: $url is not an http:// URL on the overlay (10.90.0.0/16 or *.internal); logs are not sent in the clear elsewhere" >&2
+exit 1

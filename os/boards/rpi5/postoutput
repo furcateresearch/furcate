@@ -1,0 +1,54 @@
+#!/bin/sh
+# Complete cmdline.txt in both boot slots once the disk image exists.
+#
+# The kernel command line names the /usr verity root hash and the partitions by
+# GPT UUID. Neither exists until repart has assembled the image, so the boot
+# partitions are written with a template and filled in here, on the build host,
+# with mtools (no loop devices, no mounts).
+set -eu
+
+img="$OUTPUTDIR/${IMAGE_ID}_${IMAGE_VERSION}.raw"
+[ -f "$img" ] || img="$OUTPUTDIR/$IMAGE_ID.raw"
+[ -f "$img" ] || { echo "postoutput: no disk image in $OUTPUTDIR" >&2; exit 1; }
+
+usrhash=""
+# mkosi writes the split root hash (here the /usr hash) as <output>.roothash.
+for f in "${img%.raw}.roothash" "${img%.raw}.usrhash" "$OUTPUTDIR/$IMAGE_ID.roothash"; do
+    [ -f "$f" ] && { usrhash=$(tr -d ' \n' < "$f"); break; }
+done
+[ -n "$usrhash" ] || { echo "postoutput: mkosi wrote no .roothash next to $img (SplitArtifacts=roothash)" >&2; exit 1; }
+case "$usrhash" in *[!0-9a-f]*) echo "postoutput: bad usrhash '$usrhash'" >&2; exit 1 ;; esac
+
+table=$(sfdisk -J "$img")
+field() { # field <label> <key>
+    printf '%s' "$table" | python3 -c '
+import json, sys
+label, key = sys.argv[1], sys.argv[2]
+t = json.load(sys.stdin)["partitiontable"]
+for p in t["partitions"]:
+    if p.get("name") == label:
+        print(p[key] if key != "offset" else p["start"] * t.get("sectorsize", 512))
+        break
+else:
+    sys.exit("no partition labelled " + label)
+' "$1" "$2"
+}
+
+state=$(field state uuid | tr 'A-Z' 'a-z')
+usr=$(field usr-a uuid | tr 'A-Z' 'a-z')
+usrv=$(field usr-a-verity uuid | tr 'A-Z' 'a-z')
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+for label in boot-a boot-b; do
+    off=$(field "$label" offset)
+    mcopy -n -i "$img@@$off" ::cmdline.txt "$tmp/cmdline.in"
+    sed -e "s/@STATE_PARTUUID@/$state/" -e "s/@USR_PARTUUID@/$usr/" \
+        -e "s/@USRV_PARTUUID@/$usrv/" -e "s/@USRHASH@/$usrhash/" -e "s/@SLOT@/a/" \
+        "$tmp/cmdline.in" > "$tmp/cmdline.txt"
+    if grep -q @ "$tmp/cmdline.txt"; then
+        echo "postoutput: unfilled field in $label cmdline.txt" >&2; exit 1
+    fi
+    mcopy -o -i "$img@@$off" "$tmp/cmdline.txt" ::cmdline.txt
+    echo "postoutput: $label cmdline.txt: $(cat "$tmp/cmdline.txt")"
+done

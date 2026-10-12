@@ -1,0 +1,24 @@
+# Signs with OTP key 1 and returns its public key; nothing else. Runs as root
+# because the firmware mailbox (/dev/vcio) is root-only (60-furcate-fwcrypto.rules).
+[Unit]
+Description=Furcate OS: OTP key signing broker
+Documentation=file:/usr/share/doc/furcate-os/README.md
+Requires=furcate-fwcrypto-broker.socket
+
+[Service]
+ExecStart=/usr/bin/furcate-fwcrypto serve
+DevicePolicy=closed
+DeviceAllow=/dev/vcio_crypto rw
+DeviceAllow=/dev/vcio rw
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

@@ -1,0 +1,56 @@
+#!/bin/sh
+# The boot trail of an A/B trial: one line per stage reached, appended to
+# furcate-boot-trail.txt on the booted slot's own boot partition, so a trial
+# that never comes back can be read from the other slot
+# (`furcate-os base-status`).
+#
+#   breadcrumb initrd      from the initrd, as soon as the boot partition shows
+#   breadcrumb root        from the initrd, once / and the verity /usr are mounted
+#   breadcrumb userspace   from the booted system, after local file systems
+#
+# Writes only while the slot is on trial (its cmdline carries
+# rd.emergency=reboot, which the base update sets and the confirm step
+# removes), or with furcate.breadcrumbs=1 on the kernel command line, so a
+# confirmed slot's FAT partition is not written at every boot. Never fails the
+# boot: every error ends quietly.
+stage=${1:-}
+case "$stage" in initrd|root|userspace) ;; *) exit 0 ;; esac
+read -r cl < /proc/cmdline || exit 0
+case " $cl " in *" rd.emergency=reboot "*|*" furcate.breadcrumbs=1 "*) ;; *) exit 0 ;; esac
+slot=$(printf '%s\n' "$cl" | tr ' ' '\n' | sed -n 's/^furcate\.slot=//p' | tail -1)
+case "$slot" in a|b) ;; *) exit 0 ;; esac
+dev=/dev/disk/by-partlabel/boot-$slot
+i=0
+while [ ! -b "$dev" ] && [ "$i" -lt 30 ]; do sleep 1; i=$((i + 1)); done
+[ -b "$dev" ] || exit 0
+
+dt() { # the Pi bootloader's own record of this boot, when it gives one
+    f=/proc/device-tree/chosen/bootloader/$1
+    [ -r "$f" ] && od -An -tu4 --endian=big "$f" 2>/dev/null | tr -d ' \n'
+}
+read -r up _ < /proc/uptime
+what="reached $stage"
+# The root stage runs once the initrd's file system targets are done, also
+# when they failed: it says which, from what is actually mounted.
+if [ "$stage" = root ]; then
+    if ! mountpoint -q /sysroot; then what="did not reach root (/sysroot not mounted)"
+    elif ! mountpoint -q /sysusr/usr && ! mountpoint -q /sysroot/usr; then what="did not reach root (/usr not mounted)"; fi
+fi
+line="slot $slot $what $(date -u +%Y-%m-%dT%H:%M:%SZ) uptime ${up}s"
+v=$(dt partition); [ -n "$v" ] && line="$line bootloader-partition $v"
+v=$(dt tryboot); [ -n "$v" ] && line="$line tryboot-flag $v"
+
+real=$(readlink -f "$dev")
+mnt=$(awk -v d="$real" '$1 == d { print $2; exit }' /proc/mounts)
+own=0
+if [ -z "$mnt" ]; then
+    mnt=$(mktemp -d /run/furcate-trail.XXXXXX) || exit 0
+    mount -t vfat -o rw,noatime "$dev" "$mnt" 2>/dev/null || { rmdir "$mnt"; exit 0; }
+    own=1
+fi
+f=$mnt/furcate-boot-trail.txt
+# A small file: the last 40 lines.
+{ tail -n 39 "$f" 2>/dev/null; echo "$line"; } > "$f.new" 2>/dev/null && mv "$f.new" "$f" 2>/dev/null
+sync
+[ "$own" = 1 ] && { umount "$mnt" 2>/dev/null; rmdir "$mnt" 2>/dev/null; }
+exit 0

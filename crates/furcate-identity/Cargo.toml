@@ -1,0 +1,24 @@
+[package]
+name = "furcate-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Hardware-rooted node identity for Furcate: pluggable roots of trust, node ID derivation, enrollment and quotes."
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+data-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ed25519-dalek.workspace = true
+furcate-host = { path = "../furcate-host" }
+# 8.x is alpha only; this is TPM code, so it stays on the latest stable line.
+tss-esapi = { version = "7.7", optional = true }
+
+[features]
+default = []
+# Native TSS 2.0 backend. Requires libtss2-dev at build time.
+tss = ["dep:tss-esapi"]

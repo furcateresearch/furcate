@@ -1,0 +1,322 @@
+#!/bin/sh
+# furcate-os: the state of this Furcate OS machine, and the operations that
+# change it without a reinstall.
+#
+#   furcate-os status                 base, slot, /usr verity, extensions, network, Wi-Fi,
+#                                     power, watchdog, journal, identity
+#   furcate-os extension install DIR  add an extension version from DIR
+#                                     (DIR holds <name>.raw and <name>.release)
+#   furcate-os wifi add SSID          add a Wi-Fi network; the passphrase on stdin
+#   furcate-os wifi list | remove SSID  known Wi-Fi networks
+#   furcate-os eeprom-update [--check | --clean]
+#                                     stage the pinned Pi 5 bootloader for the
+#                                     next reboot; --check after it
+#   furcate-os eeprom-update --boot-order ORDER [--max-restarts N]
+#                                     stage it with BOOT_ORDER (and MAX_RESTARTS)
+#                                     changed, the rest of this board's settings kept
+#   furcate-os base-update BUNDLE [--extension DIR]... [--now]
+#                                     write a signed base into the idle A/B slot and
+#                                     arm one trial boot of it (os/README.md)
+#   furcate-os base-tryboot           boot the armed slot once
+#   furcate-os base-status            both slots, the default, the last update
+#   furcate-os identity               re-run the identity check
+#   furcate-os otp-provision          write the OTP device key (ONE-TIME, IRREVERSIBLE)
+set -u
+RUN=/run/furcate-os
+STORE=/var/lib/furcate/extensions
+val() { sed -n "s/^$2=//p" "$1" | tail -1 | tr -d '"'; }
+need_root() { [ "$(id -u)" = 0 ] || { echo "furcate-os $1: run as root" >&2; exit 1; }; }
+
+wifi_status() {
+    for w in /sys/class/net/*/wireless; do
+        [ -d "$w" ] || continue
+        ifc=$(basename "$(dirname "$w")")
+        if ! command -v iwctl >/dev/null 2>&1; then
+            echo "wifi        $ifc: no Wi-Fi client on this base (iwd)"; continue
+        fi
+        if ! systemctl -q is-active iwd.service 2>/dev/null; then
+            echo "wifi        $ifc: iwd $(systemctl is-active iwd.service 2>/dev/null)"; continue
+        fi
+        show=$(iwctl station "$ifc" show 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+        state=$(wifi_field "$show" State)
+        if [ "$state" != connected ]; then
+            echo "wifi        $ifc: ${state:-unknown}, known networks: $(iwctl known-networks list 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' | awk 'NR > 4 && NF {print $1}' | tr '\n' ' ')"
+            continue
+        fi
+        freq=$(wifi_field "$show" Frequency)
+        case "$freq" in
+            2[0-9][0-9][0-9]) band="2.4 GHz" ;;
+            5[0-8][0-9][0-9]|59[0-4][0-9]) band="5 GHz" ;;
+            59[5-9][0-9]|[6-7][0-9][0-9][0-9]) band="6 GHz" ;;
+            *) band="${freq:-?} MHz" ;;
+        esac
+        addr=$(ip -4 -br addr show "$ifc" 2>/dev/null | awk '{print $3}')
+        echo "wifi        $ifc: $(wifi_field "$show" 'Connected network'), $band ch $(wifi_field "$show" Channel), ${addr:-no address}, $(wifi_field "$show" RSSI)"
+    done
+}
+jget() { sed -n "s/.*\"$2\":\(\"[^\"]*\"\|[^,}]*\).*/\1/p" "$1" | tr -d '"'; }
+yn() { case "$1" in true) echo yes ;; false) echo no ;; *) echo "?" ;; esac; }
+
+power_status() {
+    f=$RUN/power.status
+    if [ ! -f "$f" ]; then
+        if [ -d /proc/device-tree/chosen/power ]; then echo "power       no reading yet (furcate-power.timer $(systemctl is-active furcate-power.timer 2>/dev/null))"
+        else echo "power       no supply information on this board"; fi
+        return
+    fi
+    age=$(( $(date +%s) - $(jget "$f" ts) ))
+    echo "power       supply $(jget "$f" supply_max_current_ma) mA (USB high current $(yn "$(jget "$f" usb_high_current)")), EXT5V $(jget "$f" ext5v_v) V, SoC $(jget "$f" soc_temp_c) C, reading ${age}s old"
+    echo "            undervoltage now $(yn "$(jget "$f" undervoltage_now)"), since boot $(yn "$(jget "$f" undervoltage_since_boot)"); capped $(yn "$(jget "$f" freq_capped_now)"), throttled $(yn "$(jget "$f" throttled_now)"), soft temp limit $(yn "$(jget "$f" soft_temp_limit_now)") ($(jget "$f" throttled_raw))"
+    if [ "$(jget "$f" load_shed)" = true ]; then
+        echo "            SHEDDING LOAD since $(date -u -d "@$(jget "$f" shed_since)" +%H:%M:%SZ 2>/dev/null), CPU max $(jget "$f" cpu_max_khz) kHz; the supply is too weak (official 27 W supply)"
+    else
+        echo "            load shed no, CPU max $(jget "$f" cpu_max_khz) kHz"
+    fi
+}
+
+watchdog_status() {
+    rt=$(systemctl show -p RuntimeWatchdogUSec --value 2>/dev/null)
+    rb=$(systemctl show -p RebootWatchdogUSec --value 2>/dev/null)
+    w=/sys/class/watchdog/watchdog0
+    if [ -d "$w" ]; then
+        echo "watchdog    $(cat "$w/identity" 2>/dev/null) $(cat "$w/state" 2>/dev/null), timeout $(cat "$w/timeout" 2>/dev/null)s; systemd runtime ${rt:-?}, reboot ${rb:-?}"
+    else
+        echo "watchdog    no hardware watchdog; systemd runtime ${rt:-?}"
+    fi
+}
+
+journal_status() {
+    use=$(du -sh /var/log/journal 2>/dev/null | cut -f1)
+    url=$(sed -n 's/^JOURNAL_REMOTE_URL=//p' /etc/furcate/node.conf 2>/dev/null | tail -1)
+    if [ -n "$url" ]; then up="to $url ($(systemctl is-active systemd-journal-upload.service 2>/dev/null))"; else up="off (no JOURNAL_REMOTE_URL in /etc/furcate/node.conf)"; fi
+    echo "journal     $([ -d /var/log/journal ] && echo "persistent, ${use:-?}" || echo volatile); upload $up"
+}
+
+fwcrypto_status() {
+    systemctl cat furcate-fwcrypto-broker.socket >/dev/null 2>&1 || return 0
+    if [ -e /etc/furcate/fwcrypto-direct ]; then m="firmware mailbox also open to group furcate-fwcrypto (transition flag /etc/furcate/fwcrypto-direct)"
+    else m="firmware mailbox root-only"; fi
+    echo "fwcrypto    broker $(systemctl is-active furcate-fwcrypto-broker.socket 2>/dev/null) on $RUN/fwcrypto.sock; $m"
+}
+
+eeprom_update() {
+    need_root eeprom-update
+    rel=/usr/lib/furcate-os/rpi5/eeprom/release
+    [ -f "$rel" ] || { echo "this base carries no pinned bootloader release" >&2; exit 1; }
+    dir=$(dirname "$rel")
+    img="$dir/$(val "$rel" IMAGE)"
+    want=$(grep -ao 'BUILD_TIMESTAMP=[0-9]*' "$img" | head -1 | cut -d= -f2)
+    have=$(vcgencmd bootloader_version 2>/dev/null | sed -n 's/^timestamp //p')
+    [ -n "$want" ] || { echo "no BUILD_TIMESTAMP in $img" >&2; exit 1; }
+    [ -n "$have" ] || { echo "cannot read the running bootloader version (vcgencmd bootloader_version)" >&2; exit 1; }
+    slot=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^furcate.slot=//p')
+    parts="/dev/disk/by-partlabel/select /dev/disk/by-partlabel/boot-${slot:-a}"
+    staged="pieeprom.upd pieeprom.sig recovery.bin"
+    on_parts() { # on_parts <shell command run in each mounted partition>
+        for dev in $parts; do
+            [ -b "$dev" ] || { echo "no $dev" >&2; return 1; }
+            mnt=$(mktemp -d)
+            mount -t vfat "$dev" "$mnt" || { rmdir "$mnt"; return 1; }
+            (cd "$mnt" && eval "$1"); rc=$?
+            sync; umount "$mnt"; rmdir "$mnt"
+            [ "$rc" = 0 ] || return 1
+        done
+    }
+    clean() { on_parts 'rm -f pieeprom.upd pieeprom.sig recovery.bin RECOVERY.0[0-9][0-9]; echo "  $dev: staged files removed"'; }
+    echo "bootloader  running $(date -u -d "@$have" +%F 2>/dev/null) ($have), pinned $(val "$rel" TAG) $(date -u -d "@$want" +%F 2>/dev/null) ($want)"
+    order=""; restarts=""
+    case "${1:-}" in
+    --boot-order)
+        order=${2:-}; restarts=""
+        echo "$order" | grep -qxE '0x[0-9a-fA-F]{1,8}' || { echo "--boot-order takes a hex BOOT_ORDER such as 0xf1" >&2; exit 2; }
+        if [ "${3:-}" = --max-restarts ]; then
+            restarts=${4:-}
+            echo "$restarts" | grep -qxE -- '-1|[0-9]{1,3}' || { echo "--max-restarts takes -1 (forever) or a count" >&2; exit 2; }
+        elif [ -n "${3:-}" ]; then echo "usage: furcate-os eeprom-update --boot-order ORDER [--max-restarts N]" >&2; exit 2; fi
+        ;;
+    --check)
+        echo "settings    $(vcgencmd bootloader_config 2>/dev/null | grep -E '^(BOOT_ORDER|MAX_RESTARTS)=' | tr '\n' ' ')"
+        if [ "$have" -ge "$want" ]; then
+            echo "the bootloader is at or past the pinned release; removing staged files"; clean; exit 0
+        fi
+        echo "the bootloader is still older than the pinned release" >&2
+        on_parts 'ls pieeprom.upd pieeprom.sig recovery.bin RECOVERY.0[0-9][0-9] 2>/dev/null | sed "s|^|  $dev: |"'
+        exit 1 ;;
+    --clean) clean; exit $? ;;
+    "") ;;
+    *) echo "usage: furcate-os eeprom-update [--check | --clean | --boot-order ORDER [--max-restarts N]]" >&2; exit 2 ;;
+    esac
+    if [ -z "$order" ] && [ "$have" -ge "$want" ]; then echo "nothing to do: the bootloader is up to date"; exit 0; fi
+    # A settings change rewrites the pinned release: never over a newer one.
+    if [ -n "$order" ] && [ "$have" -gt "$want" ]; then
+        echo "the running bootloader is newer than the pinned release; refusing to stage an older one to change settings" >&2; exit 1
+    fi
+    (cd "$dir" && echo "$(val "$rel" IMAGE_SHA256)  $(val "$rel" IMAGE)" | sha256sum -c --quiet - \
+        && echo "$(val "$rel" RECOVERY_SHA256)  recovery.bin" | sha256sum -c --quiet -) \
+        || { echo "the pinned files do not match their sha256; nothing staged" >&2; exit 1; }
+    work=$(mktemp -d)
+    # Keep this board's bootloader settings (BOOT_ORDER and the rest).
+    vcgencmd bootloader_config > "$work/boot.conf" || { rm -rf "$work"; echo "cannot read the current bootloader settings" >&2; exit 1; }
+    if [ -n "$order" ]; then
+        for kv in "BOOT_ORDER=$order" ${restarts:+"MAX_RESTARTS=$restarts"}; do
+            k=${kv%%=*}
+            if grep -q "^$k=" "$work/boot.conf"; then sed -i "s/^$k=.*/$kv/" "$work/boot.conf"
+            else printf '%s\n' "$kv" >> "$work/boot.conf"; fi
+        done
+        echo "settings    $(grep -E '^(BOOT_ORDER|MAX_RESTARTS)=' "$work/boot.conf" | tr '\n' ' ')(from $(vcgencmd bootloader_config | grep -E '^(BOOT_ORDER|MAX_RESTARTS)=' | tr '\n' ' '))"
+    fi
+    rpi-eeprom-config --config "$work/boot.conf" --out "$work/pieeprom.upd" "$img" || { rm -rf "$work"; exit 1; }
+    printf '%s\nts: %s\n' "$(sha256sum "$work/pieeprom.upd" | cut -c1-64)" "$(date -u +%s)" > "$work/pieeprom.sig"
+    cp "$dir/recovery.bin" "$work/recovery.bin"
+    W=$work on_parts 'cp "$W/pieeprom.upd" "$W/pieeprom.sig" "$W/recovery.bin" . && echo "  $dev: staged"' \
+        || { rm -rf "$work"; echo "staging failed; run furcate-os eeprom-update --clean" >&2; exit 1; }
+    rm -rf "$work"
+    echo "staged $(val "$rel" TAG) with this board's settings: it is written at the next reboot; then run furcate-os eeprom-update --check"
+}
+
+wifi_field() { printf '%s\n' "$1" | sed -n "s/^ *$2  *//p" | sed 's/ *$//' | head -1; }
+
+status() {
+    [ "${1:-}" = "--selftest" ] && echo "FURCATE-SELFTEST-BEGIN"
+    echo "base        $(val /usr/lib/os-release PRETTY_NAME)"
+    echo "abi         $(val /usr/lib/os-release FURCATE_ABI)  board $(val /usr/lib/os-release FURCATE_BOARD)"
+    slot=$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^furcate.slot=//p')
+    echo "slot        ${slot:-unknown}"
+    # /usr is the dm-verity device with the extensions overlaid on it; report
+    # the device underneath.
+    usrdev=$(findmnt -nro SOURCE /usr 2>/dev/null | grep -v '^sysext$' | head -1)
+    vstat=$(veritysetup status usr 2>/dev/null | sed -n 's/^ *status: *//p' | head -1)
+    [ -z "$vstat" ] && vstat=$(dmsetup status usr 2>/dev/null | awk '{print $3, $4}')
+    echo "usr         $usrdev (dm-verity: ${vstat:-unknown}, $(findmnt -nro SOURCE,OPTIONS /usr | awk -v d="$usrdev" '$1 == d {split($2, o, ","); print o[1]}'))"
+    echo "extensions selected:"
+    sed 's/^/  /' "$RUN/extensions.selected" 2>/dev/null || echo "  (none)"
+    echo "extension check: $(cat "$RUN/extensions.status" 2>/dev/null || echo 'not run')"
+    [ -f "$RUN/degraded" ] && { echo "refused:"; sed 's/^/  /' "$RUN/degraded"; }
+    echo "systemd-sysext status:"
+    systemd-sysext status 2>&1 | sed 's/^/  /'
+    for f in /usr/lib/extension-release.d/extension-release.*; do
+        [ -f "$f" ] || continue
+        echo "merged $(basename "$f" | sed 's/^extension-release\.//'): FURCATE_VERSION=$(val "$f" FURCATE_VERSION) ARCHITECTURE=$(val "$f" ARCHITECTURE) FURCATE_REQUIRES_ABI=$(val "$f" FURCATE_REQUIRES_ABI)"
+    done
+    echo "furcated    $(systemctl is-active furcated.service 2>/dev/null)"
+    echo "node        $(grep -v '^#' /etc/furcate/node.conf 2>/dev/null | tr '\n' ' ')"
+    echo "network     $(ip -4 -br addr show scope global 2>/dev/null | awk '{print $1, $3}' | tr '\n' ' ')mdns $(hostname).local"
+    wifi_status
+    power_status
+    watchdog_status
+    journal_status
+    fwcrypto_status
+    echo "ssh         $(systemctl is-active ssh.service 2>/dev/null), $(grep -c . /home/furcate/.ssh/authorized_keys 2>/dev/null || echo 0) authorised key(s) for furcate"
+    if [ -s /etc/furcate/operator.pub ]; then echo "operator    pinned (/etc/furcate/operator.pub)"; else echo "operator    not pinned (unenrolled)"; fi
+    echo "identity:"
+    sed 's/^/  /' "$RUN/identity" 2>/dev/null || echo "  (not established)"
+    echo "firstboot   $(cat /var/lib/furcate-os/firstboot.done 2>/dev/null || echo 'not done')"
+    echo "state       $(findmnt -no SOURCE /) $(df -h / | awk 'NR==2 {print $2, "total,", $4, "free"}')"
+    [ "${1:-}" = "--selftest" ] && echo "FURCATE-SELFTEST-END"
+    return 0
+}
+
+extension_install() {
+    need_root "extension install"
+    src=${1:?usage: furcate-os extension install DIR}
+    raw=$(ls "$src"/*.raw 2>/dev/null | head -1)
+    [ -n "$raw" ] || { echo "no .raw image in $src" >&2; exit 1; }
+    name=$(basename "$raw" .raw)
+    rel="$src/$name.release"
+    [ -f "$rel" ] || { echo "no $name.release beside $raw" >&2; exit 1; }
+    ver=$(val "$rel" FURCATE_VERSION)
+    [ -n "$ver" ] || { echo "$rel has no FURCATE_VERSION" >&2; exit 1; }
+    if [ -f "$src/$name.raw.sha256" ]; then
+        (cd "$src" && sha256sum -c --quiet "$name.raw.sha256") || { echo "checksum mismatch for $raw" >&2; exit 1; }
+    fi
+    # With or without a checksum file: every block against the image's own
+    # signed root hash, before anything is copied into the store.
+    /usr/libexec/furcate-os/extension-verify "$raw" || { echo "refusing $raw: it does not match its root hash; nothing installed" >&2; exit 1; }
+    dest="$STORE/$name/$ver"
+    [ -e "$dest" ] && { echo "$name $ver is already in the store" >&2; exit 1; }
+    prev=$(awk -v n="$name" '$1 == n {print $2}' "$RUN/extensions.selected" 2>/dev/null)
+    mkdir -p "$dest"
+    cp "$raw" "$dest/$name.raw"
+    cp "$rel" "$dest/$name.release"
+    /usr/libexec/furcate-os/extension-select
+    if ! grep -qx "$name $ver" "$RUN/extensions.selected"; then
+        echo "the selector did not choose $name $ver for this base:" >&2
+        cat "$RUN/degraded" >&2 2>/dev/null
+        rm -rf "$dest"; /usr/libexec/furcate-os/extension-select
+        exit 1
+    fi
+    systemd-sysext refresh --image-policy=root=signed:=absent
+    /usr/libexec/furcate-os/extension-check
+    if ! grep -q '^ok' "$RUN/extensions.status"; then
+        echo "health check failed after merging $name $ver: $(cat "$RUN/extensions.status"); rolling back to ${prev:-nothing}" >&2
+        rm -rf "$dest"
+        /usr/libexec/furcate-os/extension-select
+        systemd-sysext refresh --image-policy=root=signed:=absent
+        /usr/libexec/furcate-os/extension-check
+        exit 1
+    fi
+    /usr/libexec/furcate-os/post-merge
+    systemctl try-restart furcated.service 2>/dev/null
+    # Keep the running version and the one before it.
+    ls -1 "$STORE/$name" | sort -V -r | tail -n +3 | while read -r old; do rm -rf "${STORE:?}/$name/$old"; done
+    echo "$name $ver merged (was ${prev:-none}); check: $(cat "$RUN/extensions.status")"
+}
+
+otp_provision() {
+    need_root otp-provision
+    if ! tr -d '\0' < /sys/firmware/devicetree/base/model 2>/dev/null | grep -q "Raspberry Pi 5"; then
+        echo "this is not a Raspberry Pi 5" >&2; exit 1
+    fi
+    if pub=$(rpi-fw-crypto pubkey --key-id 1 --outform hex 2>/dev/null) && [ -n "$(echo "$pub" | tr -d '0 \n')" ]; then
+        echo "the OTP device key is already provisioned; public key:"; echo "$pub"; exit 0
+    fi
+    cat <<'EOF'
+This writes a device-unique ECDSA P-256 private key into the SoC's
+one-time-programmable memory. The firmware generates it on the chip.
+
+  * It is PERMANENT. OTP cannot be erased or rewritten, by anyone, ever.
+  * The board's node identity changes from its silicon fingerprint (class
+    Soft) to this key (class Device). If the node was already admitted to a
+    cluster, the operator re-enrols it (furcatectl identity re-enrol).
+  * Root on this board can still use the key, and without Pi secure boot
+    someone who can edit config.txt can read it. See the README.
+
+Type the board serial number to continue:
+EOF
+    serial=$(tr -d '\0' < /sys/firmware/devicetree/base/serial-number)
+    printf '> '
+    read -r answer
+    [ "$answer" = "$serial" ] || { echo "serial did not match; nothing written"; exit 1; }
+    rpi-fw-crypto genkey --key-id 1 --alg ec || exit 1
+    rpi-fw-crypto pubkey --key-id 1 --outform hex
+    if [ ! -f /etc/furcate/operator.pub ]; then
+        # Not admitted to a cluster yet: drop the local fingerprint pin so
+        # furcated selects the OTP key at its next start.
+        rm -f /etc/furcate/soft-identity.json /var/lib/furcate/node-key/enrolled.json
+        # node.key marks a node that ran on its fingerprint identity; furcated
+        # refuses to start as a different node while it is there. Kept, moved
+        # aside: it is the record of the identity this board had before.
+        if [ -f /var/lib/furcate/node-key/node.key ]; then
+            archived=/var/lib/furcate/node-key/node.key.pre-otp-$(date -u +%Y%m%dT%H%M%SZ)
+            mv /var/lib/furcate/node-key/node.key "$archived"
+            echo "the fingerprint-era node.key is kept as $archived"
+        fi
+        echo "local fingerprint enrolment cleared; furcated now starts as the OTP key: systemctl restart furcated"
+    else
+        echo "this node is admitted to a cluster: re-enrol it with the operator key (furcatectl identity re-enrol)"
+    fi
+}
+
+case "${1:-status}" in
+    status) shift 2>/dev/null; status "${1:-}" ;;
+    extension) [ "${2:-}" = install ] || { echo "usage: furcate-os extension install DIR" >&2; exit 2; }; extension_install "${3:-}" ;;
+    identity) need_root identity; /usr/libexec/furcate-os/identity ;;
+    wifi) shift; need_root wifi; exec /usr/libexec/furcate-os/wifi "$@" ;;
+    otp-provision) otp_provision ;;
+    eeprom-update) shift; eeprom_update "$@" ;;
+    base-update) shift; exec /usr/libexec/furcate-os/base update "$@" ;;
+    base-tryboot) exec /usr/libexec/furcate-os/base tryboot ;;
+    base-status) exec /usr/libexec/furcate-os/base status ;;
+    -h|--help|help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//' ;;
+    *) echo "unknown command: $1 (try furcate-os help)" >&2; exit 2 ;;
+esac

@@ -1,0 +1,140 @@
+#!/bin/sh
+# Boot a Furcate OS Raspberry Pi 5 image in qemu-system-aarch64 and check it.
+#
+#   os/tests/qemu-boot <image.raw|image.img.zst> <expected-version> [disk-size]
+#
+# Uses the image's own kernel, initrd and cmdline from boot slot A, and the
+# image itself as the disk (virtio), enlarged to [disk-size] (default 16G) so
+# the first-boot growth of the state partition is exercised. qemu's "virt"
+# board is not a Pi: its device tree is given the Pi 5's model, board serial,
+# revision code and device-unique id so the silicon-fingerprint identity path
+# runs. The OTP device key cannot be emulated; on qemu that path reports the
+# firmware service as absent.
+#
+# Passes when the console shows a login prompt, the self-test reports the
+# furcate extension merged at <expected-version> with the version check ok,
+# <expected-version> being the seeded extension's own FURCATE_VERSION (not the
+# base's when the image reuses an earlier extension: os/build.sh image says so),
+# and every in-guest check passes (os/tests/qemu-checks: health layer, journal
+# upload, power monitor, signing broker, tampered extensions without a
+# checksum, board userspace, and a watchdog reset after a forced hang). The
+# checks run from the test's own copy of the disk (copied onto boot-a and
+# started by systemd.run); the image under test is not changed. qemu gets an
+# emulated watchdog (i6300esb) and, on the kernel command line, panic=0, so
+# after the forced hang only the watchdog can restart the guest.
+set -eu
+src=${1:?usage: qemu-boot <image> <expected-version> [disk-size]}
+want=${2:?usage: qemu-boot <image> <expected-version> [disk-size]}
+size=${3:-16G}
+timeout=${FURCATE_QEMU_TIMEOUT:-1500}
+work=$(mktemp -d "${FURCATE_QEMU_WORK:-/var/tmp}/furcate-qemu.XXXXXX")
+trap 'kill "$qpid" 2>/dev/null; rm -rf "$work"' EXIT
+qpid=""
+
+case "$src" in
+    *.zst) zstd -d -q "$src" -o "$work/disk.raw" ;;
+    *) cp --sparse=always "$src" "$work/disk.raw" ;;
+esac
+truncate -s "$size" "$work/disk.raw"
+
+off=$(sfdisk -J "$work/disk.raw" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]
+p = [p for p in t["partitions"] if p.get("name") == "boot-a"][0]
+print(p["start"] * t.get("sectorsize", 512))')
+for f in vmlinuz initrd.img cmdline.txt; do
+    mcopy -n -i "$work/disk.raw@@$off" "::$f" "$work/$f"
+done
+here=$(cd "$(dirname "$0")" && pwd)
+mcopy -o -i "$work/disk.raw@@$off" "$here/qemu-checks" ::fqchecks.sh
+cmdline=$(sed -e 's/console=[^ ]*//g' -e 's/panic=[0-9]*/panic=0/' "$work/cmdline.txt" | tr -s ' ')
+run="/bin/sh -c 'mkdir -p /run/fqt && mount -o ro /dev/disk/by-partlabel/boot-a /run/fqt && cp /run/fqt/fqchecks.sh /run/fqchecks.sh; umount /run/fqt; systemd-run --no-block --unit=furcate-qemu-checks /bin/sh /run/fqchecks.sh'"
+cmdline="console=ttyAMA0 $cmdline furcate.selftest systemd.run=\"$run\" systemd.run_success_action=none systemd.run_failure_action=none"
+echo "cmdline: $cmdline"
+
+# On an aarch64 host with /dev/kvm the guest runs on KVM; elsewhere it is
+# emulated (slower, same result).
+if [ "$(uname -m)" = aarch64 ] && [ -w /dev/kvm ]; then
+    machine="virt,gic-version=host"; accel="-accel kvm -cpu host"
+else
+    machine="virt,gic-version=2"; accel="-cpu cortex-a76"
+fi
+echo "qemu: $machine $accel"
+qemu-system-aarch64 -M "$machine,dumpdtb=$work/virt.dtb" $accel -smp 4 -m 2048 -display none -nic none >/dev/null 2>&1
+dtc -q -I dtb -O dts -o "$work/virt.dts" "$work/virt.dtb"
+python3 - "$work/virt.dts" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+# Root properties must come before subnodes: the serial goes beside model.
+s = re.sub(r'(\n\tmodel = )"[^"]*";', r'\1"Raspberry Pi 5 Model B Rev 1.0";\n\tserial-number = "7f3a91c2d04e5b16";', s, count=1)
+pi = ('\tsystem {\n\t\tlinux,revision = <0xd04170>;\n\t\tlinux,serial = <0x7f3a91c2 0xd04e5b16>;\n\t};\n')
+# The supply the firmware reports on a Pi 5 (chosen/power): 1500 mA, USB
+# high current off, as on the owner's board with its weaker supply.
+power = ('\t\tpower {\n\t\t\tmax_current = <0x5dc>;\n\t\t\tusb_max_current_enable = <0x0>;\n\t\t};\n')
+s = s.replace("\n\tchosen {", "\n" + pi + "\tchosen {\n\t\trpi-duid = \"QEMU0TEST1\";", 1)
+# Subnodes come after the properties: the supply node goes last in chosen.
+c = s.index("\n\tchosen {")
+e = s.index("\n\t};", c)
+s = s[:e] + "\n" + power.rstrip("\n") + s[e:]
+open(p, "w").write(s)
+PY
+dtc -q -I dts -O dtb -o "$work/pi.dtb" "$work/virt.dts"
+
+log="${FURCATE_QEMU_LOG:-$work/console.log}"
+qemu-system-aarch64 -M "$machine" $accel -smp 4 -m 2048 \
+    -display none -monitor none -serial "file:$log" \
+    -kernel "$work/vmlinuz" -initrd "$work/initrd.img" -dtb "$work/pi.dtb" \
+    -append "$cmdline" \
+    -drive "if=none,file=$work/disk.raw,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+    -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:${FURCATE_QEMU_SSH_PORT:-10022}-:22" -device virtio-net-device,netdev=n0 \
+    -device i6300esb -action watchdog=reset &
+qpid=$!
+
+t=0
+while [ "$t" -lt "$timeout" ]; do
+    if grep -q "FURCATE-CHECKS-DONE" "$log" 2>/dev/null && grep -q "login:" "$log" 2>/dev/null; then
+        break
+    fi
+    kill -0 "$qpid" 2>/dev/null || { echo "qemu exited"; break; }
+    sleep 10; t=$((t + 10))
+done
+sleep 5
+# Network and sshd, from outside the guest: the host key is offered, and a
+# password login is refused before any password is asked for.
+port=${FURCATE_QEMU_SSH_PORT:-10022}
+keyscan=0
+for i in 1 2 3 4 5 6; do
+    keyscan=$(ssh-keyscan -T 10 -t ed25519 -p "$port" 127.0.0.1 2>/dev/null | grep -c ssh-ed25519 || true)
+    [ "${keyscan:-0}" -ge 1 ] && break
+    sleep 5
+done
+pwlogin=$(ssh -p "$port" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o PreferredAuthentications=password -o PubkeyAuthentication=no -o BatchMode=yes \
+    -o ConnectTimeout=20 furcate@127.0.0.1 true 2>&1 || true)
+kill "$qpid" 2>/dev/null || true
+sed -n '/FURCATE-SELFTEST-BEGIN/,/FURCATE-SELFTEST-END/p' "$log"
+
+fail=0
+check() { if grep -q -- "$2" "$log"; then echo "PASS $1"; else echo "FAIL $1"; fail=1; fi; }
+check "reached a login prompt" "login:"
+check "self-test ran" "FURCATE-SELFTEST-END"
+check "furcate extension merged" "merged furcate: FURCATE_VERSION=$want ARCHITECTURE=arm64"
+check "selector chose $want" "  furcate $want"
+check "version check ok" "extension check: ok furcate=$want"
+check "/usr from dm-verity" "usr         /dev/mapper/usr"
+check "dm-verity verified" "dm-verity: verified"
+check "state partition grown" "furcate-firstboot: state partition"
+check "silicon fingerprint identity" "identity    fingerprint"
+check "DHCP address on the wired link" "network     .* 10.0.2.15/24"
+check "sshd running with authorised keys" "ssh         active, [1-9][0-9]* authorised key"
+if [ "${keyscan:-0}" -ge 1 ]; then echo "PASS sshd answers on the network with an ed25519 host key"; else echo "FAIL sshd did not answer on the network"; fail=1; fi
+case "$pwlogin" in
+    *"Permission denied (publickey)"*) echo "PASS password login refused (publickey only)" ;;
+    *) echo "FAIL password login not refused as expected: $pwlogin"; fail=1 ;;
+esac
+grep -a "^FURCATE-CHECK " "$log" | sed 's/^FURCATE-CHECK //'
+grep -aq "^FURCATE-CHECK FAIL" "$log" && fail=1
+grep -aq "FURCATE-CHECKS-DONE" "$log" && echo "PASS in-guest checks completed" || { echo "FAIL in-guest checks did not complete"; fail=1; }
+[ -n "${FURCATE_QEMU_LOG:-}" ] || cp "$log" "${src%.*}.qemu-console.log" 2>/dev/null || true
+exit "$fail"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Furcate OS: follow the journal upload setting in node.conf
+
+[Path]
+PathChanged=/etc/furcate/node.conf
+Unit=furcate-journal-upload-config.service
+
+[Install]
+WantedBy=paths.target

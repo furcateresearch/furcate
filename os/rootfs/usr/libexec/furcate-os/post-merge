@@ -1,0 +1,21 @@
+#!/bin/sh
+# After systemd-sysext merged the extensions, make what they ship take effect
+# in this boot, as a base package would at install:
+#
+#   users and groups (sysusers.d), udev rules (re-applied to present devices),
+#   units (reload, then pull in what multi-user.target and bluetooth.target
+#   want: units an extension enables exist only now, after the boot
+#   transaction was computed), and .network files.
+#
+# Runs from systemd-sysext.service (ExecStartPost) at boot, and from
+# `furcate-os extension install` after a live merge. Never fatal: a failure
+# here is logged and the merge stands.
+set -u
+log() { echo "<6>furcate-post-merge: $*" >&2; }
+systemd-sysusers || log "systemd-sysusers failed"
+udevadm control --reload 2>/dev/null && udevadm trigger --action=change 2>/dev/null || log "udev reload failed"
+systemctl daemon-reload || log "daemon-reload failed"
+systemctl --no-block start multi-user.target || log "could not queue multi-user.target"
+[ -e /sys/class/bluetooth/hci0 ] && systemctl --no-block start bluetooth.target
+if systemctl -q is-active systemd-networkd.service; then networkctl reload || log "networkctl reload failed"; fi
+exit 0

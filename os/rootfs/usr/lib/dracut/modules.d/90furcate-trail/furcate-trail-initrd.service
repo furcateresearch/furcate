@@ -1,0 +1,13 @@
+[Unit]
+Description=Furcate OS boot trail: initrd reached
+DefaultDependencies=no
+After=systemd-udev-trigger.service
+ConditionKernelCommandLine=furcate.slot
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/libexec/furcate-os/breadcrumb initrd
+TimeoutStartSec=45
+
+[Install]
+WantedBy=sysinit.target

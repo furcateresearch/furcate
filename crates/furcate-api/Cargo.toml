@@ -1,0 +1,18 @@
+[package]
+name = "furcate-api"
+version.workspace = true
+edition.workspace = true
+description = "The local API surface."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+furcate-authn = { path = "../furcate-authn" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }

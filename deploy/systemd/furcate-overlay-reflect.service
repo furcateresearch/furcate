@@ -1,0 +1,42 @@
+[Unit]
+# Tell an overlay member the address its packets arrive from (STUN Binding,
+# RFC 8489 -- that one request, nothing else from the protocol).
+#
+# Only useful on a node with a public address: a member behind a NAT asks it
+# what its router presents to the world, and publishes that in its hint so a
+# peer behind another NAT can send to it at the same moment it sends back. The
+# reflector learns an address and a port per request and keeps neither.
+#
+# SHIPS DISABLED. It listens on a public UDP port, which is a decision about
+# this host's exposure:
+#   systemctl enable --now furcate-overlay-reflect
+# Members then list it in FURCATE_OVERLAY_REFLECTORS (HOST:3478).
+Description=Furcate overlay reflector (what address do my packets come from)
+Documentation=https://github.com/furcateresearch/furcate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/furcate/overlay.env
+ExecStart=/usr/libexec/furcate/overlay reflect
+Restart=on-failure
+RestartSec=10
+DynamicUser=yes
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

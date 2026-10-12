@@ -1,0 +1,12 @@
+# The firmware mailbox stays root-only: the OTP device key is used through
+# furcate-fwcrypto-broker (sign and pubkey for key 1 only), never by opening
+# the mailbox from an unprivileged service.
+#
+# Transition: a furcated that still opens the mailbox itself (it shells out to
+# rpi-fw-crypto) gets the device through the furcate-fwcrypto group while
+# /etc/furcate/fwcrypto-direct exists. /dev/vcio_crypto passes only the crypto
+# tags; /dev/vcio (Ubuntu's 7.0 raspi kernel has only this one) is the whole
+# firmware mailbox: clocks, voltages, power and memory as well as signing.
+# Remove the flag once furcated signs through the broker.
+KERNEL=="vcio_crypto", TEST=="/etc/furcate/fwcrypto-direct", GROUP="furcate-fwcrypto", MODE="0660"
+KERNEL=="vcio", TEST=="/etc/furcate/fwcrypto-direct", TEST!="/sys/class/misc/vcio_crypto", GROUP="furcate-fwcrypto", MODE="0660"

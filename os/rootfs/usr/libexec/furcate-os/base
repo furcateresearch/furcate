@@ -1,0 +1,531 @@
+#!/bin/sh
+# The base A/B update of a Furcate OS Raspberry Pi 5: a new base (kernel,
+# initrd, firmware files, /usr) goes into the slot that is not running, the
+# board boots it once, and it becomes the default only after it proves
+# healthy. Anything else comes back on the slot it left.
+#
+#   base update BUNDLE [--extension DIR]... [--now]
+#                       verify BUNDLE (signature, then every checksum), write
+#                       it into the idle slot, stage the extensions for that
+#                       slot and arm a one-time boot of it; --now boots it
+#   base tryboot        boot the armed slot once (reboot "<its partition> tryboot")
+#   base status         both slots, the default, the armed one, the last update
+#                       and the boot trail of the slot it tried
+#   base confirm        run at every boot by furcate-base-confirm.service:
+#                       keep a trial boot that passes its checks, otherwise
+#                       go back to the other slot; finish a rollback
+#
+# Slots: A = boot-a (partition 2) + usr-a + usr-a-verity, B = boot-b
+# (partition 3) + usr-b + usr-b-verity. The Pi 5 bootloader reads autoboot.txt
+# on partition 1: [all] boot_partition is the default slot, [tryboot]
+# boot_partition the slot for a reboot with the tryboot flag, which the
+# bootloader honours for that one boot only; any later reset is a normal boot.
+#
+# The trial reboot names the partition: reboot "3 tryboot" for slot B, "2
+# tryboot" for slot A. A partition given to reboot overrides autoboot.txt,
+# and "0" means "the default partition", which on a Pi 5 sent the trial past
+# both slots: with the tryboot flag set and autoboot.txt's A/B choice bypassed,
+# the bootloader looked for tryboot.txt, found none and left the SD card.
+# Both boot partitions therefore carry tryboot.txt, an exact copy of their
+# config.txt, so a trial boots whichever way the bootloader reads the flag.
+#
+# Boot trail: a trial slot's initrd and early userspace append "slot X
+# reached initrd|root|userspace" lines to furcate-boot-trail.txt on the slot's
+# own boot partition (/usr/libexec/furcate-os/breadcrumb); after a rollback,
+# status shows how far the trial got.
+#
+# What this writes: the idle slot's three partitions, autoboot.txt,
+# tryboot.txt on the running slot's boot partition, its own
+# records in /var/lib/furcate-os/base/, and furcate-base-confirm.service in
+# /etc/systemd/system with emergency/rescue drop-ins. The confirm step installs staged extensions into the
+# extension store through `furcate-os extension install`. Once a trial is
+# kept, the new base's service defaults (its 10-furcate-os.preset) are applied
+# to the units they name where the operator has not chosen otherwise (see
+# apply_presets). Nothing else on the state partition is written: not
+# /etc/furcate, not /var/lib/furcate, not network or overlay settings, not
+# Wi-Fi profiles.
+set -u
+CRT=/usr/lib/verity.d/furcate-release.crt
+DIR=/var/lib/furcate-os/base
+REC=$DIR/update
+AGENT=$DIR/furcate-base
+UNIT=/etc/systemd/system/furcate-base-confirm.service
+UNITS_FROM=$DIR/units-from
+PRESET=/usr/lib/systemd/system-preset/10-furcate-os.preset
+PL=/dev/disk/by-partlabel
+RUN=/run/furcate-os
+
+say() { echo "furcate-base: $*"; }
+die() { echo "furcate-base: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" = 0 ] || die "$1: run as root"; }
+val() { sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -1; }
+cmdline_val() { tr ' ' '\n' < /proc/cmdline | sed -n "s/^$1=//p" | tail -1; }
+other() { [ "$1" = a ] && echo b || echo a; }
+part_of() { [ "$1" = a ] && echo 2 || echo 3; }
+slot_of() { case "$1" in 2) echo a ;; 3) echo b ;; *) echo "?" ;; esac; }
+running_slot() { s=$(cmdline_val furcate.slot); case "$s" in a|b) echo "$s" ;; *) die "this boot names no slot (furcate.slot= on the kernel command line)" ;; esac; }
+
+# The record of the current update: key=value lines, replaced atomically.
+rec_set() { # rec_set KEY VALUE...
+    mkdir -p "$DIR"
+    k=$1; shift
+    { grep -v "^$k=" "$REC" 2>/dev/null; echo "$k=$*"; } > "$REC.new" && mv "$REC.new" "$REC"
+    sync "$REC" 2>/dev/null || sync
+}
+rec() { val "$REC" "$1"; }
+
+# autoboot.txt on the select partition.
+sel_mnt=""
+sel_open() {
+    sel_mnt=$(mktemp -d)
+    mount -t vfat "$PL/select" "$sel_mnt" || { rmdir "$sel_mnt"; sel_mnt=""; die "cannot mount the select partition"; }
+}
+sel_close() { [ -n "$sel_mnt" ] || return 0; sync; umount "$sel_mnt"; rmdir "$sel_mnt"; sel_mnt=""; }
+ab_get() { # ab_get FILE SECTION
+    awk -v s="[$2]" '/^\[/ { cur = ($0 == s) } cur && /^boot_partition=/ { sub(/^boot_partition=/, ""); v = $0 } END { print v }' "$1"
+}
+ab_read() { # sets ab_all, ab_try
+    sel_open
+    ab_all=$(ab_get "$sel_mnt/autoboot.txt" all); ab_try=$(ab_get "$sel_mnt/autoboot.txt" tryboot)
+    sel_close
+}
+ab_write() { # ab_write ALL_PARTITION TRYBOOT_PARTITION
+    sel_open
+    printf '[all]\ntryboot_a_b=1\nboot_partition=%s\n[tryboot]\nboot_partition=%s\n' "$1" "$2" > "$sel_mnt/autoboot.new" \
+        && sync && mv "$sel_mnt/autoboot.new" "$sel_mnt/autoboot.txt"
+    rc=$?
+    sel_close
+    [ "$rc" = 0 ] || die "cannot write autoboot.txt"
+    [ "$(ab_get_now all)" = "$1" ] && [ "$(ab_get_now tryboot)" = "$2" ] || die "autoboot.txt does not read back as written"
+}
+ab_get_now() { sel_open; v=$(ab_get "$sel_mnt/autoboot.txt" "$1"); sel_close; echo "$v"; }
+
+# tryboot.txt beside config.txt: what the bootloader loads when the tryboot
+# flag is set and the A/B choice of autoboot.txt does not apply.
+put_tryboot() { # put_tryboot MOUNTED_BOOT_DIR
+    [ -f "$1/config.txt" ] || return 1
+    cmp -s "$1/config.txt" "$1/tryboot.txt" 2>/dev/null && return 0
+    cp "$1/config.txt" "$1/tryboot.new" && sync && mv "$1/tryboot.new" "$1/tryboot.txt" && sync \
+        && cmp -s "$1/config.txt" "$1/tryboot.txt"
+}
+
+# The boot trail of a slot (see /usr/libexec/furcate-os/breadcrumb).
+TRAIL=furcate-boot-trail.txt
+trail_of() { # trail_of SLOT: the lines on that slot's boot partition, if any
+    m=$(mktemp -d)
+    if mount -t vfat -o ro "$PL/boot-$1" "$m" 2>/dev/null; then
+        cat "$m/$TRAIL" 2>/dev/null; umount "$m"
+    fi
+    rmdir "$m"
+}
+trail_summary() { # trail_summary SLOT: one line for the update record
+    l=$(trail_of "$1" | tail -1)
+    if [ -n "$l" ]; then echo "its last trail line: $l"
+    else echo "no trail line: it never reached its initrd (bootloader or kernel), or its base writes no trail"; fi
+}
+
+# The health facts the update is judged on.
+node_id() {
+    journalctl -b -u furcated.service -o cat --no-pager 2>/dev/null \
+        | sed -n 's/^furcated: \(furcate:node:[^ ]*\) .*/\1/p' | tail -1
+}
+fur0_state() {
+    if ip link show fur0 >/dev/null 2>&1; then
+        s=$(networkctl list --no-legend fur0 2>/dev/null | awk '{print $NF}')
+        echo "${s:-unmanaged}"
+    else
+        echo absent
+    fi
+}
+ext_status() { head -1 "$RUN/extensions.status" 2>/dev/null; }
+net_up() { [ -n "$(ip -o route show default 2>/dev/null; ip -6 -o route show default 2>/dev/null)" ]; }
+
+# ---------------------------------------------------------------- update
+verify_bundle() { # verify_bundle DIR: signature, then every listed file
+    b=$1
+    [ -f "$b/manifest" ] || die "refusing $b: no manifest; nothing written"
+    [ -f "$b/manifest.p7s" ] || die "refusing $b: the manifest is not signed (no manifest.p7s); nothing written"
+    [ -f "$CRT" ] || die "no release certificate at $CRT"
+    openssl smime -verify -inform DER -in "$b/manifest.p7s" -content "$b/manifest" \
+        -CAfile "$CRT" -purpose any -binary -out /dev/null 2>/dev/null \
+        || die "refusing $b: the manifest's signature does not verify against $CRT; nothing written"
+    [ "$(val "$b/manifest" BOARD)" = rpi5 ] || die "refusing $b: not a Raspberry Pi 5 base; nothing written"
+    for f in usr.img.zst usr-verity.img.zst boot.tar.zst furcate-base; do
+        grep -qE "^[0-9a-f]{64}  $f\$" "$b/manifest" || die "refusing $b: the manifest does not list $f; nothing written"
+    done
+    grep -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$b/manifest" | (cd "$b" && sha256sum -c --quiet -) >/dev/null 2>&1 \
+        || die "refusing $b: a file does not match its signed checksum; nothing written"
+    for k in FURCATE_BASE_VERSION USRHASH USR_SIZE USR_SHA256 USRV_SIZE USRV_SHA256; do
+        [ -n "$(val "$b/manifest" "$k")" ] || die "refusing $b: the manifest has no $k; nothing written"
+    done
+}
+
+write_part() { # write_part FILE.zst DEVICE SIZE SHA256
+    [ "$(blockdev --getsize64 "$2")" -ge "$3" ] || die "$2 is smaller than the image ($3 bytes)"
+    zstd -dc "$1" | dd of="$2" bs=4M conv=fsync status=none || die "writing $2 failed"
+    got=$(head -c "$3" "$2" | sha256sum | cut -c1-64)
+    [ "$got" = "$4" ] || die "$2 does not read back as written ($got)"
+}
+
+set_cmdline() { # set_cmdline FILE KEY VALUE: replace KEY=..., which must be there once
+    [ "$(tr ' ' '\n' < "$1" | grep -c "^$2=")" = 1 ] || die "the new cmdline.txt does not carry $2= exactly once"
+    tr -s ' \n' '  ' < "$1" | tr ' ' '\n' | grep -v '^$' \
+        | awk -v k="$2" -v v="$3" 'index($0, k "=") == 1 { $0 = k "=" v } { printf "%s%s", (NR > 1 ? " " : ""), $0 } END { print "" }' > "$1.new"
+    [ "$(tr ' ' '\n' < "$1.new" | grep -cx "$2=$3")" = 1 ] || die "cmdline.txt: $2 was not set"
+    mv "$1.new" "$1"
+}
+
+update() {
+    need_root update
+    bundle=""; exts=""; now=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --extension) [ -n "${2:-}" ] || die "--extension needs a directory"; exts="$exts $2"; shift 2 ;;
+            --now) now=1; shift ;;
+            -*) die "unknown option $1" ;;
+            *) [ -z "$bundle" ] || die "one bundle at a time"; bundle=$1; shift ;;
+        esac
+    done
+    [ -n "$bundle" ] || die "usage: base update BUNDLE [--extension DIR]... [--now]"
+    case "$bundle" in
+        *.tar) t=$(mktemp -d /var/tmp/furcate-base.XXXXXX); tar -xf "$bundle" -C "$t" || die "cannot unpack $bundle"
+               set -- "$t"/*; [ -d "$1" ] && bundle=$1 || bundle=$t ;;
+    esac
+    [ -d "$bundle" ] || die "no bundle at $bundle"
+
+    # Everything is checked before anything is written.
+    verify_bundle "$bundle"
+    cur=$(running_slot); new=$(other "$cur")
+    ab_read
+    [ "$ab_all" = "$(part_of "$cur")" ] || die "this boot (slot $cur) is not the default slot ($(slot_of "$ab_all")): a trial is in progress; let it finish"
+    case "$(rec STATE)" in trying) die "an update is being tried; let it finish" ;; esac
+    data=$(cmdline_val systemd.verity_usr_data | sed 's/^PARTUUID=//' | tr A-F a-f)
+    [ "$data" = "$(blkid -s PARTUUID -o value "$PL/usr-$cur" | tr A-F a-f)" ] || die "the running /usr is not usr-$cur; refusing"
+    for p in "boot-$new" "usr-$new" "usr-$new-verity" "state" "boot-$cur"; do
+        [ -b "$PL/$p" ] || die "no partition $p"
+    done
+    for e in $exts; do
+        raw=$(ls "$e"/*.raw 2>/dev/null | head -1)
+        [ -n "$raw" ] && [ -f "${raw%.raw}.release" ] || die "refusing extension $e: no <name>.raw with its .release; nothing written"
+        if [ -f "$raw.sha256" ]; then
+            (cd "$e" && sha256sum -c --quiet "$(basename "$raw").sha256") >/dev/null 2>&1 \
+                || die "refusing extension $e: checksum mismatch; nothing written"
+        fi
+        if [ -x /usr/libexec/furcate-os/extension-verify ]; then
+            /usr/libexec/furcate-os/extension-verify "$raw" || die "refusing extension $e: it does not match its signed root hash; nothing written"
+        else
+            say "this base has no extension-verify: $raw is verified on the new slot, before it is merged"
+        fi
+    done
+    systemctl -q is-active furcated.service || die "furcated is not active on this slot: the new slot could not be judged against it; fix this boot first"
+    nid=$(node_id); [ -n "$nid" ] || die "cannot read this node's id from furcated's journal; fix this boot first"
+    f0=$(fur0_state)
+    from_ver=$(sed -n 's/^IMAGE_VERSION=//p' /usr/lib/os-release | tr -d '"')
+    to_ver=$(val "$bundle/manifest" FURCATE_BASE_VERSION)
+    usrhash=$(val "$bundle/manifest" USRHASH)
+    say "verified $to_ver (signature and checksums); writing slot $new while $from_ver runs on slot $cur"
+
+    # A tryboot during the write boots the running slot, never a half-written one.
+    ab_write "$(part_of "$cur")" "$(part_of "$cur")"
+    rm -rf "$DIR/staged"
+    mkdir -p "$DIR"
+    printf 'STATE=writing\nFROM_SLOT=%s\nTO_SLOT=%s\nFROM_VERSION=%s\nTO_VERSION=%s\nUSRHASH=%s\nNODE_ID=%s\nFUR0=%s\nSTARTED=%s\n' \
+        "$cur" "$new" "$from_ver" "$to_ver" "$usrhash" "$nid" "$f0" "$(date -u +%FT%TZ)" > "$REC.new" && mv "$REC.new" "$REC" \
+        || die "cannot write $REC"
+
+    # The old base's units, their state and its default for each, for the
+    # service defaults step once the new base is kept (apply_presets).
+    unit_table > "$UNITS_FROM.new" && mv "$UNITS_FROM.new" "$UNITS_FROM" || die "cannot write $UNITS_FROM"
+
+    m=$bundle/manifest
+    write_part "$bundle/usr.img.zst" "$PL/usr-$new" "$(val "$m" USR_SIZE)" "$(val "$m" USR_SHA256)"
+    write_part "$bundle/usr-verity.img.zst" "$PL/usr-$new-verity" "$(val "$m" USRV_SIZE)" "$(val "$m" USRV_SHA256)"
+    veritysetup verify "$PL/usr-$new" "$PL/usr-$new-verity" "$usrhash" >/dev/null 2>&1 \
+        || die "usr-$new does not verify against $usrhash after writing; slot $cur stays the only one booted"
+
+    bm=$(mktemp -d); am=$(mktemp -d)
+    mount -t vfat "$PL/boot-$new" "$bm" || die "cannot mount boot-$new"
+    mount -t vfat -o ro "$PL/boot-$cur" "$am" || { umount "$bm"; die "cannot mount boot-$cur"; }
+    find "$bm" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    zstd -dc "$bundle/boot.tar.zst" | tar -x -C "$bm" --no-same-owner --no-same-permissions \
+        || { umount "$bm" "$am"; die "unpacking the boot files into boot-$new failed"; }
+    (cd "$bm" && sha256sum -c --quiet boot.sha256) >/dev/null 2>&1 \
+        || { umount "$bm" "$am"; die "boot-$new does not read back as written"; }
+    # This node's settings travel with it; the bundle carries none.
+    [ -f "$am/furcate-node.txt" ] && cp "$am/furcate-node.txt" "$bm/furcate-node.txt"
+    c=$bm/cmdline.txt
+    set_cmdline "$c" root "PARTUUID=$(blkid -s PARTUUID -o value "$PL/state")"
+    set_cmdline "$c" usrhash "$usrhash"
+    set_cmdline "$c" systemd.verity_usr_data "PARTUUID=$(blkid -s PARTUUID -o value "$PL/usr-$new")"
+    set_cmdline "$c" systemd.verity_usr_hash "PARTUUID=$(blkid -s PARTUUID -o value "$PL/usr-$new-verity")"
+    set_cmdline "$c" furcate.slot "$new"
+    # A trial that stops in the initrd's emergency shell reboots, which
+    # returns to the old slot; the confirm step removes both once it keeps the slot.
+    grep -q 'rd.emergency=reboot' "$c" || sed -i '1s/$/ rd.shell=0 rd.emergency=reboot/' "$c"
+    printf 'FURCATE_BASE_VERSION=%s\nUSRHASH=%s\nWRITTEN=%s\n' "$to_ver" "$usrhash" "$(date -u +%FT%TZ)" > "$bm/furcate-base.txt"
+    put_tryboot "$bm" || { umount "$bm" "$am"; die "cannot write tryboot.txt on boot-$new"; }
+    sync; umount "$bm" "$am"
+    # The running slot gets its tryboot.txt too: whatever partition the
+    # bootloader picks while the flag is set, it finds a bootable one.
+    mount -t vfat "$PL/boot-$cur" "$am" || { rmdir "$bm" "$am"; die "cannot mount boot-$cur to write its tryboot.txt"; }
+    put_tryboot "$am" || { umount "$am"; rmdir "$bm" "$am"; die "cannot write tryboot.txt on boot-$cur"; }
+    sync; umount "$am"; rmdir "$bm" "$am"
+
+    # Extensions for the new slot wait outside the store: the old slot never
+    # sees them, so a rollback lands on exactly the store it left.
+    for e in $exts; do
+        raw=$(ls "$e"/*.raw | head -1); name=$(basename "$raw" .raw)
+        mkdir -p "$DIR/staged/$name"
+        cp "$raw" "${raw%.raw}.release" "$DIR/staged/$name/"
+        [ -f "$raw.sha256" ] && cp "$raw.sha256" "$DIR/staged/$name/"
+        say "staged extension $name $(val "${raw%.raw}.release" FURCATE_VERSION) for slot $new"
+    done
+
+    # The confirm step runs from the state partition, so it works whatever
+    # the new base carries.
+    install -m 0755 "$bundle/furcate-base" "$AGENT.new" && mv "$AGENT.new" "$AGENT"
+    cat > "$UNIT.new" <<EOF
+[Unit]
+Description=Furcate OS base update: keep a trial boot that passes, or go back
+After=furcate-extension-select.service systemd-sysext.service furcate-identity.service systemd-networkd.service
+
+[Service]
+Type=exec
+ExecStart=$AGENT confirm
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    mv "$UNIT.new" "$UNIT"
+    mkdir -p /etc/systemd/system/multi-user.target.wants
+    ln -sf "$UNIT" /etc/systemd/system/multi-user.target.wants/furcate-base-confirm.service
+    # A trial that ends in emergency or rescue mode goes back to the old slot too.
+    for u in emergency rescue; do
+        mkdir -p "/etc/systemd/system/$u.service.d"
+        printf '[Service]\nExecStartPre=-%s emergency\n' "$AGENT" > "/etc/systemd/system/$u.service.d/50-furcate-base.conf"
+    done
+
+    rec_set STATE armed
+    ab_write "$(part_of "$cur")" "$(part_of "$new")"
+    say "slot $new holds $to_ver and is armed for one boot; slot $cur stays the default"
+    if [ "$now" = 1 ]; then tryboot; fi
+    say "boot it once with: furcate-os base-tryboot (or: $0 tryboot)"
+}
+
+tryboot() {
+    need_root tryboot
+    [ "$(rec STATE)" = armed ] || die "no update is armed"
+    [ "$(running_slot)" = "$(rec FROM_SLOT)" ] || die "the armed update was written from slot $(rec FROM_SLOT)"
+    ab_read
+    to=$(rec TO_SLOT); p=$(part_of "$to")
+    [ "$ab_try" = "$p" ] || die "autoboot.txt does not arm slot $to"
+    for s in a b; do
+        m=$(mktemp -d)
+        mount -t vfat -o ro "$PL/boot-$s" "$m" || { rmdir "$m"; die "cannot mount boot-$s"; }
+        cmp -s "$m/config.txt" "$m/tryboot.txt"; rc=$?
+        umount "$m"; rmdir "$m"
+        [ "$rc" = 0 ] || die "boot-$s has no tryboot.txt equal to its config.txt; run the update again"
+    done
+    rec_set STATE trying
+    rec_set TRIED "$(date -u +%FT%TZ)"
+    rec_set REBOOT_ARGUMENT "$p tryboot"
+    say "booting slot $to once (reboot \"$p tryboot\")"
+    sync
+    # The partition, never 0: an explicit partition overrides autoboot.txt,
+    # and 0 asks for the default one.
+    systemctl reboot --reboot-argument="$p tryboot"
+}
+
+# ---------------------------------------------------------------- service defaults
+unit_table() { # "<unit> <state> <preset>" for every unit file
+    systemctl list-unit-files --no-legend --no-pager 2>/dev/null | awk 'NF >= 2 { print $1, $2, (NF >= 3 ? $3 : "-") }'
+}
+
+# The state partition's /etc outlives a base update, so a unit a newer base
+# enables by default (its preset) would stay off on a board updated in place.
+# Once a trial is kept, each unit named in the new base's 10-furcate-os.preset
+# gets the new default (systemctl preset, then started) when
+#   - the old base did not ship it and the operator has not masked it, or
+#   - the old base shipped it, the new default differs from the old one, and
+#     its state is still the old default (nobody changed it).
+# A unit whose state differs from the old base's default is the operator's
+# choice and stays as it is; so does a masked unit, and anything not named in
+# the preset file. Recorded as PRESETS= in the update record.
+apply_presets() {
+    [ -f "$PRESET" ] || { rec_set PRESETS "none: this base has no $PRESET"; return 0; }
+    [ -f "$UNITS_FROM" ] || { rec_set PRESETS "not applied: no record of the old base's units (armed by an older furcate-base)"; return 0; }
+    now=$(unit_table)
+    applied=""; kept=""
+    for u in $(awk '$1 == "enable" || $1 == "disable" { print $2 }' "$PRESET" | sort -u); do
+        case "$u" in *'*'*|*'?'*|*@.*) continue ;; esac
+        line=$(echo "$now" | awk -v u="$u" '$1 == u { print $2, $3; exit }')
+        [ -n "$line" ] || continue                 # not shipped by this base
+        set -- $line; st=$1; def=$2
+        case "$def" in enabled|disabled) ;; *) continue ;; esac
+        [ "$st" = "$def" ] && continue
+        case "$st" in enabled|disabled) ;; *) kept="$kept $u($st)"; continue ;; esac
+        old=$(awk -v u="$u" '$1 == u { print $2, $3; exit }' "$UNITS_FROM")
+        if [ -n "$old" ]; then
+            set -- $old; ost=$1; odef=$2
+            if [ "$odef" = "$def" ] || [ "$ost" != "$odef" ]; then kept="$kept $u($st)"; continue; fi
+        fi
+        if systemctl preset "$u" >/dev/null 2>&1; then
+            applied="$applied $u:$def"
+            [ "$def" = enabled ] && systemctl --no-block start "$u" >/dev/null 2>&1
+        else
+            kept="$kept $u(preset failed)"
+        fi
+    done
+    rec_set PRESETS "applied:${applied:- none}; kept:${kept:- none}"
+    say "service defaults of the new base: applied:${applied:- none}; kept as the operator left them:${kept:- none}"
+}
+
+# ---------------------------------------------------------------- confirm
+finish() { # finish RESULT REASON: close the record into the history
+    rec_set STATE "$1"
+    [ -n "${2:-}" ] && rec_set REASON "$2"
+    rec_set FINISHED "$(date -u +%FT%TZ)"
+    { echo "---"; cat "$REC"; } >> "$DIR/history"
+    rm -rf "$DIR/staged" "$UNITS_FROM"
+}
+
+confirm() {
+    need_root confirm
+    [ -f "$REC" ] || exit 0
+    st=$(rec STATE); cur=$(running_slot); from=$(rec FROM_SLOT); to=$(rec TO_SLOT)
+    case "$st" in
+    armed)
+        [ "$cur" = "$to" ] || exit 0    # armed, not tried yet: stays armed
+        rec_set STATE trying ;;          # booted by a tryboot not issued by this tool
+    trying|failed) ;;
+    *) exit 0 ;;
+    esac
+    if [ "$cur" = "$from" ]; then
+        # Back on the slot the update left: the bootloader's own fallback.
+        if [ "$(rec STATE)" = failed ]; then reason=$(rec REASON); else reason="slot $to did not confirm (reset, hang or power loss during its trial); $(trail_summary "$to")"; fi
+        ab_read
+        ab_write "$(part_of "$from")" "$(part_of "$from")"
+        finish rolled-back "$reason"
+        echo "furcate-base: ROLLED BACK to slot $from ($(rec FROM_VERSION)): $reason" | systemd-cat -p err -t furcate-base
+        say "rolled back to slot $from: $reason"
+        exit 0
+    fi
+    [ "$(rec STATE)" = trying ] || exit 0
+    ab_read
+    if [ "$ab_all" = "$(part_of "$cur")" ]; then
+        finish confirmed "already the default"; exit 0
+    fi
+
+    fail() {
+        trap - EXIT
+        rec_set STATE failed
+        rec_set REASON "$1"
+        echo "furcate-base: slot $cur FAILED its trial: $1; going back to slot $from" | systemd-cat -p err -t furcate-base
+        say "slot $cur failed its trial: $1; rebooting into slot $from"
+        sync
+        systemctl reboot
+        exit 1
+    }
+    trap 'fail "the confirm step stopped unexpectedly"' EXIT
+
+    for d in "$DIR"/staged/*/; do
+        [ -d "$d" ] || continue
+        name=$(basename "$d")
+        if ! furcate-os extension install "$d" >"$RUN/base-ext-$name.log" 2>&1; then
+            fail "staged extension $name was not installed: $(tail -1 "$RUN/base-ext-$name.log")"
+        fi
+        say "installed staged extension $name: $(tail -1 "$RUN/base-ext-$name.log")"
+    done
+
+    timeout=$(cmdline_val furcate.base_timeout); timeout=${timeout:-300}
+    want_hash=$(rec USRHASH); want_id=$(rec NODE_ID); want_f0=$(rec FUR0)
+    t=0; why=""
+    while :; do
+        why=""
+        [ "$(cmdline_val usrhash)" = "$want_hash" ] || why="the running /usr root hash is not the update's"
+        [ -z "$why" ] && { [ -b /dev/mapper/usr ] || why="/usr is not on its dm-verity device"; }
+        [ -z "$why" ] && { case "$(ext_status)" in ok*) ;; *) why="extension check: $(ext_status)" ;; esac; }
+        [ -z "$why" ] && { systemctl -q is-active furcated.service || why="furcated is $(systemctl is-active furcated.service)"; }
+        [ -z "$why" ] && { got=$(node_id); [ "$got" = "$want_id" ] || why="node id ${got:-unknown} is not $want_id"; }
+        [ -z "$why" ] && { net_up || why="no default route (network down)"; }
+        [ -z "$why" ] && [ "$want_f0" = configured ] && { s=$(fur0_state); [ "$s" = configured ] || why="fur0 is $s (was configured)"; }
+        [ -z "$why" ] && break
+        [ "$t" -ge "$timeout" ] && fail "$why"
+        sleep 5; t=$((t + 5))
+    done
+    trap - EXIT
+
+    ab_write "$(part_of "$cur")" "$(part_of "$from")"
+    bm=$(mktemp -d)
+    if mount -t vfat "$PL/boot-$cur" "$bm"; then
+        sed -i -e 's/ rd\.shell=0//' -e 's/ rd\.emergency=reboot//' "$bm/cmdline.txt"; sync; umount "$bm"
+    fi
+    rmdir "$bm"
+    apply_presets
+    finish confirmed "node $want_id, extension check $(ext_status), furcated active, network up, fur0 $want_f0"
+    echo "furcate-base: slot $cur ($(rec TO_VERSION)) CONFIRMED and now the default" | systemd-cat -p notice -t furcate-base
+    say "slot $cur confirmed and now the default; slot $from keeps $(rec FROM_VERSION) for a manual rollback"
+}
+
+# A trial that reached emergency or rescue mode: record it and reboot, which
+# boots the old slot. Outside a trial this does nothing.
+emergency() {
+    [ -f "$REC" ] && [ "$(rec STATE)" = trying ] || exit 0
+    [ "$(cmdline_val furcate.slot)" = "$(rec TO_SLOT)" ] || exit 0
+    rec_set STATE failed
+    rec_set REASON "slot $(rec TO_SLOT) reached emergency or rescue mode"
+    echo "furcate-base: trial of slot $(rec TO_SLOT) reached emergency mode; going back to slot $(rec FROM_SLOT)" > /dev/console 2>/dev/null
+    sync
+    systemctl --no-block reboot
+}
+
+# ---------------------------------------------------------------- status
+slot_version() { # slot_version SLOT
+    if [ "$1" = "$(cmdline_val furcate.slot)" ]; then sed -n 's/^IMAGE_VERSION=//p' /usr/lib/os-release | tr -d '"'; return; fi
+    m=$(mktemp -d)
+    if mount -t vfat -o ro "$PL/boot-$1" "$m" 2>/dev/null; then
+        v=$(val "$m/furcate-base.txt" FURCATE_BASE_VERSION)
+        [ -n "$v" ] || v="the drive's original base (never written by an update)"
+        umount "$m"; echo "$v"
+    else echo "?"; fi
+    rmdir "$m"
+}
+
+status() {
+    need_root status
+    cur=$(running_slot)
+    ab_read
+    echo "running     slot $cur (partition $(part_of "$cur")), base $(sed -n 's/^IMAGE_VERSION=//p' /usr/lib/os-release | tr -d '"')"
+    bl=/proc/device-tree/chosen/bootloader
+    if [ -r "$bl/partition" ]; then
+        echo "bootloader  partition $(od -An -tu4 --endian=big "$bl/partition" | tr -d ' ')$( [ -r "$bl/tryboot" ] && echo ", tryboot $(od -An -tu4 --endian=big "$bl/tryboot" | tr -d ' ')")"
+    fi
+    echo "default     slot $(slot_of "$ab_all")$( [ "$ab_all" = "$(part_of "$cur")" ] || echo "  (this boot is a TRIAL)")"
+    echo "tryboot     slot $(slot_of "$ab_try")$( [ "$(rec STATE)" = armed ] && echo "  (ARMED: furcate-os base-tryboot)")"
+    for s in a b; do echo "slot $s      $(slot_version "$s")"; done
+    if [ -f "$REC" ]; then
+        echo "update      $(rec STATE): $(rec FROM_VERSION) (slot $(rec FROM_SLOT)) -> $(rec TO_VERSION) (slot $(rec TO_SLOT)), started $(rec STARTED)"
+        [ -n "$(rec REASON)" ] && echo "            $(rec REASON)"
+        [ -n "$(rec PRESETS)" ] && echo "defaults    $(rec PRESETS)"
+        for d in "$DIR"/staged/*/; do [ -d "$d" ] && echo "staged      $(basename "$d") $(val "$d"/*.release FURCATE_VERSION)"; done
+        [ -n "$(rec REBOOT_ARGUMENT)" ] && echo "trial       reboot \"$(rec REBOOT_ARGUMENT)\" at $(rec TRIED)"
+        to=$(rec TO_SLOT)
+        if [ -n "$to" ] && [ "$to" != "$cur" ]; then
+            t=$(trail_of "$to")
+            if [ -n "$t" ]; then echo "$t" | tail -8 | sed 's/^/trail       /'
+            else case "$(rec STATE)" in rolled-back|failed|trying) echo "trail       slot $to: none (the trial never reached its initrd, or its base writes no trail)" ;; esac; fi
+        fi
+    else
+        echo "update      none yet"
+    fi
+    return 0
+}
+
+case "${1:-}" in
+    update) shift; update "$@" ;;
+    tryboot) tryboot ;;
+    confirm) confirm ;;
+    emergency) emergency ;;
+    status) status ;;
+    *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

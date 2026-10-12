@@ -1,0 +1,80 @@
+#!/bin/sh
+# Raspberry Pi 5: kernel, initrd and the boot partition contents.
+#
+# The Pi 5 boot ROM runs the EEPROM bootloader, which reads autoboot.txt from
+# partition 1 and loads kernel, initrd, device tree and cmdline from the slot
+# partition it names (2 = A, 3 = B). Those files are staged here under
+# /boot/furcate and copied into the FAT partitions by repart. /boot itself is
+# excluded from the state partition.
+set -eu
+
+src="$SRCDIR/boards/rpi5"
+kver=$(ls /usr/lib/modules | sort -V | tail -1)
+[ -n "$kver" ] || { echo "no kernel installed" >&2; exit 1; }
+
+# The initrd mounts the state partition as / and /usr from its dm-verity
+# device, with the root hash taken from the kernel command line. Built with
+# dracut on systemd, which provides the usrhash= / mount.usr= handling.
+# Not host-only: the same initrd boots from USB, NVMe or SD. furcate-trail
+# writes the boot trail of a trial slot onto its boot partition (vfat).
+dracut --force --no-hostonly --kver "$kver" \
+    --add "systemd systemd-initrd systemd-veritysetup dm furcate-trail" \
+    --add-drivers "erofs dm_verity dm_mod usb_storage uas xhci_pci xhci_plat_hcd nvme sdhci_brcmstb virtio_blk virtio_mmio virtio_pci vfat nls_cp437 nls_iso8859_1" \
+    /boot/initrd.img-furcate
+
+slot=/boot/furcate/slot
+rm -rf /boot/furcate
+mkdir -p "$slot/overlays" /boot/furcate/select
+
+# The firmware decompresses a gzip kernel itself.
+cp "/boot/vmlinuz-$kver" "$slot/vmlinuz"
+mv /boot/initrd.img-furcate "$slot/initrd.img"
+
+dtbdir=""
+for d in "/usr/lib/firmware/$kver/device-tree" "/lib/firmware/$kver/device-tree" "/usr/lib/linux-image-$kver"; do
+    [ -d "$d" ] && { dtbdir=$d; break; }
+done
+[ -n "$dtbdir" ] || { echo "no device trees for $kver" >&2; exit 1; }
+find "$dtbdir" -name 'bcm2712*.dtb' -exec cp {} "$slot/" \;
+[ -f "$slot/bcm2712-rpi-5-b.dtb" ] || { echo "no bcm2712-rpi-5-b.dtb in $dtbdir" >&2; exit 1; }
+if [ -d "$dtbdir/overlays" ]; then
+    cp "$dtbdir"/overlays/*.dtbo "$slot/overlays/"
+    # overlay_map.dtb maps generic overlay names to the Pi 5 variants
+    # (vc4-kms-v3d -> vc4-kms-v3d-pi5): without it that overlay does not
+    # apply and there is no display and no HDMI audio. hat_map.dtb lets the
+    # firmware load the overlay a HAT names in its EEPROM.
+    cp "$dtbdir/overlays/overlay_map.dtb" "$dtbdir/overlays/hat_map.dtb" "$slot/overlays/"
+    [ -f "$dtbdir/overlays/README" ] && cp "$dtbdir/overlays/README" "$slot/overlays/"
+fi
+
+install -m644 "$src/boot/config.txt" "$slot/config.txt"
+# tryboot.txt, an exact copy: what the bootloader loads when the tryboot flag
+# is set and autoboot.txt's A/B choice does not apply (os/README.md, "The base
+# (A/B)"). With it, a trial boot never finds the slots unbootable.
+install -m644 "$src/boot/config.txt" "$slot/tryboot.txt"
+# cmdline.txt is completed after the image is assembled, when the /usr root
+# hash and partition UUIDs exist (boards/rpi5/postoutput).
+install -m644 "$src/boot/cmdline.txt.in" "$slot/cmdline.txt"
+install -m644 "$src/boot/autoboot.txt" /boot/furcate/select/autoboot.txt
+install -m644 "$src/boot/furcate-node.txt" "$slot/furcate-node.txt"
+mkdir -p /usr/lib/furcate-os
+echo "$kver" > /usr/lib/furcate-os/kernel-version
+
+# Configuration for the Pi 5 bootloader EEPROM, for reference and for
+# `rpi-eeprom-config --apply` on the device. The image does not change the
+# EEPROM by itself; `furcate-os eeprom-update` stages the pinned release in
+# /usr/lib/furcate-os/rpi5/eeprom (eeprom.build.chroot) when asked.
+install -D -m644 "$src/eeprom.conf" /usr/share/furcate-os/rpi5/eeprom.conf
+
+# The OTP device key: the signing broker (furcate-fwcrypto serve, by socket),
+# the group whose members may reach it, the udev rule that keeps the firmware
+# mailbox root-only (with the transition flag), and furcated's access.
+install -D -m644 "$src/fwcrypto/furcate-fwcrypto-broker.socket" /usr/lib/systemd/system/furcate-fwcrypto-broker.socket
+install -D -m644 "$src/fwcrypto/furcate-fwcrypto-broker.service" /usr/lib/systemd/system/furcate-fwcrypto-broker.service
+systemctl enable furcate-fwcrypto-broker.socket
+
+# Modules built for this kernel by the build scripts (hailo_pci).
+depmod -a "$kver"
+install -D -m644 "$src/fwcrypto/60-furcate-fwcrypto.rules" /usr/lib/udev/rules.d/60-furcate-fwcrypto.rules
+install -D -m644 "$src/fwcrypto/furcate-fwcrypto.sysusers" /usr/lib/sysusers.d/furcate-fwcrypto.conf
+install -D -m644 "$src/fwcrypto/furcated-fwcrypto.conf" /usr/lib/systemd/system/furcated.service.d/20-fwcrypto.conf

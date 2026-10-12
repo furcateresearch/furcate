@@ -1,0 +1,14 @@
+#!/bin/sh
+# Sign a small file on a host whose TPM holds the release key.
+#
+#   os/release/sign-on <signer-host> <file> > <file>.sig.b64
+#
+# Run from any machine that can ssh to the signer. The file content is sent as
+# an argument and the signer runs os/release/tpm-sign from stdin, so nothing is
+# installed there. Prints the base64 DER detached signature.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+signer=${1:?usage: sign-on <signer-host> <file>}
+file=${2:?usage: sign-on <signer-host> <file>}
+[ "$(wc -c < "$file")" -le 4096 ] || { echo "sign-on signs short files (a root hash, a checksum)" >&2; exit 1; }
+ssh "$signer" "sudo sh -s -- $(base64 < "$file" | tr -d '\n')" < "$here/tpm-sign"

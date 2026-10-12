@@ -1,0 +1,25 @@
+[package]
+name = "furcate-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The build arm: attested, content-addressed builds placed on machines you own."
+
+[dependencies]
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+serde_norway.workspace = true
+ed25519-dalek = { workspace = true }
+furcate-ledger = { path = "../furcate-ledger" }
+furcate-identity = { path = "../furcate-identity" }
+furcate-attest = { path = "../furcate-attest" }
+furcate-resource = { path = "../furcate-resource" }
+furcate-host = { path = "../furcate-host" }
+furcate-policy = { path = "../furcate-policy" }
+
+[dev-dependencies]
+serde_json = { workspace = true }

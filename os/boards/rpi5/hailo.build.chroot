@@ -1,0 +1,74 @@
+#!/bin/sh
+# Build the Hailo-8/8L PCIe driver for the image's kernel, and HailoRT (the
+# runtime library and hailortcli), from pinned upstream releases. Hailo does
+# not support kernel 7.0 yet; kernels from 6.15 renamed the timer calls the
+# driver uses, so those are patched to the new names before building.
+#
+# The module goes to /usr/lib/modules/<kver>/updates (depmod runs in
+# postinst.chroot) and loads when a Hailo device is on the PCIe bus. It is
+# not signed with the kernel's key: the raspi kernel does not enforce module
+# signatures, and loading it taints the kernel (said in os/README.md).
+set -eu
+
+VERSION=4.24.0
+DRV_SHA256=13b7d7dd8c70be52c772c00c8205e9e5cf191038826eaef35a6388aca1abed56
+RT_SHA256=af399b64e59453cb71a6054e71b98e2cb06147701219531ecf780c4584c6ef70
+FW_SHA256=3ebeb209987bb0e484353be23774d3893908de84069016c4e37361c871d8433a
+DRV_URL="https://codeload.github.com/hailo-ai/hailort-drivers/tar.gz/refs/tags/v$VERSION"
+RT_URL="https://codeload.github.com/hailo-ai/hailort/tar.gz/refs/tags/v$VERSION"
+FW_URL="https://hailo-hailort.s3.eu-west-2.amazonaws.com/Hailo8/$VERSION/FW/hailo8_fw.$VERSION.bin"
+
+kver=$(ls /usr/lib/modules | sort -V | tail -1)
+kdir=/usr/src/linux-headers-$kver
+[ -d "$kdir" ] || { echo "hailo: no kernel headers for $kver" >&2; exit 1; }
+
+work="$(mktemp -d)/hailo"
+mkdir -p "$work"
+fetch() { curl -fsSL -o "$work/$1" "$2"; echo "$3  $work/$1" | sha256sum -c -; }
+fetch drv.tgz "$DRV_URL" "$DRV_SHA256"
+fetch rt.tgz "$RT_URL" "$RT_SHA256"
+fetch hailo8_fw.bin "$FW_URL" "$FW_SHA256"
+tar -C "$work" -xzf "$work/drv.tgz"
+tar -C "$work" -xzf "$work/rt.tgz"
+
+# 1. The PCIe driver.
+drv="$work/hailort-drivers-$VERSION"
+grep -rl -e 'del_timer_sync(' -e 'del_timer(' -e 'from_timer(' "$drv" 2>/dev/null | while read -r f; do
+    sed -i -e 's/\bdel_timer_sync(/timer_delete_sync(/g' -e 's/\bdel_timer(/timer_delete(/g' \
+        -e 's/\bfrom_timer(/timer_container_of(/g' "$f"
+    echo "hailo: timer API patched in ${f#"$drv"/}"
+done
+jobs=$(nproc); [ "$jobs" -gt 6 ] && jobs=6
+make -C "$drv/linux/pcie" KERNEL_DIR="$kdir" -j"$jobs" all
+ko=$(find "$drv/linux/pcie" -name hailo_pci.ko | head -1)
+[ -n "$ko" ] || { echo "hailo: no hailo_pci.ko built" >&2; exit 1; }
+modinfo -F vermagic "$ko" | grep -q "^$kver " || { echo "hailo: module vermagic is not $kver" >&2; exit 1; }
+install -D -m644 "$ko" "$DESTDIR/usr/lib/modules/$kver/updates/hailo_pci.ko"
+install -D -m644 "$drv/linux/pcie/51-hailo-udev.rules" "$DESTDIR/usr/lib/udev/rules.d/51-hailo-udev.rules"
+install -D -m644 "$drv/linux/pcie/hailo_pci.conf" "$DESTDIR/usr/lib/modprobe.d/hailo_pci.conf"
+install -D -m644 "$work/hailo8_fw.bin" "$DESTDIR/usr/lib/firmware/hailo/hailo8_fw.bin"
+
+# 2. HailoRT: the library and hailortcli; no service, examples or bindings.
+rt="$work/hailort-$VERSION"
+cmake -S "$rt" -B "$work/rt-build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr \
+    -DHAILO_BUILD_EXAMPLES=OFF -DHAILO_BUILD_SERVICE=OFF -DHAILO_BUILD_PYBIND=OFF \
+    -DHAILO_BUILD_GSTREAMER=OFF -DHAILO_BUILD_UT=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -Wno-dev
+cmake --build "$work/rt-build" -j"$jobs" --target libhailort hailortcli
+mkdir -p "$DESTDIR/usr/lib" "$DESTDIR/usr/bin"
+find "$work/rt-build" -name 'libhailort.so*' \( -type f -o -type l \) -exec cp -a {} "$DESTDIR/usr/lib/" \;
+ls "$DESTDIR"/usr/lib/libhailort.so.* >/dev/null || { echo "hailo: no libhailort built" >&2; exit 1; }
+cli=$(find "$work/rt-build" -type f -name hailortcli -perm -u+x | head -1)
+[ -n "$cli" ] || { echo "hailo: no hailortcli built" >&2; exit 1; }
+install -m755 "$cli" "$DESTDIR/usr/bin/hailortcli"
+
+install -D -m644 /dev/stdin "$DESTDIR/usr/share/doc/furcate-os/hailo.source" <<EOF
+hailo-ai/hailort-drivers v$VERSION (linux/pcie, timer API renamed for kernel $kver)
+$DRV_URL
+sha256 $DRV_SHA256
+hailo-ai/hailort v$VERSION (libhailort, hailortcli)
+$RT_URL
+sha256 $RT_SHA256
+Hailo-8 firmware $VERSION
+$FW_URL
+sha256 $FW_SHA256
+EOF

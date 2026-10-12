@@ -1,0 +1,90 @@
+#!/bin/sh
+# Tests for rootfs/usr/libexec/furcate-os/power-monitor against a fake board:
+# a device tree supply node, a vcgencmd that reports what the test sets, a
+# thermal zone and two cpufreq policies. Runs anywhere with sh and python3.
+#
+#   os/tests/power-monitor
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+mon="$here/../rootfs/usr/libexec/furcate-os/power-monitor"
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT
+R=$t/root
+mkdir -p "$R/proc/device-tree/chosen/power" "$R/sys/class/thermal/thermal_zone0" "$R/run"
+printf '\000\000\005\334' > "$R/proc/device-tree/chosen/power/max_current"            # 1500
+printf '\000\000\000\000' > "$R/proc/device-tree/chosen/power/usb_max_current_enable"  # 0
+echo 61250 > "$R/sys/class/thermal/thermal_zone0/temp"
+for p in policy0 policy4; do
+    d=$R/sys/devices/system/cpu/cpufreq/$p
+    mkdir -p "$d"; echo 2400000 > "$d/scaling_max_freq"; echo 1500000 > "$d/cpuinfo_min_freq"
+done
+echo 1000000 > "$R/sys/devices/system/cpu/cpufreq/policy4/cpuinfo_min_freq"
+cat > "$t/vcgencmd" <<EOF
+#!/bin/sh
+[ -f "$t/vc-broken" ] && exit 1
+case "\$1" in
+    get_throttled) echo "throttled=\$(cat "$t/throttled")" ;;
+    pmic_read_adc) echo "EXT5V_V volt(24)=4.79112000V" ;;
+    *) exit 1 ;;
+esac
+EOF
+chmod +x "$t/vcgencmd"
+
+fail=0
+run() { # run <throttled> <now>
+    echo "$1" > "$t/throttled"
+    FURCATE_POWER_ROOT=$R FURCATE_POWER_VCGENCMD=$t/vcgencmd FURCATE_POWER_NOW=$2 sh "$mon" 2>> "$t/log"
+}
+check() { # check <name> <python expression over s (the status) and shed (bool)>
+    if python3 - "$R/run/furcate-os/power.status" "$R/run/furcate-os/shed-load" "$2" <<'PY'
+import json, os, sys
+s = json.load(open(sys.argv[1]))
+keys = {"ts", "supply_max_current_ma", "usb_high_current", "undervoltage_now", "undervoltage_since_boot",
+        "freq_capped_now", "throttled_now", "soft_temp_limit_now", "throttled_raw", "ext5v_v", "soc_temp_c",
+        "load_shed", "shed_since", "cpu_max_khz"}
+assert set(s) == keys, set(s) ^ keys
+shed = os.path.exists(sys.argv[2])
+sys.exit(0 if eval(sys.argv[3]) else 1)
+PY
+    then echo "PASS $1"; else echo "FAIL $1: $(cat "$R/run/furcate-os/power.status")"; fail=1; fi
+}
+freq() { cat "$R/sys/devices/system/cpu/cpufreq/$1/scaling_max_freq"; }
+
+run 0x0 1000
+check "healthy supply: readings, no shedding" \
+    's["supply_max_current_ma"] == 1500 and s["usb_high_current"] is False and s["ext5v_v"] == 4.79112 and s["soc_temp_c"] == 61.2 and s["undervoltage_now"] is False and s["load_shed"] is False and s["shed_since"] is None and s["cpu_max_khz"] == 2400000 and s["throttled_raw"] == "0x0" and not shed'
+
+run 0x50005 1005
+check "undervoltage now: shedding, flags decoded" \
+    's["undervoltage_now"] is True and s["undervoltage_since_boot"] is True and s["throttled_now"] is True and s["freq_capped_now"] is False and s["load_shed"] is True and s["shed_since"] == 1005 and s["cpu_max_khz"] == 1500000 and shed'
+[ "$(freq policy4)" = 1500000 ] && echo "PASS every policy capped" || { echo "FAIL policy4 at $(freq policy4)"; fail=1; }
+
+run 0x50005 1010
+check "still under voltage: shed_since unchanged" 's["load_shed"] is True and s["shed_since"] == 1005'
+
+run 0x50000 1015
+run 0x50000 1070
+check "clear for 55 s: still shedding" 's["load_shed"] is True and s["undervoltage_now"] is False and shed'
+
+run 0x50000 1075
+check "clear for 60 s: restored" 's["load_shed"] is False and s["shed_since"] is None and s["cpu_max_khz"] == 2400000 and s["undervoltage_since_boot"] is True and not shed'
+[ "$(freq policy4)" = 2400000 ] && echo "PASS every policy restored" || { echo "FAIL policy4 at $(freq policy4)"; fail=1; }
+
+run 0x50005 1080
+run 0x0 1085
+run 0x50005 1090
+check "undervoltage again before 60 s clear: one episode" 's["load_shed"] is True and s["shed_since"] == 1080'
+run 0x0 1100; run 0x0 1165
+[ "$(freq policy0)" = 2400000 ] && echo "PASS restored to the original, not the cap" || { echo "FAIL policy0 at $(freq policy0)"; fail=1; }
+
+: > "$t/vc-broken"
+run 0x0 1200
+check "no firmware reading: nulls, still valid JSON" \
+    's["undervoltage_now"] is None and s["throttled_raw"] is None and s["ext5v_v"] is None and s["supply_max_current_ma"] == 1500'
+
+grep -q "undervoltage: now" "$t/log" && grep -q "undervoltage: shedding load" "$t/log" \
+    && grep -q "undervoltage clear for 60 s: load restored" "$t/log" \
+    && echo "PASS transitions logged" || { echo "FAIL transitions not logged:"; cat "$t/log"; fail=1; }
+[ "$(grep -c 'undervoltage: now' "$t/log")" = 3 ] && echo "PASS each change logged once" \
+    || { echo "FAIL repeated logging:"; cat "$t/log"; fail=1; }
+exit "$fail"

@@ -1,0 +1,108 @@
+#!/bin/sh
+# Make and seal a Furcate system extension image from a /usr tree.
+#
+#   os/extensions/sysext-image image <tree> <name> <out-dir> <version> <arch>
+#   os/extensions/sysext-image seal  <out-dir> <name> <signature.b64>
+#
+# image: <tree>/usr becomes a dm-verity DDI (erofs root, verity hash, an empty
+# signature partition) at <out-dir>/<name>.unsigned.raw; the release file is
+# copied to <out-dir>/<name>.release and the root hash to <out-dir>/roothash.
+# <tree> must already hold usr/lib/extension-release.d/extension-release.<name>.
+# Run as root (systemd-repart 255 or newer).
+#
+# The root hash is signed on the release signer (os/release/sign-on); no key
+# exists on the build host. seal: checks the signature against
+# deploy/os/furcate-release.crt, writes it into the signature partition and
+# produces <out-dir>/<name>.raw and <name>.raw.sha256.
+#
+# The furcate extension's own build (extensions/furcate/build) does the same
+# for its tree.
+set -eu
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../.." && pwd)
+cert="$repo/deploy/os/furcate-release.crt"
+
+image() {
+    tree=${1:?tree}; name=${2:?name}; out=${3:?out-dir}; version=${4:?version}; arch=${5:?arch}
+    rel="$tree/usr/lib/extension-release.d/extension-release.$name"
+    [ -f "$rel" ] || { echo "no $rel" >&2; exit 1; }
+    work=$(mktemp -d "/var/tmp/furcate-sysext-$name.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    mkdir -p "$out" "$work/repart.d"
+    cat > "$work/repart.d/10-root.conf" <<'EOF'
+[Partition]
+Type=root
+Format=erofs
+CopyFiles=/usr:/usr
+Verity=data
+VerityMatchKey=root
+Minimize=best
+EOF
+    cat > "$work/repart.d/20-root-verity.conf" <<'EOF'
+[Partition]
+Type=root-verity
+Verity=hash
+VerityMatchKey=root
+Minimize=best
+EOF
+    cat > "$work/repart.d/30-root-verity-sig.conf" <<'EOF'
+[Partition]
+Type=root-verity-sig
+SizeMinBytes=16K
+SizeMaxBytes=16K
+EOF
+    seed=$(printf '%s' "$name-$version-$arch" | sha256sum | cut -c1-32 \
+        | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/')
+    systemd-repart --empty=create --size=auto --dry-run=no --offline=yes \
+        --architecture="$arch" --definitions="$work/repart.d" --copy-source="$tree" \
+        --seed="$seed" --json=short "$work/$name.raw" > "$work/repart.json"
+    roothash=$(python3 -c '
+import json, sys
+for p in json.load(open(sys.argv[1])):
+    if p.get("roothash"):
+        print(p["roothash"]); break
+' "$work/repart.json")
+    case "$roothash" in ""|*[!0-9a-f]*) echo "no root hash from repart" >&2; exit 1 ;; esac
+    cp "$work/$name.raw" "$out/$name.unsigned.raw"
+    cp "$rel" "$out/$name.release"
+    printf '%s' "$roothash" > "$out/roothash"
+    echo "$name $version ($arch): staged, roothash $roothash"
+}
+
+seal() {
+    out=${1:?out-dir}; name=${2:?name}; sigfile=${3:?signature.b64}
+    img="$out/$name.unsigned.raw"
+    roothash=$(cat "$out/roothash")
+    work=$(mktemp -d "/var/tmp/furcate-seal-$name.XXXXXX")
+    trap 'rm -rf "$work"' EXIT
+    base64 -d < "$sigfile" > "$work/sig.der"
+    printf '%s' "$roothash" > "$work/roothash.txt"
+    openssl smime -verify -inform DER -in "$work/sig.der" -CAfile "$cert" \
+        -purpose any -content "$work/roothash.txt" -binary -out /dev/null
+    fpr=$(openssl x509 -in "$cert" -outform DER | sha256sum | cut -d' ' -f1)
+    python3 -c '
+import base64, json, sys
+print(json.dumps({"rootHash": sys.argv[1], "certificateFingerprint": sys.argv[2],
+                  "signature": base64.b64encode(open(sys.argv[3], "rb").read()).decode()}), end="")
+' "$roothash" "$fpr" "$work/sig.der" > "$work/sig.json"
+    set -- $(sfdisk -J "$img" | python3 -c '
+import json, sys
+p = json.load(sys.stdin)["partitiontable"]["partitions"][2]
+print(p["start"], p["size"])')
+    start=$1 size=$2
+    [ "$(stat -c %s "$work/sig.json")" -le $((size * 512)) ] || { echo "signature larger than its partition" >&2; exit 1; }
+    cp "$img" "$work/$name.raw"
+    dd if=/dev/zero of="$work/$name.raw" bs=512 seek="$start" count="$size" conv=notrunc status=none
+    dd if="$work/sig.json" of="$work/$name.raw" bs=512 seek="$start" conv=notrunc status=none
+    mv "$work/$name.raw" "$out/$name.raw"
+    (cd "$out" && sha256sum "$name.raw" > "$name.raw.sha256")
+    echo "$name: sealed, roothash $roothash"
+}
+
+cmd=${1:?usage: sysext-image image|seal ...}
+shift
+case "$cmd" in
+    image) image "$@" ;;
+    seal) seal "$@" ;;
+    *) echo "usage: sysext-image image|seal ..." >&2; exit 2 ;;
+esac

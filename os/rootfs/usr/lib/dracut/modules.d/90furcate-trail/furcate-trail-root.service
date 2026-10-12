@@ -1,0 +1,14 @@
+[Unit]
+Description=Furcate OS boot trail: root and /usr reached
+DefaultDependencies=no
+After=initrd-root-fs.target initrd-usr-fs.target furcate-trail-initrd.service
+Before=initrd.target
+ConditionKernelCommandLine=furcate.slot
+
+[Service]
+Type=oneshot
+ExecStart=-/usr/libexec/furcate-os/breadcrumb root
+TimeoutStartSec=45
+
+[Install]
+WantedBy=initrd.target

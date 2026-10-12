@@ -1,0 +1,387 @@
+#!/bin/sh
+# The base A/B update in qemu-system-aarch64, from a released image to a
+# signed base bundle, with the Pi 5 bootloader's slot choice played by this
+# script.
+#
+#   os/tests/qemu-base-update <old-image.img.zst> <bundle-dir> <extension-dir> <other.p7s>
+#
+# <old-image> boots first (slot A). <bundle-dir> is a signed base bundle
+# (os/release/base-bundle), <extension-dir> a furcate extension staged with
+# it, <other.p7s> a genuine release signature over something else (an image
+# checksum's .p7s), used as a wrong signature.
+#
+# The bootloader: before every boot this script reads autoboot.txt from the
+# select partition of the disk and boots the slot [all] names after a plain
+# reset. After the kernel's "Restarting system with command '<P> tryboot'"
+# (what `reboot "<P> tryboot"` hands to the Pi firmware) it plays what the
+# real Pi 5 did: an explicit partition P overrides autoboot.txt and, with the
+# tryboot flag set, needs tryboot.txt there; P = 0 bypasses the A/B choice and
+# scans the partitions for tryboot.txt (the board's 2026-10-12 dead end: none
+# found, the SD card left). A boot with no tryboot.txt to load fails the test.
+# This is a model of the bootloader, not the bootloader: only a trial on the
+# board proves its behaviour. Kernel, initrd and cmdline.txt come from the
+# chosen slot's boot partition. qemu runs with -no-reboot, so every reboot, panic
+# reset or watchdog reset ends the run and the next boot is chosen again.
+# The guest is driven over ssh with $FURCATE_TEST_SSH_KEY (its public half is
+# added to furcate-node.txt in the test's copy of the disk).
+#
+# Checks:
+#   1. refusals: an unsigned bundle, a manifest signed for something else, an
+#      edited manifest and a payload with one byte changed are refused, and
+#      the idle slot, autoboot.txt and the state records are not written;
+#   2. a->b: update with a staged extension, one trial boot, confirmed, the
+#      new base and extension running, node id, fur0, protected files
+#      unchanged, b stays the default over a plain reboot;
+#   3. a trial whose furcated never comes up is refused by the confirm step
+#      and the board is back on b by itself; a trial whose /usr is not found
+#      (the initrd's emergency mode) reboots and is back on b; a trial that
+#      panics (a reset during the trial) is back on b; protected files unchanged.
+#   4. the trial reboot names the slot's partition ("3 tryboot" / "2 tryboot"),
+#      both boot partitions carry tryboot.txt equal to config.txt, and the
+#      boot trail on the trial slot's boot partition shows how far each trial
+#      got (initrd, root, userspace), written only while the slot is on trial.
+#   5. service defaults: once the trial is kept, units the new base enables by
+#      default and the old base did not ship are enabled and running (the
+#      signing broker socket, the power timer, the journal upload); a new unit
+#      the operator masked beforehand stays masked, and a unit the operator
+#      disabled against the old base's default stays disabled.
+set -eu
+old=${1:?usage: qemu-base-update <old-image> <bundle-dir> <extension-dir> <other.p7s>}
+bundle=${2:?bundle-dir}; ext=${3:?extension-dir}; otherp7s=${4:?other.p7s}
+key=${FURCATE_TEST_SSH_KEY:?FURCATE_TEST_SSH_KEY: the private key whose .pub is let in}
+port=${FURCATE_QEMU_SSH_PORT:-10023}
+btimeout=${FURCATE_QEMU_TIMEOUT:-900}
+here=$(cd "$(dirname "$0")" && pwd)
+work=$(mktemp -d "${FURCATE_QEMU_WORK:-/var/tmp}/furcate-ab.XXXXXX")
+qpid=""
+trap 'rc=$?; [ -n "$qpid" ] && kill "$qpid" 2>/dev/null; rm -rf "$work"; exit $rc' EXIT
+fail=0
+pass() { echo "PASS $*"; }
+bad() { echo "FAIL $*"; fail=1; }
+ok() { if eval "$2"; then pass "$1"; else bad "$1"; fi; }
+
+zstd -d -q "$old" -o "$work/disk.raw"
+truncate -s 16G "$work/disk.raw"
+off() { sfdisk -J "$work/disk.raw" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]
+print([p for p in t["partitions"] if p.get("name") == sys.argv[1]][0]["start"] * t.get("sectorsize", 512))' "$1"; }
+for label in boot-a boot-b; do
+    o=$(off "$label")
+    mcopy -n -i "$work/disk.raw@@$o" ::furcate-node.txt "$work/node.txt"
+    printf '\n# qemu-base-update\nssh_authorized_key=%s\n' "$(cat "$key.pub")" >> "$work/node.txt"
+    mcopy -o -i "$work/disk.raw@@$o" "$work/node.txt" ::furcate-node.txt
+done
+
+# The bundle disk: the good bundle, the extension and the bad variants.
+b=$work/bdisk; mkdir -p "$b/good" "$b/ext" "$b/unsigned" "$b/othersig" "$b/editedmanifest" "$b/tampered"
+cp "$bundle"/manifest "$bundle"/manifest.p7s "$bundle"/*.zst "$bundle"/furcate-base "$b/good/"
+cp "$ext"/furcate.raw "$ext"/furcate.release "$b/ext/"
+[ -f "$ext/furcate.raw.sha256" ] && cp "$ext/furcate.raw.sha256" "$b/ext/"
+for v in unsigned othersig editedmanifest tampered; do
+    for f in manifest usr.img.zst usr-verity.img.zst boot.tar.zst furcate-base; do ln "$b/good/$f" "$b/$v/$f"; done
+done
+cp "$otherp7s" "$b/othersig/manifest.p7s"
+rm "$b/editedmanifest/manifest"
+sed 's/^USR_SIZE=\([0-9]*\)/USR_SIZE=\1 /' "$b/good/manifest" > "$b/editedmanifest/manifest"
+cp "$b/good/manifest.p7s" "$b/editedmanifest/"
+rm "$b/tampered/usr.img.zst"; cp "$b/good/usr.img.zst" "$b/tampered/usr.img.zst"
+printf '\001' | dd of="$b/tampered/usr.img.zst" bs=1 seek=4096 conv=notrunc status=none
+cp "$b/good/manifest.p7s" "$b/tampered/"
+mkfs.ext4 -q -L fbundle -d "$b" "$work/bundle.img" 3G
+rm -rf "$b"
+
+# qemu's virt board with the Pi 5's identity properties (as os/tests/qemu-boot).
+if [ "$(uname -m)" = aarch64 ] && [ -w /dev/kvm ]; then
+    machine="virt,gic-version=host"; accel="-accel kvm -cpu host"
+else
+    machine="virt,gic-version=2"; accel="-cpu cortex-a76"
+fi
+qemu-system-aarch64 -M "$machine,dumpdtb=$work/virt.dtb" $accel -smp 4 -m 2048 -display none -nic none >/dev/null 2>&1
+dtc -q -I dtb -O dts -o "$work/virt.dts" "$work/virt.dtb"
+python3 - "$work/virt.dts" <<'PY'
+import re, sys
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'(\n\tmodel = )"[^"]*";', r'\1"Raspberry Pi 5 Model B Rev 1.0";\n\tserial-number = "7f3a91c2d04e5b16";', s, count=1)
+pi = ('\tsystem {\n\t\tlinux,revision = <0xd04170>;\n\t\tlinux,serial = <0x7f3a91c2 0xd04e5b16>;\n\t};\n')
+s = s.replace("\n\tchosen {", "\n" + pi + "\tchosen {\n\t\trpi-duid = \"QEMU0TEST1\";", 1)
+open(p, "w").write(s)
+PY
+dtc -q -I dts -O dtb -o "$work/pi.dtb" "$work/virt.dts"
+
+# The bootloader.
+tryboot=0; rpart=0; n=0
+bootfile() { # bootfile LABEL FILE: the file's content from that boot partition (empty if none)
+    mcopy -n -i "$work/disk.raw@@$(off "$1")" "::$2" "$work/bf.tmp" 2>/dev/null && cat "$work/bf.tmp"; rm -f "$work/bf.tmp"
+}
+has_tryboot() { # has_tryboot LABEL: tryboot.txt there, equal to config.txt
+    c=$(bootfile "$1" config.txt); t=$(bootfile "$1" tryboot.txt)
+    [ -n "$t" ] && [ "$t" = "$c" ]
+}
+trail() { bootfile "boot-$1" furcate-boot-trail.txt; }
+ab() { # ab SECTION: boot_partition of that section, read from the disk
+    mcopy -n -i "$work/disk.raw@@$(off select)" ::autoboot.txt "$work/autoboot.txt"
+    awk -v s="[$1]" '/^\[/ { cur = ($0 == s) } cur && /^boot_partition=/ { sub(/^boot_partition=/, ""); v = $0 } END { print v }' "$work/autoboot.txt"
+}
+boot() { # boot [EXTRA kernel arguments for a trial boot]
+    n=$((n + 1))
+    if [ "$tryboot" = 1 ]; then
+        extra=${1:-}
+        if [ "$rpart" != 0 ]; then part=$rpart
+        else part=""; for q in 2 3; do has_tryboot "$( [ $q = 2 ] && echo boot-a || echo boot-b)" && { part=$q; break; }; done; fi
+        case "$part" in 2) label=boot-a ;; 3) label=boot-b ;; *) label="" ;; esac
+        if [ -z "$label" ] || ! has_tryboot "$label"; then
+            bad "boot $n: reboot '$rpart tryboot' finds no tryboot.txt to load: the real bootloader leaves the SD card here"
+            exit 1
+        fi
+    else part=$(ab all); extra=""; fi
+    case "$part" in 2) label=boot-a ;; 3) label=boot-b ;; *) echo "autoboot.txt names partition '$part'"; exit 1 ;; esac
+    o=$(off "$label")
+    for f in vmlinuz initrd.img cmdline.txt; do mcopy -n -i "$work/disk.raw@@$o" "::$f" "$work/$f"; done
+    cmdline="console=ttyAMA0 $(sed -e 's/console=[^ ]*//g' "$work/cmdline.txt" | tr -s ' ') $extra"
+    log=$work/boot$n.log
+    echo "== boot $n: tryboot=$tryboot -> partition $part ($label) $extra"
+    qemu-system-aarch64 -M "$machine" $accel -smp 4 -m 2048 -no-reboot \
+        -display none -monitor none -serial "file:$log" \
+        -kernel "$work/vmlinuz" -initrd "$work/initrd.img" -dtb "$work/pi.dtb" -append "$cmdline" \
+        -drive "if=none,file=$work/disk.raw,format=raw,id=d0" -device virtio-blk-device,drive=d0 \
+        -drive "if=none,file=$work/bundle.img,format=raw,id=d1" -device virtio-blk-device,drive=d1 \
+        -netdev "user,id=n0,hostfwd=tcp:127.0.0.1:$port-:22" -device virtio-net-device,netdev=n0 \
+        -device i6300esb -action watchdog=reset &
+    qpid=$!
+}
+ended() { # wait for this boot to end; set tryboot from how it ended
+    t=0
+    while kill -0 "$qpid" 2>/dev/null; do
+        [ "$t" -ge "$btimeout" ] && { echo "boot $n did not end in ${btimeout}s"; kill "$qpid"; break; }
+        sleep 5; t=$((t + 5))
+    done
+    wait "$qpid" 2>/dev/null || true; qpid=""
+    rcmd=$(grep -ao "Restarting system with command '[^']*'" "$log" | tail -1 | sed "s/.*command '\([^']*\)'/\1/")
+    case "$rcmd" in
+        *" tryboot") tryboot=1; rpart=${rcmd%% *} ;;
+        *) tryboot=0; rpart=0 ;;
+    esac
+    echo "   boot $n ended ($( [ "$tryboot" = 1 ] && echo "reboot with tryboot" || echo "reset or reboot, no tryboot"))"
+}
+g() { ssh -p "$port" -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -o ConnectTimeout=15 -o ServerAliveInterval=5 -o ServerAliveCountMax=3 -o BatchMode=yes furcate@127.0.0.1 "$@"; }
+gver() { g 'cat /usr/lib/os-release' | sed -n 's/^IMAGE_VERSION=//p' | tr -d '"'; }
+fur0() { g "networkctl list --no-legend fur0" 2>/dev/null | awk '{print $NF}'; }
+reboot_guest() { timeout 60 ssh -p "$port" -i "$key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes furcate@127.0.0.1 "$1" >/dev/null 2>&1 || true; }
+up() { # wait for ssh, furcated and the extension check
+    t=0
+    until g 'systemctl -q is-active furcated.service && grep -q "^ok" /run/furcate-os/extensions.status' 2>/dev/null; do
+        kill -0 "$qpid" 2>/dev/null || { echo "   boot $n ended before it came up"; return 1; }
+        [ "$t" -ge "$btimeout" ] && { echo "   boot $n not up in ${btimeout}s"; return 1; }
+        sleep 10; t=$((t + 10))
+    done
+}
+record() { g 'cat /var/lib/furcate-os/base/update 2>/dev/null'; }
+settled() { # wait for the update record to leave writing/armed/trying
+    t=0
+    while :; do
+        s=$(record | sed -n 's/^STATE=//p')
+        case "$s" in confirmed|rolled-back) echo "$s"; return 0 ;; esac
+        [ "$t" -ge 600 ] && { echo "${s:-none}"; return 0; }
+        sleep 10; t=$((t + 10))
+    done
+}
+nodeid() { g "journalctl -b -u furcated.service -o cat --no-pager | sed -n 's/^furcated: \(furcate:node:[^ ]*\) .*/\1/p' | tail -1"; }
+slot() { g "tr ' ' '\n' < /proc/cmdline | sed -n 's/^furcate.slot=//p'"; }
+PROTECTED="/etc/furcate/cell-anchor.json /etc/furcate/operator.pub /etc/furcate/overlay-authorization.json /etc/furcate/overlay-anchors.json /etc/furcate/env /etc/furcate/soft-identity.json /var/lib/furcate/node-key/enrolled.json /var/lib/furcate/ledger.json /etc/systemd/system/furcate-wg.service.d/10-test.conf /var/lib/iwd/test.psk"
+fingerprint() {
+    g "sudo sh -c 'for f in $PROTECTED; do if [ -e \$f ]; then echo \"\$f \$(sha256sum < \$f | cut -c1-64) \$(stat -c \"%s %Y %Z %i\" \$f)\"; else echo \"\$f absent\"; fi; done'"
+}
+idle() { # sha256 of what a refused update must not write
+    g "sudo sh -c 'sha256sum /dev/disk/by-partlabel/select /dev/disk/by-partlabel/boot-b /dev/disk/by-partlabel/usr-b /dev/disk/by-partlabel/usr-b-verity; ls -la /var/lib/furcate-os/base /etc/systemd/system/furcate-base-confirm.service 2>&1; true'"
+}
+
+# ---- boot 1: the old base on slot A
+boot; up || { bad "boot 1 came up"; exit 1; }
+pass "boot 1: $(gver) on slot $(slot), furcated active, extension check ok"
+id0=$(nodeid); echo "   node id $id0"
+# Files the update must never write, on the state partition: the overlay and
+# cell settings (fixtures where the image has none), the identity pin, the
+# ledger, a furcate-wg drop-in, a Wi-Fi profile; and fur0 configured.
+g 'sudo sh -s' <<'EOF'
+set -e
+mkdir -p /etc/furcate /var/lib/furcate/node-key /etc/systemd/system/furcate-wg.service.d /var/lib/iwd
+for f in cell-anchor.json overlay-authorization.json overlay-anchors.json; do
+    [ -e /etc/furcate/$f ] || echo '{"qemu-base-update":"fixture"}' > /etc/furcate/$f.fixture
+done
+[ -e /etc/furcate/operator.pub ] || echo "qemu-base-update fixture" > /etc/furcate/operator.pub.fixture
+[ -e /etc/furcate/env ] || echo "# qemu-base-update fixture" > /etc/furcate/env
+printf '[Service]\n# qemu-base-update fixture\n' > /etc/systemd/system/furcate-wg.service.d/10-test.conf
+printf '[Security]\nPreSharedKey=00\n' > /var/lib/iwd/test.psk; chmod 600 /var/lib/iwd/test.psk
+printf '[NetDev]\nName=fur0\nKind=dummy\n' > /etc/systemd/network/90-fur0.netdev
+printf '[Match]\nName=fur0\n[Network]\nAddress=10.90.0.50/24\n' > /etc/systemd/network/90-fur0.network
+networkctl reload
+for i in $(seq 30); do networkctl list --no-legend fur0 2>/dev/null | grep -q configured && break; sleep 1; done
+EOF
+# The fixtures go under their real names only if furcated keeps running with them.
+if ! g 'sudo sh -c "cd /etc/furcate && for f in *.fixture; do [ -e \"\$f\" ] && mv \"\$f\" \"\${f%.fixture}\"; done; systemctl restart furcated.service; sleep 8; systemctl -q is-active furcated.service"'; then
+    echo "   furcated does not run with the fixture files under their real names; they are absent from the check"
+    g 'sudo sh -c "cd /etc/furcate && for f in cell-anchor.json overlay-authorization.json overlay-anchors.json operator.pub; do grep -q qemu-base-update \$f 2>/dev/null && rm -f \$f; done; systemctl restart furcated.service"'
+fi
+up || true
+f0=$(fur0)
+ok "fur0 configured before the update" '[ "$f0" = configured ]'
+id1=$(nodeid)
+ok "node id unchanged by the fixtures ($id1)" '[ -n "$id1" ] && [ "$id1" = "$id0" ]'
+# Service defaults: which of the new base's default units the old base lacks,
+# and two operator choices the update must keep.
+NEWUNITS="furcate-fwcrypto-broker.socket furcate-power.timer systemd-journal-upload.service"
+absent_old=$(g "for u in $NEWUNITS furcate-journal-upload-config.path; do [ -e /usr/lib/systemd/system/\$u ] || echo \$u; done" || true)
+echo "   not shipped by the old base: $(echo $absent_old)"
+masked_new=""
+if echo "$absent_old" | grep -qx furcate-journal-upload-config.path; then
+    g 'sudo systemctl mask furcate-journal-upload-config.path' >/dev/null 2>&1 && masked_new=furcate-journal-upload-config.path
+fi
+g 'sudo systemctl disable systemd-timesyncd.service' >/dev/null 2>&1 || true
+ok "operator choices set before the update (timesyncd disabled${masked_new:+, $masked_new masked})" \
+    '[ "$(g "systemctl is-enabled systemd-timesyncd.service" 2>/dev/null)" = disabled ]'
+fp1=$(fingerprint); echo "$fp1" | sed 's/^/   /'
+g 'sudo mkdir -p /mnt/b && sudo mount -o ro LABEL=fbundle /mnt/b'
+g 'cat > /var/tmp/furcate-base && chmod 755 /var/tmp/furcate-base' < "$here/../rootfs/usr/libexec/furcate-os/base"
+
+# ---- 1. refusals: nothing written
+i0=$(idle)
+for v in unsigned othersig editedmanifest tampered; do
+    out=$(g "sudo /var/tmp/furcate-base update /mnt/b/$v --extension /mnt/b/ext" 2>&1) && rc=0 || rc=$?
+    echo "   $v: $out"
+    ok "refused: $v bundle" '[ "$rc" != 0 ] && echo "$out" | grep -q "refusing.*nothing written"'
+done
+i1=$(idle)
+ok "refusals wrote nothing (select, boot-b, usr-b, usr-b-verity, records)" '[ "$i0" = "$i1" ]'
+
+# ---- 2. a -> b with the staged extension
+out=$(g "sudo /var/tmp/furcate-base update /mnt/b/good --extension /mnt/b/ext" 2>&1) && rc=0 || rc=$?
+echo "$out" | sed 's/^/   /'
+ok "update to slot b written and armed" '[ "$rc" = 0 ] && echo "$out" | grep -q "armed for one boot"'
+g 'sudo /var/tmp/furcate-base status' | sed 's/^/   /'
+ok "slot a still the default after arming" '[ "$(ab all)" = 2 ] && [ "$(ab tryboot)" = 3 ]'
+fpa=$(fingerprint)
+ok "protected files unchanged by writing the update" '[ "$fpa" = "$fp1" ]'
+reboot_guest 'sudo /var/tmp/furcate-base tryboot'
+ended
+ok "the update rebooted with tryboot" '[ "$tryboot" = 1 ]'
+ok "the trial reboot named slot b's partition (\"3 tryboot\", not \"0 tryboot\")" '[ "$rcmd" = "3 tryboot" ]'
+ok "tryboot.txt equal to config.txt on boot-a and boot-b" 'has_tryboot boot-a && has_tryboot boot-b'
+
+# boot 2: the trial
+boot; up || bad "boot 2 (trial) came up"
+st=$(settled)
+record | sed 's/^/   /'
+ok "trial on slot b confirmed by itself" '[ "$st" = confirmed ] && [ "$(slot)" = b ]'
+ver=$(gver || true)
+want=$(sed -n 's/^FURCATE_BASE_VERSION=//p' "$bundle/manifest")
+ok "slot b runs the new base $want" '[ "$ver" = "$want" ]'
+h=$(g "tr ' ' '\n' < /proc/cmdline | sed -n 's/^usrhash=//p'" || true)
+ok "/usr on dm-verity with the bundle's root hash" '[ "$h" = "$(sed -n "s/^USRHASH=//p" "$bundle/manifest")" ] && g "test -b /dev/mapper/usr"'
+ev=$(sed -n 's/^FURCATE_VERSION=//p' "$ext/furcate.release" | tr -d '"')
+sel=$(g 'cat /run/furcate-os/extensions.selected' || true); est=$(g 'head -1 /run/furcate-os/extensions.status' || true)
+echo "   selected: $sel; check: $est"
+ok "staged extension furcate $ev merged and checked" 'echo "$sel" | grep -qx "furcate $ev" && echo "$est" | grep -q "^ok"' 
+id2=$(nodeid)
+ok "node id unchanged across the switch ($id2)" '[ "$id2" = "$id0" ]'
+ok "fur0 configured on slot b" '[ "$(fur0)" = configured ]'
+fp2=$(fingerprint)
+ok "protected files unchanged across the switch" '[ "$fp2" = "$fp1" ]'
+[ "$fp2" = "$fp1" ] || echo "$fp2" | sed 's/^/   now /'
+ok "autoboot: b default, a for tryboot" '[ "$(ab all)" = 3 ] && [ "$(ab tryboot)" = 2 ]'
+g 'sudo /var/lib/furcate-os/base/furcate-base status' | sed 's/^/   /'
+trail b | sed 's/^/   trail b: /'
+ok "boot trail of the trial on boot-b: initrd, root, userspace" 'trail b | grep -q "^slot b reached initrd" && trail b | grep -q "^slot b reached root" && trail b | grep -q "^slot b reached userspace"'
+tb=$(trail b | wc -l)
+# ---- 5. service defaults of the new base
+pr=$(record | sed -n 's/^PRESETS=//p')
+echo "   PRESETS=$pr"
+ok "the update record lists the service defaults applied and kept" '[ -n "$pr" ]'
+n_new=0
+for u in $NEWUNITS; do
+    echo "$absent_old" | grep -qx "$u" || { echo "   $u: shipped by the old base, its state is the operator's"; continue; }
+    n_new=$((n_new + 1))
+    e=$(g "systemctl is-enabled $u" 2>/dev/null || true)
+    ok "new default unit $u enabled after the update ($e)" '[ "$e" = enabled ]'
+done
+ok "at least one new default unit was checked" '[ "$n_new" -gt 0 ]'
+if echo "$absent_old" | grep -qx furcate-fwcrypto-broker.socket; then
+    ok "signing broker socket listening after the update" 'g "systemctl -q is-active furcate-fwcrypto-broker.socket && test -S /run/furcate-os/fwcrypto.sock"'
+fi
+if [ -n "$masked_new" ]; then
+    e=$(g "systemctl is-enabled $masked_new" 2>/dev/null || true)
+    ok "operator's masked $masked_new still masked ($e)" '[ "$e" = masked ]'
+fi
+e=$(g "systemctl is-enabled systemd-timesyncd.service" 2>/dev/null || true)
+ok "operator's disabled systemd-timesyncd.service still disabled ($e)" '[ "$e" = disabled ]'
+reboot_guest 'sudo systemctl reboot'
+ended
+
+# boot 3: a plain reboot stays on b
+boot; up || bad "boot 3 came up"
+ok "plain reboot: still slot b, $want" '[ "$(slot)" = b ] && [ "$(gver)" = "$want" ]'
+ok "a confirmed slot writes no more trail lines" '[ "$(trail b | wc -l)" = "$tb" ]'
+
+# ---- 3a. a trial whose furcated never comes up
+g "mountpoint -q /mnt/b || sudo mount -o ro LABEL=fbundle /mnt/b" || true
+out=$(g "sudo /var/lib/furcate-os/base/furcate-base update /mnt/b/good" 2>&1) && rc=0 || rc=$?
+echo "$out" | tail -2 | sed 's/^/   /'
+ok "update b -> a written and armed" 'echo "$out" | grep -q "armed for one boot"'
+reboot_guest 'sudo /var/lib/furcate-os/base/furcate-base tryboot'
+ended
+boot "systemd.mask=furcated.service furcate.base_timeout=60"
+ended
+ok "the failing trial ended without a tryboot" '[ "$tryboot" = 0 ]'
+ok "the b -> a trial reboot named slot a's partition (\"2 tryboot\")" 'grep -aq "Restarting system with command .2 tryboot." "$work/boot$((n - 1)).log"'
+boot; up || bad "boot after the failed trial came up"
+st=$(settled); record | sed 's/^/   /'
+ok "back on slot b by itself, update rolled back" '[ "$(slot)" = b ] && [ "$st" = rolled-back ]'
+ok "the reason names furcated" 'record | grep -q "^REASON=.*furcated"'
+ok "autoboot: b default and b for tryboot" '[ "$(ab all)" = 3 ] && [ "$(ab tryboot)" = 3 ]'
+ok "node id unchanged after the rollback" '[ "$(nodeid)" = "$id0" ]'
+ok "fur0 configured after the rollback" '[ "$(fur0)" = configured ]'
+trail a | sed 's/^/   trail a: /'
+ok "boot trail: the furcated trial reached userspace" 'trail a | grep -q "^slot a reached userspace"'
+fp3=$(fingerprint)
+ok "protected files unchanged after the rollback" '[ "$fp3" = "$fp1" ]'
+
+# ---- 3c. a trial whose /usr cannot be found (the initrd's emergency mode)
+g "mountpoint -q /mnt/b || sudo mount -o ro LABEL=fbundle /mnt/b" || true
+out=$(g "sudo /var/lib/furcate-os/base/furcate-base update /mnt/b/good" 2>&1) && rc=0 || rc=$?
+ok "update b -> a armed (initrd case)" 'echo "$out" | grep -q "armed for one boot"'
+reboot_guest 'sudo /var/lib/furcate-os/base/furcate-base tryboot'
+ended
+boot "systemd.verity_usr_data=PARTUUID=00000000-0000-4000-8000-000000000000"
+ended
+ok "the trial stuck in the initrd rebooted by itself, without a tryboot" '[ "$tryboot" = 0 ] && grep -aq "Timed out waiting for device" "$log"'
+boot; up || bad "boot after the initrd failure came up"
+st=$(settled); record | sed 's/^/   /'
+ok "back on slot b by itself after the initrd failure" '[ "$(slot)" = b ] && [ "$st" = rolled-back ]'
+trail a | sed 's/^/   trail a: /'
+ok "boot trail: the initrd trial reached initrd, not root" 'trail a | grep -q "^slot a reached initrd" && ! trail a | grep -q "^slot a reached root"'
+
+# ---- 3b. a trial that resets before it confirms (kernel panic)
+g "mountpoint -q /mnt/b || sudo mount -o ro LABEL=fbundle /mnt/b" || true
+out=$(g "sudo /var/lib/furcate-os/base/furcate-base update /mnt/b/good" 2>&1) && rc=0 || rc=$?
+ok "update b -> a armed again" 'echo "$out" | grep -q "armed for one boot"'
+reboot_guest 'sudo /var/lib/furcate-os/base/furcate-base tryboot'
+ended
+boot "init=/bin/false"
+ended
+ok "the panicking trial ended without a tryboot" '[ "$tryboot" = 0 ]'
+boot; up || bad "boot after the reset trial came up"
+st=$(settled); record | sed 's/^/   /'
+ok "back on slot b by itself after the reset" '[ "$(slot)" = b ] && [ "$st" = rolled-back ] && record | grep -q "did not confirm"'
+ok "the rollback reason carries the trial's last trail line (root, no userspace)" 'record | grep -q "^REASON=.*last trail line: slot a reached root" && ! trail a | grep -q "reached userspace"'
+ok "status shows the failed trial's trail" 'g "sudo /var/lib/furcate-os/base/furcate-base status" | grep -q "^trail .*slot a reached root"'
+ok "node id unchanged" '[ "$(nodeid)" = "$id0" ]'
+fp4=$(fingerprint)
+ok "protected files unchanged" '[ "$fp4" = "$fp1" ]'
+g 'sudo /var/lib/furcate-os/base/furcate-base status' | sed 's/^/   /'
+reboot_guest 'sudo systemctl poweroff'
+ended
+for l in "$work"/boot*.log; do cp "$l" "${FURCATE_QEMU_LOGDIR:-$work}/" 2>/dev/null || true; done
+echo "RESULT $( [ "$fail" = 0 ] && echo PASS || echo FAIL)"
+exit "$fail"

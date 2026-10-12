@@ -1,0 +1,57 @@
+#!/bin/sh
+# Read every block of an extension image against its dm-verity hash tree.
+#
+#   extension-verify <image.raw>
+#
+# dm-verity checks a block when it is read, so a merged image with a changed
+# byte works until that byte is read, then fails with an I/O error. A sha256
+# file beside an image catches that before install, but nothing makes an image
+# arrive with one. This reads the whole data partition against the hash
+# partition and the root hash in the image's signature partition, so a
+# changed byte anywhere refuses the image up front. That the root hash itself
+# is signed by the release key is checked by systemd-sysext when it merges
+# (--image-policy=root=signed).
+#
+# Exit 0: every block verifies. Exit 1: refused (reason on stderr).
+set -u
+img=${1:?usage: extension-verify <image.raw>}
+[ -f "$img" ] || { echo "extension-verify: no image $img" >&2; exit 1; }
+
+# root, root-verity and root-verity-sig partition types, arm64 and x86-64.
+dump=$(sfdisk -d "$img" 2>/dev/null) || { echo "extension-verify: $img has no readable partition table" >&2; exit 1; }
+part() { # part <type-guid>... -> "start size" in sectors
+    for t in "$@"; do
+        printf '%s\n' "$dump" | awk -v t="$t" '
+            /: start=/ { s = $0; sub(/.*start= */, "", s); sub(/,.*/, "", s)
+                         z = $0; sub(/.*size= */, "", z); sub(/,.*/, "", z)
+                         y = $0; sub(/.*type= */, "", y); sub(/,.*/, "", y)
+                         if (toupper(y) == toupper(t)) { print s, z; exit } }'
+    done | head -1
+}
+data=$(part B921B045-1DF0-41C3-AF44-4C6F280D3FAE 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709)
+hash=$(part DF3300CE-D69F-4C92-978C-9BFB0F38D820 2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5)
+sig=$(part 6DB69DE6-29F4-4758-A7A5-962190F00CE3 41092B05-9FC8-4523-994F-2DEF0408B176)
+[ -n "$data" ] && [ -n "$hash" ] && [ -n "$sig" ] || {
+    echo "extension-verify: $img lacks a root, verity or signature partition" >&2; exit 1; }
+
+set -- $sig
+roothash=$(dd if="$img" bs=512 skip="$1" count="$2" status=none 2>/dev/null | tr -d '\0' \
+    | sed -n 's/.*"rootHash" *: *"\([0-9a-f]*\)".*/\1/p')
+case "$roothash" in
+    ""|*[!0-9a-f]*) echo "extension-verify: no root hash in the signature partition of $img" >&2; exit 1 ;;
+esac
+
+set -- $data; doff=$(($1 * 512)); dsize=$(($2 * 512))
+set -- $hash; hoff=$(($1 * 512)); hsize=$(($2 * 512))
+ddev=$(losetup --find --show --read-only --offset "$doff" --sizelimit "$dsize" "$img") || {
+    echo "extension-verify: no loop device for $img" >&2; exit 1; }
+hdev=$(losetup --find --show --read-only --offset "$hoff" --sizelimit "$hsize" "$img") || {
+    losetup -d "$ddev"; echo "extension-verify: no loop device for $img" >&2; exit 1; }
+out=$(veritysetup verify "$ddev" "$hdev" "$roothash" 2>&1); rc=$?
+losetup -d "$ddev" "$hdev" 2>/dev/null
+if [ "$rc" != 0 ]; then
+    echo "extension-verify: $img does not match its signed root hash $roothash: $(printf '%s' "$out" | tr '\n' ' ')" >&2
+    exit 1
+fi
+echo "extension-verify: $img: every block matches root hash $roothash" >&2
+exit 0

@@ -1,0 +1,112 @@
+#!/bin/sh
+# Build the `hw-rpi5` system extension: the board userspace (Wi-Fi, Bluetooth,
+# audio, I2C, GPIO, camera) from the Ubuntu archive, for a base that does not
+# carry it, so a running board gets it without a reinstall.
+#
+#   os/extensions/hw-rpi5/build stage <base-usr-list> <out-dir> <version> <arch>
+#   os/extensions/hw-rpi5/build seal  <out-dir> <signature.b64>
+#
+# <base-usr-list>: every path under /usr in the target base, one per line
+# (`find /usr` on the device, or on the image tree). Packages the base already
+# has are not carried, and no file of the base is shadowed. Run as root.
+# Then sign <out-dir>/roothash with os/release/sign-on and seal.
+set -eu
+export LC_ALL=C
+here=$(cd "$(dirname "$0")" && pwd)
+name=hw-rpi5
+
+cmd=${1:?usage: build stage|seal ...}
+shift
+case "$cmd" in
+    seal) exec "$here/../sysext-image" seal "${1:?out-dir}" "$name" "${2:?signature.b64}" ;;
+    stage) ;;
+    *) echo "usage: build stage|seal ..." >&2; exit 2 ;;
+esac
+
+baselist=${1:?base-usr-list}; out=${2:?out-dir}; version=${3:?version}; arch=${4:?arch}
+case "$arch" in arm64) ;; *) echo "hw-rpi5 is arm64 only" >&2; exit 2 ;; esac
+work=$(mktemp -d "/var/tmp/furcate-hw-rpi5.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+# 1. Resolve against the base, download (checked by the archive's sha256), unpack.
+"$here/resolve" "$here/packages" "$baselist" "$work/pkgs" "$arch"
+raw="$work/pkgs/tree"
+tree="$work/tree"
+mkdir -p "$tree/usr"
+
+# 2. Only /usr reaches the image. Unmerged paths move under /usr; /etc and
+# /var from the packages are dropped (listed, for the record): the board's
+# configuration ships under /usr in this extension's own tree.
+for d in bin sbin lib; do
+    [ -d "$raw/$d" ] && { mkdir -p "$raw/usr/$d"; cp -a "$raw/$d/." "$raw/usr/$d/"; rm -rf "${raw:?}/$d"; }
+done
+for d in "$raw"/*; do
+    [ "$(basename "$d")" = usr ] && continue
+    find "$d" -type f | sed "s|^$raw||" >> "$work/dropped"
+done
+cp -a "$raw/usr/." "$tree/usr/"
+rm -rf "$tree/usr/share/man" "$tree/usr/share/info" "$tree/usr/share/locale" \
+       "$tree/usr/share/lintian" "$tree/usr/share/bug"
+find "$tree/usr/share/doc" -type f ! -name copyright -delete 2>/dev/null || true
+
+# 3. Never shadow the base.
+(cd "$tree" && find usr \( -type f -o -type l \) | sed 's|^|/|') | sort > "$work/ours"
+sort -u "$baselist" > "$work/base"
+comm -12 "$work/ours" "$work/base" > "$work/shadow"
+while read -r f; do rm -f "$tree$f"; done < "$work/shadow"
+
+# 4. The board configuration: the base image's own files for Wi-Fi and I2C
+# (os/rootfs), and the service links a base would make with its presets.
+for f in usr/lib/furcate-os/iwd/main.conf \
+         usr/lib/systemd/network/25-wireless.network \
+         usr/lib/systemd/system/iwd.service.d/10-furcate-os.conf \
+         usr/lib/modules-load.d/furcate-os.conf \
+         usr/libexec/furcate-os/post-merge \
+         usr/libexec/furcate-os/extension-verify \
+         usr/libexec/furcate-os/wifi; do
+    case "$f" in usr/libexec/*) mode=755 ;; *) mode=644 ;; esac
+    grep -qx "/$f" "$work/base" || install -D -m"$mode" "$here/../../rootfs/$f" "$tree/$f"
+done
+board="$here/../../boards/rpi5/fwcrypto"
+for pair in "60-furcate-fwcrypto.rules usr/lib/udev/rules.d/60-furcate-fwcrypto.rules" \
+            "furcate-fwcrypto.sysusers usr/lib/sysusers.d/furcate-fwcrypto.conf" \
+            "furcated-fwcrypto.conf usr/lib/systemd/system/furcated.service.d/20-fwcrypto.conf"; do
+    set -- $pair
+    grep -qx "/$2" "$work/base" || install -D -m644 "$board/$1" "$tree/$2"
+done
+# A base without the rule also has no signing broker, so its furcated can
+# only reach the OTP key by opening the firmware mailbox: on such a base the
+# rule grants it unconditionally (the transition path), as before the broker.
+r="$tree/usr/lib/udev/rules.d/60-furcate-fwcrypto.rules"
+if [ -f "$r" ]; then
+    sed -i -e 's|TEST=="/etc/furcate/fwcrypto-direct", ||' "$r"
+    printf '%s\n' "# hw-rpi5 on a base without the signing broker: granted without the flag." >> "$r"
+fi
+cp -a "$here/tree/usr/." "$tree/usr/"
+
+# 4b. Deliberate overrides of base files: the base's own newer versions, for a
+# base that predates them (furcate-os with `wifi`, the Wi-Fi status line and
+# post-merge in extension install). Only these may shadow the base; on a base
+# built from the same commit they are identical to the base's own.
+for f in usr/bin/furcate-os; do
+    install -D -m755 "$here/../../rootfs/$f" "$tree/$f"
+done
+
+# 5. The release file. FURCATE_REQUIRES_BOARD keeps it off other boards.
+rel="$tree/usr/lib/extension-release.d/extension-release.$name"
+install -d "$(dirname "$rel")"
+cat > "$rel" <<EOF
+ID=_any
+ARCHITECTURE=$arch
+EXTENSION_RELOAD_MANAGER=1
+FURCATE_REQUIRES_ABI=1
+FURCATE_REQUIRES_BOARD=rpi5
+FURCATE_VERSION=$version
+EOF
+install -D -m644 "$work/pkgs/manifest" "$tree/usr/share/furcate-os/$name.packages"
+
+"$here/../sysext-image" image "$tree" "$name" "$out" "$version" "$arch"
+cp "$work/pkgs/manifest" "$out/$name.packages"
+echo "$name: $(wc -l < "$work/pkgs/manifest") packages, $(wc -l < "$work/shadow") base files left to the base, $(wc -l < "$work/dropped" 2>/dev/null || echo 0) /etc or /var files dropped"
+[ -s "$work/dropped" ] && sed 's/^/  dropped /' "$work/dropped"
+exit 0

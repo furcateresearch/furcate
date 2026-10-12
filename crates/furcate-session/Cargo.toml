@@ -1,0 +1,11 @@
+[package]
+name = "furcate-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "What somebody did while they held authority, recorded so it can be checked afterwards."
+
+[dependencies]
+serde.workspace = true
+furcate-ledger = { path = "../furcate-ledger" }

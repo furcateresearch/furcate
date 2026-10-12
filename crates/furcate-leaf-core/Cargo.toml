@@ -1,0 +1,14 @@
+[package]
+name = "furcate-leaf-core"
+version.workspace = true
+edition.workspace = true
+description = "Leaf firmware core."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Declared here rather than inherited: a workspace dependency that does not
+# itself specify `default-features` silently ignores a member turning them off,
+# so inheriting would have pulled std back into a no-std crate while appearing
+# to do the opposite.
+sha2 = { version = "0.11", default-features = false }

@@ -1,0 +1,23 @@
+[package]
+name = "furcate-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Who may do what, as data — and the few things that must never be."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+hex.workspace = true
+sha2.workspace = true
+ed25519-dalek.workspace = true
+p256.workspace = true
+furcate-identity = { path = "../furcate-identity" }
+furcate-ledger = { path = "../furcate-ledger" }
+furcate-authn = { path = "../furcate-authn" }
+
+[dev-dependencies]
+anyhow.workspace = true
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }

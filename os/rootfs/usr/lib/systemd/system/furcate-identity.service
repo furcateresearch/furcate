@@ -1,0 +1,14 @@
+[Unit]
+Description=Furcate OS: node identity from the board's silicon
+Documentation=file:/usr/share/doc/furcate-os/README.md
+After=systemd-sysext.service furcate-firstboot.service systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=getty.target serial-getty@ttyAMA10.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/furcate-os/identity
+StandardOutput=journal+console
+
+[Install]
+WantedBy=multi-user.target

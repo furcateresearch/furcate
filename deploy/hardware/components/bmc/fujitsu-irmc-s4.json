@@ -1,0 +1,37 @@
+{
+  "_": "The management controller, and the most opinionated component in the machine: it acts without the operating system, survives a kernel panic, and refuses most of what an operator would like to ask it.",
+  "id": "bmc/fujitsu-irmc-s4",
+  "kind": "bmc",
+  "identity": {
+    "vendor": "Fujitsu Technology Solutions GmbH",
+    "product": "iRMC S4",
+    "_match": "ipmitool mc info — manufacturer name, since the product id reads back as Unknown (0x499) on this generation"
+  },
+  "interfaces": {
+    "ipmi": { "available": true, "device": "/dev/ipmi0", "privileged": true },
+    "redfish": {
+      "available": false,
+      "_why": "the iRMC LAN interfaces are unconfigured on this site. Putting a 2018-firmware controller on a network is an operator's decision, not a default."
+    }
+  },
+  "refuses": {
+    "fan_control": {
+      "command": "raw 0x30 0x45",
+      "response": "Invalid command",
+      "_why": "Fujitsu defines fan speed in firmware. This is not a permissions problem and no amount of privilege changes it — the controller does not implement the command."
+    }
+  },
+  "thermal_authority": {
+    "critical_c": 94,
+    "_note": "the controller acts on this itself, before and independently of any software. Furcate's own rungs sit below it and never halt for heat, because the BMC is faster and survives what the kernel does not."
+  },
+  "quirks": [
+    {
+      "id": "blind-sensors-force-max-airflow",
+      "severity": "costly",
+      "_what": "Five sensors report no reading — GPU, RAID Controller, CPU 1.05V, System Mgmt SW, System BIOS — because the parts behind them are absent. The controller fails safe to maximum airflow permanently.",
+      "_cost": "fans at 17.8-19.2k RPM against a machine at 32-41 C. Roughly 38 W per machine, about 60% of this site's electricity bill, for no thermal reason.",
+      "_fix": "iRMC or BIOS configuration, or a firmware newer than 2018. Not reachable from software; see `refuses.fan_control`."
+    }
+  ]
+}

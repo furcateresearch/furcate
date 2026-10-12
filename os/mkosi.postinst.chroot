@@ -1,0 +1,93 @@
+#!/bin/sh
+# Shared base setup, run inside the image tree.
+set -eu
+
+: "${IMAGE_VERSION:?build through os/build.sh, which sets the version}"
+
+# The base declares the interface extensions build against. systemd never
+# refuses an extension on these fields (extensions carry ID=_any); Furcate's
+# selector reads them and refuses loudly instead. See os/README.md.
+board="${FURCATE_BOARD:?the board config sets FURCATE_BOARD}"
+cat > /usr/lib/os-release <<EOF
+NAME="Furcate OS"
+PRETTY_NAME="Furcate OS $IMAGE_VERSION ($board)"
+ID=ubuntu
+ID_LIKE=debian
+VERSION_ID="26.04"
+VERSION_CODENAME=resolute
+VARIANT="$board"
+VARIANT_ID=furcate
+IMAGE_ID=furcate-os-$board
+IMAGE_VERSION=$IMAGE_VERSION
+HOME_URL="https://github.com/furcateresearch/furcate"
+FURCATE_BOARD=$board
+FURCATE_ABI=1
+EOF
+ln -sf ../usr/lib/os-release /etc/os-release
+
+# Networking: systemd-networkd and resolved, DHCP on any wired port; Wi-Fi
+# links are configured by /usr/lib/systemd/network/25-wireless.network.
+mkdir -p /etc/systemd/network
+cat > /etc/systemd/network/20-wired.network <<'EOF'
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes
+MulticastDNS=yes
+EOF
+# The device answers as <hostname>.local on the LAN (mDNS), so an operator
+# machine can reach it without knowing its address.
+mkdir -p /etc/systemd/resolved.conf.d
+cat > /etc/systemd/resolved.conf.d/10-furcate-mdns.conf <<'EOF'
+[Resolve]
+MulticastDNS=yes
+LLMNR=no
+EOF
+systemctl enable systemd-networkd.service systemd-resolved.service systemd-timesyncd.service
+# Wi-Fi (iwd associates, networkd configures wl*: 25-wireless.network) and
+# Bluetooth. Known Wi-Fi networks live in /var/lib/iwd on the state partition.
+systemctl enable iwd.service bluetooth.service
+
+# Furcate OS services from the base tree.
+systemctl enable furcate-extension-select.service furcate-firstboot.service furcate-identity.service furcate-os-selftest.service
+# Node health: power readings every 5 s (boards with a supply node in the
+# device tree), the journal upload to the controller (off until node.conf
+# names it) and the unit that follows node.conf for it.
+systemctl enable furcate-power.timer systemd-journal-upload.service furcate-journal-upload-config.path
+# The packet filter is mechanism only: nft and the nf_tables modules. The
+# distribution's nftables.service and its sample ruleset stay off, so the
+# ruleset Furcate renders is the only one on the node.
+systemctl disable nftables.service 2>/dev/null || true
+printf '%s\n' "# Furcate OS: intentionally empty. The node's ruleset is rendered and loaded" \
+    "# by Furcate; nftables.service is disabled." > /etc/nftables.conf
+# The receiver half of the package is not used on a node.
+systemctl disable systemd-journal-remote.socket systemd-journal-remote.service 2>/dev/null || true
+
+# The development access account. It has no password at all ("*" matches
+# nothing): access is SSH with the public keys listed in furcate-node.txt on
+# the boot partition, installed at first boot. Production nodes are managed
+# through operator authorisations signed by a passkey or device key instead.
+useradd -m -s /bin/bash -G sudo,adm,systemd-journal furcate
+usermod -p '*' furcate
+echo 'furcate ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/10-furcate
+chmod 440 /etc/sudoers.d/10-furcate
+passwd -l root
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/10-furcate.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+EOF
+# Host keys belong to the device, not to the image every device is made from;
+# furcate-firstboot creates them. sshd runs as a service from boot.
+rm -f /etc/ssh/ssh_host_*
+systemctl disable ssh.socket 2>/dev/null || true
+systemctl enable ssh.service
+
+# A machine id is generated on the device at first boot.
+: > /etc/machine-id
+rm -f /var/lib/dbus/machine-id
+
+# The operator documentation travels with the image.
+install -D -m644 "$SRCDIR/README.md" /usr/share/doc/furcate-os/README.md

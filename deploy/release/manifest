@@ -1,0 +1,138 @@
+# What a Furcate release ships, declared once.
+#
+# Every artifact is built from this list by deploy/release/install: the Debian
+# packages (debian/rules), the board extension (os/extensions/furcate/build)
+# and the stage a running host is rolled forward to (deploy/release/make-stage).
+# None of them names a file of its own. A unit, a helper or a tmpfiles line
+# that is not here does not ship anywhere; one that is here ships everywhere
+# its row says.
+#
+# Hosts updated from stages that carried binaries only kept running units and
+# tmpfiles from whatever image or package first installed them, and a fixed
+# unit in the tree never reached them. That is what this file ends.
+#
+# Columns, whitespace separated:
+#
+#   package   the Debian binary package that owns the file
+#   ships     pkg  the packages and the stage
+#             ext  the board extension only
+#             all  the packages, the stage and the board extension
+#             model  the model-server extension only
+#   edition   any  every edition, the same file in each
+#             each every edition, built once per edition: the full edition's
+#                  binary is built as bin/<name>-full and carries the mark
+#                  furcate-edition=full, the open edition's carries no mark.
+#                  deploy/edition-bins lays the right one out under <name>, and
+#                  deploy/release/install refuses a binary whose mark does not
+#                  match the edition it is installing, so a cargo release
+#                  directory handed over as-is cannot ship the open program
+#                  as the full one.
+#             full the full edition only. Those rows are not in this file:
+#                  they are in deploy/release/manifest.full, which the install
+#                  reads for the full edition only and which is not published
+#                  with the open tree, so this file names no file of the full
+#                  edition and the open edition builds from it alone.
+#   mode      644, 755, or link
+#   source    bin/<name>   a built binary, from the bin directory the caller
+#                          names
+#             <repo path>  a file in this tree; may glob, and then the
+#                          destination ends in / and the path below the glob's
+#                          first directory is kept
+#             runtime/<c>  the tree deploy/runtimes.sh assembles for component
+#                          <c>, pinned and digest-checked there; the
+#                          destination ends in /
+#             for a link, the link's target
+#   dest      the installed path. Always under /usr: a system extension can
+#             carry nothing else, and /etc and /var belong to the machine.
+#
+# The packages carry every language runtime (debian/rules runs
+# deploy/runtimes.sh); a board carries the inference runtime in its own
+# extension, the model-server extension, from the rows at the end. The desktop
+# entries are generated from arms.toml, which is listed.
+
+# -- the daemon and the operator's tools
+furcate-node  all  each  755  bin/furcated                        /usr/sbin/furcated
+furcate-cli   all  each  755  bin/furcatectl                      /usr/bin/furcatectl
+furcate-cli   all  each  755  bin/furcate-console                 /usr/bin/furcate-console
+
+# -- the front door and the session
+furcate-cli   pkg  any   755  deploy/os/furcate                   /usr/bin/furcate
+furcate-cli   pkg  any   644  deploy/os/tmux.conf                 /usr/share/furcate/tmux.conf
+furcate-cli   pkg  any   644  deploy/os/screenrc                  /usr/share/furcate/screenrc
+furcate-cli   pkg  any   644  deploy/os/arms.toml                 /usr/share/furcate/arms.toml
+
+# -- privileged helpers, not on PATH
+furcate-node  pkg  any   755  deploy/furcate-actuator.sh          /usr/libexec/furcate/actuator
+furcate-node  pkg  any   755  deploy/furcate-order-actuator.sh    /usr/libexec/furcate/order-actuator
+furcate-node  pkg  any   755  deploy/furcate-power-reader.sh      /usr/libexec/furcate/power-reader
+furcate-node  pkg  any   755  deploy/furcate-platform-reader.py   /usr/libexec/furcate/platform-reader
+furcate-node  pkg  any   755  deploy/furcate-accelerator-reader.py /usr/libexec/furcate/accelerator-reader
+furcate-node  pkg  any   755  deploy/furcate-wake-arm.sh          /usr/libexec/furcate/wake-arm
+furcate-node  pkg  any   755  deploy/furcate-quiet-hours.sh       /usr/libexec/furcate/quiet-hours
+furcate-node  pkg  any   755  deploy/furcate-build-guard.sh       /usr/libexec/furcate/build-guard
+furcate-node  pkg  any   644  deploy/quiet-hours.example          /usr/share/furcate/quiet-hours.example
+
+# -- the overlay: one binary at the path its units run, and the name an
+#    operator types linked to it, never a second copy
+furcate-node  all  any   755  deploy/furcate-wg.sh                /usr/libexec/furcate/wg
+furcate-node  all  any   755  bin/furcate-overlay                 /usr/libexec/furcate/overlay
+furcate-node  all  any   link ../libexec/furcate/overlay          /usr/bin/furcate-overlay
+furcate-node  all  any   644  deploy/overlay/overlay.env.example  /usr/share/furcate/overlay.env.example
+
+# -- the hardware registry, installed rather than compiled in
+furcate-node  all  any   644  deploy/hardware/machines/*.json     /usr/share/furcate/hardware/machines/
+furcate-node  all  any   644  deploy/hardware/components/*/*.json /usr/share/furcate/hardware/components/
+
+# -- the updater and the conversion tools
+furcate-cli   pkg  any   755  deploy/os/update                    /usr/libexec/furcate/update
+furcate-cli   pkg  any   755  deploy/os/adopt                     /usr/libexec/furcate/adopt
+furcate-cli   pkg  any   755  deploy/os/setup                     /usr/libexec/furcate/setup
+furcate-cli   pkg  any   755  deploy/os/convert                   /usr/libexec/furcate/convert
+furcate-cli   pkg  any   755  deploy/os/revert                    /usr/libexec/furcate/revert
+furcate-cli   pkg  any   755  deploy/migrate-to-packaged.sh       /usr/libexec/furcate/migrate
+
+# -- identity and branding, as candidates the host adopts
+furcate-cli   pkg  any   644  deploy/os/os-release                /usr/share/furcate/os-release
+furcate-cli   pkg  any   644  deploy/os/branding/issue            /usr/share/furcate/issue
+furcate-cli   pkg  any   644  deploy/os/branding/profile.sh       /usr/share/furcate/profile.sh
+furcate-cli   pkg  any   644  deploy/os/branding/palette.sh       /usr/share/furcate/palette.sh
+furcate-cli   pkg  any   644  deploy/os/branding/furcate.completion /usr/share/furcate/furcate.completion
+furcate-cli   pkg  any   755  deploy/os/branding/motd             /usr/lib/update-motd.d/00-furcate
+
+# -- the account and the directories it shares with root. /run/furcate is
+#    furcate-runtime.conf's alone: no unit may declare RuntimeDirectory=furcate,
+#    and no unit running as root may declare StateDirectory=furcate.
+furcate-node  all  any   644  deploy/sysusers/furcate.conf        /usr/lib/sysusers.d/furcate.conf
+furcate-node  all  any   644  deploy/tmpfiles/furcate.conf        /usr/lib/tmpfiles.d/furcate.conf
+furcate-node  all  any   644  deploy/tmpfiles/furcate-runtime.conf /usr/lib/tmpfiles.d/furcate-runtime.conf
+furcate-node  all  any   644  deploy/tmpfiles/furcate-state-keys.conf /usr/lib/tmpfiles.d/furcate-state-keys.conf
+furcate-node  all  any   644  deploy/os/furcate-release.crt       /usr/share/furcate/furcate-release.crt
+furcate-node  pkg  any   644  deploy/modules-load-furcate.conf    /usr/lib/modules-load.d/furcate-wireguard.conf
+
+# -- templates, not configuration: what an operator edits lives in /etc
+furcate-node  pkg  any   644  deploy/policy/overlay.yaml          /usr/share/furcate/overlay-policy.yaml
+
+# -- units. Which are enabled by installing is debian/rules' call
+#    (dh_installsystemd); a stage never enables anything.
+furcate-node  all  any   644  deploy/systemd/furcated.service                    /usr/lib/systemd/system/furcated.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-actuator.service            /usr/lib/systemd/system/furcate-actuator.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-order-actuator.service      /usr/lib/systemd/system/furcate-order-actuator.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-power-reader.service        /usr/lib/systemd/system/furcate-power-reader.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-platform-reader.service     /usr/lib/systemd/system/furcate-platform-reader.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-accelerator-reader.service  /usr/lib/systemd/system/furcate-accelerator-reader.service
+furcate-node  all  any   644  deploy/systemd/furcate-wg.service                  /usr/lib/systemd/system/furcate-wg.service
+furcate-node  all  any   644  deploy/systemd/furcate-names.service               /usr/lib/systemd/system/furcate-names.service
+furcate-node  all  any   644  deploy/systemd/furcate-names-link.service          /usr/lib/systemd/system/furcate-names-link.service
+furcate-node  all  any   644  deploy/systemd/furcate-overlay-reflect.service     /usr/lib/systemd/system/furcate-overlay-reflect.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-wake-arm.service            /usr/lib/systemd/system/furcate-wake-arm.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-edge.service                /usr/lib/systemd/system/furcate-edge.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-quiet-hours-enforce.service /usr/lib/systemd/system/furcate-quiet-hours-enforce.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-quiet-hours-enforce.timer   /usr/lib/systemd/system/furcate-quiet-hours-enforce.timer
+furcate-cli   pkg  any   644  deploy/systemd/furcate-update.service              /usr/lib/systemd/system/furcate-update.service
+furcate-cli   pkg  any   644  deploy/systemd/furcate-update.timer                /usr/lib/systemd/system/furcate-update.timer
+
+# -- the model-server extension: the inference runtime alone, so a board that
+#    serves models takes it and one that does not never carries it. Built by
+#    os/build.sh <board> model-extension; `furcatectl model` (in the furcate
+#    extension) drives it.
+furcate-node  model  any   755  runtime/llama                       /usr/lib/furcate/runtimes/llama/
