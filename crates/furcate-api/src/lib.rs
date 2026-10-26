@@ -699,13 +699,71 @@ fn listen_when_possible(
     })
 }
 
+/// What one listener allows its connections.
+#[derive(Clone, Copy)]
+struct Limits {
+    /// How long a connection has to deliver its whole request. Each read is
+    /// given only what is left of it, so a peer sending a byte at a time
+    /// cannot hold its thread any longer than one that sends nothing.
+    deadline: std::time::Duration,
+    /// The most connections served at once. Each has a thread of its own;
+    /// past this a new connection is closed at once rather than given one.
+    connections: usize,
+}
+
+const LIMITS: Limits = Limits {
+    deadline: std::time::Duration::from_secs(15),
+    connections: 256,
+};
+
+/// A stream that refuses to be read past a fixed moment.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    until: std::time::Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        let mut stream = self.stream;
+        stream.read(buf)
+    }
+}
+
+/// One connection's place in the count, given back however its thread ends.
+struct Slot(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn accept(listener: TcpListener, router: Arc<Router>) {
+    accept_within(listener, router, LIMITS)
+}
+
+fn accept_within(listener: TcpListener, router: Arc<Router>, limits: Limits) {
+    let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
+        if open.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= limits.connections {
+            open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            continue;
+        }
+        let slot = Slot(Arc::clone(&open));
         let router = Arc::clone(&router);
         std::thread::spawn(move || {
+            let _slot = slot;
+            let _ = stream.set_write_timeout(Some(limits.deadline));
             let from = stream.peer_addr().ok().map(|a| a.ip());
-            let response = match parse_request(&mut stream) {
+            let until = std::time::Instant::now() + limits.deadline;
+            let parsed = parse_request(&mut Deadline { stream: &stream, until });
+            let response = match parsed {
                 Some(req) => router.dispatch_from(&req, from, now_s()),
                 None => Response::error(400, "malformed request"),
             };
@@ -1104,6 +1162,63 @@ mod tests {
         raw.extend_from_slice(b"Content-Length: 2\r\n\r\n{}");
         let req = parse_request(&mut std::io::Cursor::new(raw)).expect("a modest request parses");
         assert_eq!(req.body, json!({}));
+    }
+
+    fn serve_within(deadline_ms: u64, connections: usize) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap().to_string();
+        let limits = Limits { deadline: std::time::Duration::from_millis(deadline_ms), connections };
+        std::thread::spawn(move || accept_within(l, Arc::new(router()), limits));
+        addr
+    }
+
+    #[test]
+    fn a_peer_that_never_finishes_its_request_is_cut_off() {
+        let addr = serve_within(300, 16);
+        let mut c = TcpStream::connect(&addr).unwrap();
+        c.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let started = std::time::Instant::now();
+        // A byte at a time, each well inside any per-read timeout.
+        for b in b"GET /healthz HTTP/1.1\r\nX-Slow:" {
+            if c.write_all(&[*b]).is_err() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let mut got = Vec::new();
+        let r = c.read_to_end(&mut got);
+        if let Err(e) = &r {
+            assert!(
+                !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
+                "the server was still waiting on a request it should have given up on"
+            );
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn connections_past_the_limit_are_closed_rather_than_given_a_thread() {
+        let addr = serve_within(10_000, 1);
+        let held = TcpStream::connect(&addr).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut extra = TcpStream::connect(&addr).unwrap();
+        extra.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        let mut buf = [0u8; 16];
+        let r = extra.read(&mut buf);
+        assert!(
+            matches!(r, Ok(0))
+                || matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset),
+            "{r:?}"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn a_slot_is_given_back_when_its_connection_ends() {
+        let addr = serve_within(10_000, 1);
+        for _ in 0..3 {
+            assert!(healthz_within(&addr, 2_000));
+        }
     }
 
     #[test]
