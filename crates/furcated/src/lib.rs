@@ -2291,6 +2291,52 @@ fn load_trust_store() -> furcate_authn::TrustStore {
     }
 }
 
+/// Register a model this node serves.
+///
+/// It reads a path on this machine, points inference at an endpoint and
+/// writes the registry, so it is the operator's to call.
+fn model_load_route(r: Router, agent: Arc<Mutex<Agent>>) -> Router {
+    r.guarded("POST", "/models/load", {
+        let agent = Arc::clone(&agent);
+        move |req: &Request| {
+            let (Some(id), Some(path), Some(endpoint)) = (
+                req.body.get("id").and_then(|v| v.as_str()),
+                req.body.get("path").and_then(|v| v.as_str()),
+                req.body.get("endpoint").and_then(|v| v.as_str()),
+            ) else {
+                return Response::error(400, "`id`, `path` and `endpoint` are required");
+            };
+            // Measure the artifact before serving it. A node that serves
+            // weights it never hashed cannot say which model it ran.
+            let digest = match runtime::measure(std::path::Path::new(path)) {
+                Ok(d) => d,
+                Err(e) => return Response::error(400, format!("measuring {path}: {e}")),
+            };
+            if !runtime::reachable(endpoint) {
+                return Response::error(
+                    503,
+                    format!("no runtime answering at {endpoint}; not registering a model this node cannot serve"),
+                );
+            }
+            let mut a = agent.lock().expect("agent lock");
+            a.models.insert(
+                id.to_string(),
+                runtime::LoadedModel {
+                    id: id.to_string(),
+                    digest: digest.clone(),
+                    endpoint: endpoint.to_string(),
+                    path: Some(path.to_string()),
+                },
+            );
+            let all: Vec<_> = a.models.values().cloned().collect();
+            let _ = runtime::save(&model_registry_path(), &all);
+            a.chain.append(now_ms(), OpKind::ModelLoad, "api", id, &digest[..16]);
+            a.persist_chain();
+            Response::ok(json!({ "loaded": id, "digest": digest }))
+        }
+    })
+}
+
 fn build_router(
     sched: furcate_sched::Registry,
     agent: Arc<Mutex<Agent>>,
@@ -3824,45 +3870,6 @@ fn build_router(
                 }))
             }
         })
-        .route("POST", "/models/load", {
-            let agent = Arc::clone(&agent);
-            move |req: &Request| {
-                let (Some(id), Some(path), Some(endpoint)) = (
-                    req.body.get("id").and_then(|v| v.as_str()),
-                    req.body.get("path").and_then(|v| v.as_str()),
-                    req.body.get("endpoint").and_then(|v| v.as_str()),
-                ) else {
-                    return Response::error(400, "`id`, `path` and `endpoint` are required");
-                };
-                // Measure the artifact before serving it. A node that serves
-                // weights it never hashed cannot say which model it ran.
-                let digest = match runtime::measure(std::path::Path::new(path)) {
-                    Ok(d) => d,
-                    Err(e) => return Response::error(400, format!("measuring {path}: {e}")),
-                };
-                if !runtime::reachable(endpoint) {
-                    return Response::error(
-                        503,
-                        format!("no runtime answering at {endpoint}; not registering a model this node cannot serve"),
-                    );
-                }
-                let mut a = agent.lock().expect("agent lock");
-                a.models.insert(
-                    id.to_string(),
-                    runtime::LoadedModel {
-                        id: id.to_string(),
-                        digest: digest.clone(),
-                        endpoint: endpoint.to_string(),
-                        path: Some(path.to_string()),
-                    },
-                );
-                let all: Vec<_> = a.models.values().cloned().collect();
-                let _ = runtime::save(&model_registry_path(), &all);
-                a.chain.append(now_ms(), OpKind::ModelLoad, "api", id, &digest[..16]);
-                a.persist_chain();
-                Response::ok(json!({ "loaded": id, "digest": digest }))
-            }
-        })
         .route("GET", "/models", {
             let agent = Arc::clone(&agent);
             move |_: &Request| {
@@ -3978,6 +3985,7 @@ fn build_router(
     //
     // WARNING: OUTWARD ONLY. Nothing here parses an inbound agent request or
     // accepts a skill string.
+    let r = model_load_route(r, Arc::clone(&agent));
     let r = ["/.well-known/agent-card.json", "/.well-known/agent.json"]
         .into_iter()
         .fold(r, |r, path| {
@@ -4650,6 +4658,23 @@ mod tests {
 
     /// An agent on a fresh chain, independent of whatever ledger happens to
     /// exist on the machine running the tests.
+    #[test]
+    fn registering_a_model_needs_the_operator() {
+        // It hashes any path the caller names as this daemon's user, sends
+        // every later /infer for that id to the endpoint the caller names, and
+        // persists both. An unsigned caller must not get as far as any of it.
+        let r = model_load_route(Router::new(), Arc::new(Mutex::new(agent())));
+        let res = r.dispatch(&Request {
+            method: "POST".into(),
+            path: "/models/load".into(),
+            body: json!({ "id": "m", "path": "/etc/hostname", "endpoint": "http://192.0.2.1:9" }),
+            raw_body: br#"{"id":"m","path":"/etc/hostname","endpoint":"http://192.0.2.1:9"}"#.to_vec(),
+            ..Default::default()
+        });
+        assert_eq!(res.status, 403, "{}", res.body);
+        assert!(r.guarded_paths().contains(&"POST /models/load".to_string()));
+    }
+
     pub(super) fn agent() -> Agent {
         let id = "furcate:node:test".to_string();
         let chain = Chain::genesis(&id, 1_000_000);

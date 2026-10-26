@@ -279,8 +279,8 @@ pub fn orchestrator_set(id: &str) -> Result<()> {
     println!();
     println!("serve and register it:");
     println!("  furcatectl model gateway");
-    println!("  curl -sS -XPOST http://127.0.0.1:7616/models/load -H 'content-type: application/json' \\");
-    println!("    -d '{{\"id\":\"{id}\",\"path\":\"{}\",\"endpoint\":\"http://127.0.0.1:8750\"}}'", weights(id).display());
+    println!("  furcatectl call KEY 127.0.0.1:7616 /models/load \\");
+    println!("    '{{\"id\":\"{id}\",\"path\":\"{}\",\"endpoint\":\"http://127.0.0.1:8750\"}}'", weights(id).display());
     Ok(())
 }
 
