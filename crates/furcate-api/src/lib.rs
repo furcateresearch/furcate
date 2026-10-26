@@ -466,10 +466,26 @@ pub const MAX_BODY: usize = 256 * 1024;
 /// caller cannot grow a request without bound by sending more of them.
 pub const MAX_HEADERS: usize = 64;
 
+/// The most bytes the request line and headers may take together. A line is
+/// read until its newline, so without this a peer that never sends one grows
+/// the request in memory for as long as it keeps sending.
+pub const MAX_HEAD: u64 = 64 * 1024;
+
+/// Read one line of the request head, refusing it once the head's budget is
+/// spent: a line cut off by the limit is not a line.
+fn read_head_line<R: BufRead>(head: &mut std::io::Take<R>, line: &mut String) -> Option<usize> {
+    let n = head.read_line(line).ok()?;
+    if head.limit() == 0 {
+        return None;
+    }
+    Some(n)
+}
+
 pub fn parse_request(stream: &mut impl Read) -> Option<Request> {
     let mut reader = BufReader::new(stream);
+    let mut head = (&mut reader).take(MAX_HEAD);
     let mut line = String::new();
-    reader.read_line(&mut line).ok()?;
+    read_head_line(&mut head, &mut line)?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?.to_string();
     let raw_path = parts.next()?.to_string();
@@ -482,7 +498,7 @@ pub fn parse_request(stream: &mut impl Read) -> Option<Request> {
     let mut headers: Vec<(String, String)> = Vec::new();
     loop {
         let mut header = String::new();
-        if reader.read_line(&mut header).ok()? == 0 {
+        if read_head_line(&mut head, &mut header)? == 0 {
             break;
         }
         let trimmed = header.trim_end();
@@ -1036,6 +1052,58 @@ mod tests {
         let mut raw = std::io::Cursor::new(payload.to_vec());
         // Read fails cleanly because the body is shorter than claimed.
         assert!(parse_request(&mut raw).is_none());
+    }
+
+    /// A peer that never stops sending and never finishes a line, counting
+    /// what was taken from it.
+    struct Endless {
+        prefix: &'static [u8],
+        fill: &'static [u8],
+        taken: usize,
+    }
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.taken >= 16 * 1024 * 1024 {
+                return Err(std::io::Error::other("the test peer gave up"));
+            }
+            for b in buf.iter_mut() {
+                let i = self.taken;
+                *b = match self.prefix.get(i) {
+                    Some(c) => *c,
+                    None => self.fill[(i - self.prefix.len()) % self.fill.len()],
+                };
+                self.taken += 1;
+            }
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn a_request_line_that_never_ends_is_refused_without_reading_it_all() {
+        // One line with no newline must not grow in memory for as long as the
+        // peer cares to send it.
+        let mut peer = Endless { prefix: b"GET /", fill: b"a", taken: 0 };
+        assert!(parse_request(&mut peer).is_none());
+        assert!(peer.taken < 1024 * 1024, "read {} bytes of one request line", peer.taken);
+    }
+
+    #[test]
+    fn headers_that_never_end_are_refused_without_reading_them_all() {
+        let mut peer = Endless { prefix: b"GET / HTTP/1.1\r\n", fill: b"X-Filler: y\r\n", taken: 0 };
+        assert!(parse_request(&mut peer).is_none());
+        assert!(peer.taken < 1024 * 1024, "read {} bytes of headers", peer.taken);
+    }
+
+    #[test]
+    fn a_request_within_the_head_limit_still_parses() {
+        let mut raw = b"POST /x HTTP/1.1\r\n".to_vec();
+        for i in 0..100 {
+            raw.extend_from_slice(format!("X-Filler-{i}: y\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"Content-Length: 2\r\n\r\n{}");
+        let req = parse_request(&mut std::io::Cursor::new(raw)).expect("a modest request parses");
+        assert_eq!(req.body, json!({}));
     }
 
     #[test]
