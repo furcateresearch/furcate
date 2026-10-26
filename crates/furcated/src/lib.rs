@@ -2337,6 +2337,21 @@ fn model_load_route(r: Router, agent: Arc<Mutex<Agent>>) -> Router {
     })
 }
 
+/// A new directory that only this process's user can enter, under a name
+/// nobody could have made first.
+///
+/// `create_dir_all` under a time-based name accepts a directory that is
+/// already there, along with anything another user placed in it, such as a
+/// link where a file is about to be written.
+fn private_dir(base: &std::path::Path, prefix: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let mut r = [0u8; 16];
+    getrandom::fill(&mut r).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let dir = base.join(format!("{prefix}-{}", hex::encode(r)));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    Ok(dir)
+}
+
 fn build_router(
     sched: furcate_sched::Registry,
     agent: Arc<Mutex<Agent>>,
@@ -3258,10 +3273,9 @@ fn build_router(
                     return Response::error(400, "user, host or ttl contains characters that are not allowed".to_string());
                 }
 
-                let dir = std::env::temp_dir().join(format!("furcate-ssh-req-{}", now_ms()));
-                if std::fs::create_dir_all(&dir).is_err() {
+                let Ok(dir) = private_dir(&std::env::temp_dir(), "furcate-ssh-req") else {
                     return Response::error(500, "could not stage the request".to_string());
-                }
+                };
                 let keypath = dir.join("k");
                 if std::fs::write(keypath.with_extension("pub"), format!("{pubkey}\n")).is_err() {
                     let _ = std::fs::remove_dir_all(&dir);
@@ -4673,6 +4687,20 @@ mod tests {
         });
         assert_eq!(res.status, 403, "{}", res.body);
         assert!(r.guarded_paths().contains(&"POST /models/load".to_string()));
+    }
+
+    #[test]
+    fn an_ssh_request_is_staged_where_nobody_else_could_have_put_anything() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let base = std::env::temp_dir().join(format!("furcated-private-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let a = private_dir(&base, "furcate-ssh-req").unwrap();
+        let b = private_dir(&base, "furcate-ssh-req").unwrap();
+        assert_ne!(a, b, "two requests must never share a directory");
+        let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "only this user may enter it");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     pub(super) fn agent() -> Agent {
