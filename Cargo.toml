@@ -15,6 +15,7 @@ members = [
     "crates/furcate-killswitch",
     "crates/furcate-leaf",
     "crates/furcate-leaf-core",
+    "crates/furcate-leaf-link",
     "crates/furcate-ledger",
     "crates/furcate-machine",
     "crates/furcate-membership",

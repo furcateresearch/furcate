@@ -15,6 +15,7 @@ pub mod identity;
 pub mod leaf;
 pub mod nicla;
 pub mod registry;
+pub mod relay;
 pub mod serial;
 pub mod text;
 

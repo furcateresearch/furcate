@@ -1,0 +1,23 @@
+{
+  "bridge_id": "CHANGE-ME: an id for this bridge that is not the small node's own id, e.g. furcate:bridge:<name>",
+  "ceiling": "device",
+  "bridge_custody": { "kind": "fuse-key" },
+  "leaves": [
+    {
+      "name": "CHANGE-ME: the operator's name for the micro processing node",
+      "key": "CHANGE-ME: p256:<hex>, from `furcate-leaf-link enrol` reviewed by the operator",
+      "custody": { "kind": "readable-identifiers" },
+      "mac": "CHANGE-ME: from enrol",
+      "otp": "CHANGE-ME: from enrol",
+      "revision": "CHANGE-ME: from enrol",
+      "channels": { "0": "tmp" },
+      "module": {
+        "name": "CHANGE-ME or delete this block when no sensing module is behind the leaf",
+        "serial": "CHANGE-ME: as configured on the leaf",
+        "device_id": "CHANGE-ME: 16 hex digits, as configured on the leaf",
+        "device_addr": "CHANGE-ME: 12 hex digits, as configured on the leaf",
+        "channels": { "16": "tmp", "17": "hum", "18": "prs", "19": "gas" }
+      }
+    }
+  ]
+}

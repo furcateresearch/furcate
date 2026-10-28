@@ -66,10 +66,10 @@ recorded. It is a `furcated-lite` worker; the library is `furcate_sense::cascade
 below it is described in `crates/open/furcate-sense/docs/nicla-sense-me.md`.
 
 Built and tested: the checks above, the reference model (a nearest-centroid model, no accuracy
-claimed), the escalation policy and the next-rung check, end to end on a recorded capture. Seams, not
-built: the link from the micro processing node's firmware to this node, transport of escalations to
-a medium or large node, a calibrated escalation gate, and shipping the program in the base release.
-The small processing node has not been run on a board.
+claimed), the escalation policy and the next-rung check, end to end on a recorded capture. The link
+from a micro processing node's session to this node is `furcate-leaf-link` (below). Seams, not built:
+transport of escalations to a medium or large node, a calibrated escalation gate, and shipping the
+programs in the base release. The small processing node has not been run on a board.
 
 ### The first wire-free chain
 
@@ -85,6 +85,29 @@ to the head of the Raspberry Pi (small processing node), then to the next rung a
 * Limits: the BLE link is unencrypted and unbonded and the module is `soft`; values carry the leaf's
   arrival time, not the sensor's own timestamp; the gyroscope scale is the library default and not
   checked with a known rotation; the module sent no humidity frames. The ESP32-S3 joins 2.4 GHz only.
+
+### The path from sensor to Living Worlds, and where each part stands
+
+```
+sensing node --(BLE or I2C)--> micro processing node --(FL1 over Wi-Fi or serial)--> furcate-leaf-link
+   --(JSON frames, unix socket)--> small processing node --> next rung --> batch exporter --> Living Worlds
+```
+
+| Part | Built | Tested without a board | Needs a board or an owner decision |
+|---|---|---|---|
+| Sensing node to micro node over BLE | `components/fl_nicla` in the leaf firmware | decoding and the store with constructed frames and a simulated peer | run on the real devices, see above |
+| Sensing node to micro node over I2C | `components/fl_nicla_i2c`: the leaf as bus host on the module's expansion port, feeding the same store and the same signed readings and unit record. Off unless enabled | the bus exchange against a simulated module (counts, short and long frames, budget, failures, acknowledge), and a compile for the ESP32-S3 | a module wired to the leaf. It has not run against one |
+| Micro node signs readings | `fl_sensors.c`: readings, chain entry, unit record | an independent verifier on all signed readings from the real board over USB | |
+| Micro node to the host: the session | `furcate-leaf-link`: HELLO, the node's AUTH, FINISH, sealed records, SENSE | transcript, keys and sealed records match the reference host byte for byte; a simulated leaf over a TCP socket | a session with a real board: the node's AUTH is a protocol write to it, which needs the owner's go-ahead |
+| The host verifies and signs | `furcate-leaf-link`: leaf signatures against the enrolled key, module attribution, class never above the leaf's or the host's; frames signed through the hardware root of trust | accepted by the small node's ingest; every refusal above tested | the host's key through the Pi's signing broker: the permission it takes is in `deploy/small-node/README.md` and has not been applied |
+| Small processing node | `furcate-small` | end to end on a recorded capture, and on frames from the bridge | on the Pi: deploy and run, the owner's release |
+| Next rung and the batch exporter | `cascade` escalation, `physical.rs` ([`physical-batch.md`](physical-batch.md)) | golden vector shared with the consumer | the uplink that sends batches is planned |
+
+Two honest limits of the bridge. It is the processing node of record for the sensing nodes behind a leaf,
+and signs the frame with the host's key after verifying the leaf's: the leaf's own signature is checked
+and recorded in the frame's attestation text, but the cascade's envelope is the host's. And a bridge
+restart starts each leaf's witnessed log over, which the small node reads as a repeat until a resumable
+log exists.
 
 ## Where a device is described
 

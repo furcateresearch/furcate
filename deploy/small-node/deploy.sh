@@ -39,7 +39,12 @@ sudo install -d -m 755 /opt/tools
 sudo install -m 755 "$t/furcate-small" /opt/tools/furcate-small
 sudo install -m 644 "$t/unit" /etc/systemd/system/furcate-small-node.service
 sudo systemctl daemon-reload
-/opt/tools/furcate-small identity --backend rpi-fw-crypto
+/opt/tools/furcate-small identity --backend rpi-fw-crypto || {
+    echo "the signing broker was not reachable from this session. The broker answers the furcate" >&2
+    echo "account only with the furcate-fwcrypto group as well; a login shell has the account and" >&2
+    echo "not the group. See deploy/small-node/README.md, 'Signing through the board's broker'." >&2
+    exit 1
+}
 EOS
 } | "$@" sh -s
 echo "installed; the service is not enabled. Next: the README, then verify.sh."

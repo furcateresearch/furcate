@@ -31,6 +31,14 @@ What runs today on real hardware:
   - a signed, replay-protected link that refuses unknown keys;
   - models loaded at runtime from signed bundles;
   - signed updates that need two release keys, with automatic rollback.
+- **Three node roles.** A sensing node measures, a micro processing node (a leaf) signs for the
+  sensing node behind it, and a small processing node (a Raspberry Pi running Furcate) verifies
+  everything the rung below it says; medium and large nodes sit above. Each rung checks the one
+  below, and the roles are in [docs/leaf-tier.md](docs/leaf-tier.md). Worked pages: the
+  [sensing node](crates/furcate-sense/docs/nicla-sense-me.md), the
+  [XIAO ESP32-S3 leaf](docs/leaf-devices/xiao-esp32s3.md) and the
+  [small processing node](crates/furcate-sense/docs/small-processing-node.md). These are tested in
+  software; running the whole cascade on boards is in progress.
 
 In progress:
 

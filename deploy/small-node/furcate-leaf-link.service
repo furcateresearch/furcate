@@ -1,0 +1,70 @@
+[Unit]
+Description=Furcate leaf link: the session with a micro processing node, bridged into the small processing node
+Documentation=https://github.com/furcateresearch/furcate
+# Inert until the node has a configuration: without /etc/furcate/leaf-link.env
+# the unit is skipped, not failed. Nothing enables it; the operator does, after
+# enrolling a leaf and writing the files (deploy/small-node/README.md).
+ConditionPathExists=/etc/furcate/leaf-link.env
+# Signs with the board's firmware-held key through the signing broker, as the
+# small processing node does (README, "Signing through the board's broker").
+# Frames go to the small node's ingest socket, so that unit is wanted first.
+Wants=furcate-fwcrypto-broker.socket furcate-small-node.service
+After=network.target furcate-fwcrypto-broker.socket furcate-small-node.service
+
+[Service]
+Type=simple
+# LEAF_LINK_ARGS carries the configuration, grant, link and output.
+EnvironmentFile=/etc/furcate/leaf-link.env
+ExecStart=/opt/tools/furcate-leaf-link serve --backend rpi-fw-crypto $LEAF_LINK_ARGS
+Restart=on-failure
+RestartSec=5
+
+# The broker answers root and the `furcate` account, by peer credentials, and
+# its socket needs the group as well: User and SupplementaryGroups are both
+# required. Nothing else is: the unit does not open the firmware device.
+User=furcate
+Group=furcate
+SupplementaryGroups=furcate-fwcrypto
+StateDirectory=furcate-leaf-link
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/furcate-leaf-link
+UMask=0077
+
+# The leaf dials this host over Wi-Fi: TCP 7781 on the wired and wireless
+# interfaces only. The cgroup drops every packet on any other interface,
+# whatever address the program binds. The leaf head listens on the same port:
+# one of the two serves a given leaf, or give them different ports.
+RestrictNetworkInterfaces=end0 wlan0
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
+SocketBindAllow=tcp:7781
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=128M
+TasksMax=32
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target

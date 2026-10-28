@@ -195,7 +195,7 @@ impl fmt::Display for LeafError {
 
 impl std::error::Error for LeafError {}
 
-fn reading_payload(sensor_id: &str, leaf_id: &str, value: f64, seq: u64, taken_at: u64) -> Vec<u8> {
+pub(crate) fn reading_payload(sensor_id: &str, leaf_id: &str, value: f64, seq: u64, taken_at: u64) -> Vec<u8> {
     let mut h = Sha256::new();
     h.update((sensor_id.len() as u64).to_be_bytes());
     h.update(sensor_id.as_bytes());

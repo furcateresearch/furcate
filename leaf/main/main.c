@@ -115,9 +115,9 @@ void app_main(void) {
     bool id_ok = enrolled && fl_identity_init() == ESP_OK;
     fl_trust_init();
     fl_net_init();  // before the model arena takes the largest free block
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 && !CONFIG_FL_NICLA_I2C_ENABLE
     fl_nicla_ble_start();  // BLE central for the sensing module; the model arena takes what is left
-#endif
+#endif  // with the I2C transport enabled the module is read over the bus and the BLE host is not started
     bool models_ok = fl_models_init() == ESP_OK;
 
     bool healthy = (enrolled ? id_ok : true) && models_ok;

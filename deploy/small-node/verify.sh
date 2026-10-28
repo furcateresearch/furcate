@@ -17,7 +17,12 @@ cap=${1:?capture}; shift
     echo B64
     cat <<'EOS'
 echo '--- identity'
-/opt/tools/furcate-small identity --backend rpi-fw-crypto
+/opt/tools/furcate-small identity --backend rpi-fw-crypto || {
+    echo "the signing broker was not reachable from this session. The broker answers the furcate" >&2
+    echo "account only with the furcate-fwcrypto group as well; a login shell has the account and" >&2
+    echo "not the group. See deploy/small-node/README.md, 'Signing through the board's broker'." >&2
+    exit 1
+}
 echo '--- replay'
 /opt/tools/furcate-small replay "$t/capture.txt"
 echo '--- unit'

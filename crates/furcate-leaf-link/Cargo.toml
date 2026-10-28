@@ -1,0 +1,36 @@
+[package]
+name = "furcate-leaf-link"
+version.workspace = true
+edition.workspace = true
+description = "Host side of the leaf link: the FL1 session with a micro processing node, and the bridge into the small processing node."
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "furcate-leaf-link"
+path = "src/main.rs"
+
+[dependencies]
+furcate-leaf-core = { path = "../furcate-leaf-core" }
+furcate-identity = { path = "../furcate-identity" }
+furcate-policy = { path = "../furcate-policy" }
+furcate-sense = { path = "../furcate-sense" }
+anyhow.workspace = true
+hex.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+data-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+getrandom.workspace = true
+p256 = { workspace = true, features = ["ecdh"] }
+libc.workspace = true
+# The sealed records are AES-256-GCM with a 12-byte nonce, as the firmware's
+# PSA call makes them.
+aes-gcm = "0.10"
+
+[dev-dependencies]
+ed25519-dalek.workspace = true

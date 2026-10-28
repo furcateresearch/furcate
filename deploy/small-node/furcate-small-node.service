@@ -7,7 +7,9 @@ Documentation=https://github.com/furcateresearch/furcate
 ConditionPathExists=/etc/furcate/small-node.env
 # The node signs with the board's firmware-held key through the signing
 # broker, so the broker's socket is wanted first. There is no fallback signer:
-# without the broker the program exits.
+# without the broker the program exits. What reaching the broker takes is
+# listed in deploy/small-node/README.md ("Signing through the board's broker"):
+# the socket, the account, the group and the one unit option that carries it.
 Wants=furcate-fwcrypto-broker.socket
 After=furcate-fwcrypto-broker.socket
 
@@ -19,8 +21,17 @@ ExecStart=/opt/tools/furcate-small serve --backend rpi-fw-crypto --state-dir /va
 Restart=on-failure
 RestartSec=5
 
-# The broker answers root and the `furcate` account, by peer credentials, and
-# its socket needs the group as well, exactly as the leaf head and furcated do.
+# Two checks stand between this program and a signature, and both must hold:
+#   1. the broker answers a peer by its uid (SO_PEERCRED): root or `furcate`,
+#      and nobody else, group member or not ("peer not allowed");
+#   2. the broker's socket, /run/furcate-os/fwcrypto.sock, is root:furcate-fwcrypto
+#      mode 0660, so the process also needs that group ("Permission denied" on
+#      connect, before the broker is asked anything).
+# User= answers the first and SupplementaryGroups= the second. No other unit
+# option is needed: the unit does not open /dev/vcio*, so there is no
+# DeviceAllow= and PrivateDevices=true stays. A login shell as `furcate` has
+# the uid and not the group, which is why running this program by hand fails
+# where the service does not (README).
 User=furcate
 Group=furcate
 SupplementaryGroups=furcate-fwcrypto

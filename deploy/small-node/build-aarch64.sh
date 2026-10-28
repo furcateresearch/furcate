@@ -1,5 +1,5 @@
 #!/bin/sh
-# Cross-build furcate-small for a 64-bit Arm Linux board.
+# Cross-build furcate-small and furcate-leaf-link for a 64-bit Arm Linux board.
 #
 # Run on a Linux build host that has the Rust toolchain with the
 # aarch64-unknown-linux-gnu target and the cross linker
@@ -14,8 +14,10 @@ command -v aarch64-linux-gnu-gcc >/dev/null || { echo "no aarch64-linux-gnu-gcc 
 cd "$repo"
 git diff --quiet HEAD -- || { echo "the checkout has uncommitted changes; build a pushed commit" >&2; exit 1; }
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
-    nice -n 10 cargo build --release --target aarch64-unknown-linux-gnu -p furcate-leaf --bin furcate-small -j 4
-bin="$CARGO_TARGET_DIR/aarch64-unknown-linux-gnu/release/furcate-small"
+    nice -n 10 cargo build --release --target aarch64-unknown-linux-gnu -p furcate-leaf --bin furcate-small -p furcate-leaf-link --bin furcate-leaf-link -j 4
 echo "commit  $(git rev-parse HEAD)"
-echo "binary  $bin"
-sha256sum "$bin"
+for name in furcate-small furcate-leaf-link; do
+    bin="$CARGO_TARGET_DIR/aarch64-unknown-linux-gnu/release/$name"
+    echo "binary  $bin"
+    sha256sum "$bin"
+done
