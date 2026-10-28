@@ -16,10 +16,10 @@
 //! ```text
 //! furcate-order/1
 //! site=<rp id>
-//! action=<halt|resume|power_off|isolate|release|crypto_erase|admit|revoke|set_custody>
-//! target=<node|domain|cluster|credential|custody>
-//! target.id=<id, empty for cluster and custody>
-//! target.key_sha256=<lowercase hex: the credential key, or the custody change; else empty>
+//! action=<halt|resume|power_off|isolate|release|crypto_erase|admit|revoke|set_custody|login>
+//! target=<node|domain|cluster|credential|custody|login>
+//! target.id=<id, or <user>@<node> for login; empty for cluster and custody>
+//! target.key_sha256=<lowercase hex: the credential key, the custody change, or the SSH key; else empty>
 //! target.rp_id=<the credential's own RP ID, empty unless credential>
 //! bounds.max_nodes=<decimal u32>
 //! bounds.duration_s=<decimal u64, or "none">
@@ -42,6 +42,17 @@
 //! node applies them through the same checks and ledger entries as an
 //! operator-signed change. The line layout is unchanged; the digest travels in
 //! `target.key_sha256`.
+//!
+//! ## `login` approves one SSH key, as one user, on one machine, for a while
+//!
+//! A `login` order names the SHA-256 of an SSH public key's wire encoding (the
+//! base64 field of its OpenSSH line, decoded), the login user and the machine,
+//! as `target.id=<user>@<node>`, and how long the access lasts in
+//! `bounds.duration_s`. The node that holds the site's SSH certificate
+//! authority carries it out by signing a certificate for exactly that key,
+//! with the single principal `<user>@<node>`, valid for no longer than the
+//! order says. The key must be a FIDO key (`sk-ecdsa` or `sk-ed25519`), so
+//! what logs in is an authenticator, not a file.
 //!
 //! ## `isolate` is something a node does to itself
 //!
@@ -84,10 +95,12 @@ pub enum Action {
     Revoke,
     /// Apply one custody change to the site's policy: who holds its keys.
     SetCustody,
+    /// Certify one FIDO-held SSH key as one user on one machine, for a while.
+    Login,
 }
 
 impl Action {
-    pub const ALL: [Action; 9] = [
+    pub const ALL: [Action; 10] = [
         Action::Halt,
         Action::Resume,
         Action::PowerOff,
@@ -97,6 +110,7 @@ impl Action {
         Action::Admit,
         Action::Revoke,
         Action::SetCustody,
+        Action::Login,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -110,13 +124,17 @@ impl Action {
             Action::Admit => "admit",
             Action::Revoke => "revoke",
             Action::SetCustody => "set_custody",
+            Action::Login => "login",
         }
     }
 
     /// Whether this acts on machines rather than on the roster of approvers
     /// or the site's custody policy.
     pub fn acts_on_machines(&self) -> bool {
-        !matches!(self, Action::Admit | Action::Revoke | Action::SetCustody)
+        !matches!(
+            self,
+            Action::Admit | Action::Revoke | Action::SetCustody | Action::Login
+        )
     }
 }
 
@@ -148,6 +166,13 @@ pub enum Target {
         /// SHA-256 of the change's signed bytes, lowercase hex.
         change_sha256: String,
     },
+    /// One SSH key, as one user, on one machine.
+    Login {
+        user: String,
+        node: String,
+        /// SHA-256 of the SSH public key's wire encoding, lowercase hex.
+        key_sha256: String,
+    },
 }
 
 impl Target {
@@ -158,6 +183,7 @@ impl Target {
             Target::Cluster => "cluster",
             Target::Credential { .. } => "credential",
             Target::Custody { .. } => "custody",
+            Target::Login { .. } => "login",
         }
     }
 }
@@ -219,6 +245,61 @@ fn lower_hex_digest(value: &str) -> Result<(), Malformed> {
     Ok(())
 }
 
+/// The longest a `login` order may grant, in seconds: one working day. A
+/// site's SSH policy may cap it lower; nothing may raise it.
+pub const MAX_LOGIN_S: u64 = 24 * 3600;
+
+/// A login user or machine name: letters, digits, `.`, `_` and `-`, starting
+/// with a letter or digit, so neither can carry an `@`, a comma (a second
+/// principal) or a line break.
+fn login_name(what: &str, value: &str) -> Result<(), Malformed> {
+    let ok = !value.is_empty()
+        && value.len() <= 253
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'));
+    if ok {
+        Ok(())
+    } else {
+        Err(Malformed(format!(
+            "the {what} must be letters, digits, `.`, `_` or `-`"
+        )))
+    }
+}
+
+/// The SSH key types a `login` order may certify: keys held by a FIDO
+/// authenticator. A browser passkey's key is an `sk-ecdsa` key whose
+/// application is the passkey's RP ID.
+pub const FIDO_SSH_KEY_TYPES: [&str; 2] = [
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+    "sk-ssh-ed25519@openssh.com",
+];
+
+/// SHA-256 of an SSH public key's wire encoding, from its OpenSSH line
+/// (`<type> <base64> [comment]`): the digest a `login` order names. Returns
+/// the key type with it, so a caller can refuse a key that is not a FIDO key.
+pub fn ssh_key_sha256(openssh_line: &str) -> Result<(String, String), Malformed> {
+    use data_encoding::BASE64;
+    let mut parts = openssh_line.split_whitespace();
+    let (Some(kind), Some(b64)) = (parts.next(), parts.next()) else {
+        return Err(Malformed("not an OpenSSH public key line".into()));
+    };
+    let blob = BASE64
+        .decode(b64.as_bytes())
+        .map_err(|_| Malformed("the public key is not base64".into()))?;
+    // The blob starts with its own type name; one that disagrees with the
+    // line's first field is not a key anybody meant.
+    let named = blob
+        .get(..4)
+        .map(|l| u32::from_be_bytes([l[0], l[1], l[2], l[3]]) as usize)
+        .and_then(|n| blob.get(4..4usize.saturating_add(n)));
+    if named != Some(kind.as_bytes()) {
+        return Err(Malformed("the key's type does not match its encoding".into()));
+    }
+    Ok((kind.to_string(), hex::encode(Sha256::digest(&blob))))
+}
+
 fn one_line(name: &str, value: &str) -> Result<(), Malformed> {
     if value.contains('\n') || value.contains('\r') {
         return Err(Malformed(format!("`{name}` may not contain a line break")));
@@ -265,8 +346,35 @@ impl Order {
                 lower_hex_digest(key_sha256)?;
             }
             Target::Custody { change_sha256 } => lower_hex_digest(change_sha256)?,
+            Target::Login {
+                user,
+                node,
+                key_sha256,
+            } => {
+                login_name("target user", user)?;
+                login_name("target node", node)?;
+                lower_hex_digest(key_sha256)?;
+            }
         }
         match (self.action, &self.target) {
+            (Action::Login, Target::Login { .. }) => {
+                if self.bounds.max_nodes != 1 {
+                    return Err(Malformed("`login` is for exactly one machine".into()));
+                }
+                match self.bounds.duration_s {
+                    Some(d) if (1..=MAX_LOGIN_S).contains(&d) => Ok(()),
+                    _ => Err(Malformed(format!(
+                        "`login` needs `bounds.duration_s` between 1 and {MAX_LOGIN_S}"
+                    ))),
+                }
+            }
+            (Action::Login, _) => Err(Malformed(
+                "`login` names one SSH key, user and machine".into(),
+            )),
+            (_, Target::Login { .. }) => Err(Malformed(format!(
+                "`{}` does not grant a login",
+                self.action.as_str()
+            ))),
             (Action::Admit | Action::Revoke, Target::Credential { .. }) => Ok(()),
             (Action::SetCustody, Target::Custody { .. }) => Ok(()),
             (Action::SetCustody, _) => Err(Malformed(
@@ -310,7 +418,16 @@ impl Order {
     /// the exact layout.
     pub fn canonical(&self) -> Result<Vec<u8>, Malformed> {
         self.validate()?;
+        let login_id;
         let (id, key, rp_id) = match &self.target {
+            Target::Login {
+                user,
+                node,
+                key_sha256,
+            } => {
+                login_id = format!("{user}@{node}");
+                (login_id.as_str(), key_sha256.as_str(), "")
+            }
             Target::Node { id } | Target::Domain { id } => (id.as_str(), "", ""),
             Target::Cluster => ("", "", ""),
             Target::Credential {
@@ -525,5 +642,75 @@ mod tests {
         let mut o = halt(Target::Cluster);
         o.expires_at = o.issued_at;
         assert!(o.validate().is_err());
+    }
+
+    const SK_KEY: &str = "sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb20AAAAIbmlzdHAyNTYAAABBBI05E5HOabGO4jichqpkg3Kem8Kfzcfga3U30iHnyuIMcsdXWdPzImdPvN6ZJibBMw4a99t1yQbXeC6GU71JvuIAAAAUY29uc29sZS5leGFtcGxlLnRlc3Q= test";
+
+    fn login(user: &str, node: &str, duration_s: Option<u64>) -> Order {
+        Order {
+            site: "example.org".into(),
+            action: Action::Login,
+            target: Target::Login {
+                user: user.into(),
+                node: node.into(),
+                key_sha256: ssh_key_sha256(SK_KEY).unwrap().1,
+            },
+            bounds: Bounds { max_nodes: 1, duration_s },
+            counter: 9,
+            issued_at: 100,
+            expires_at: 220,
+            reason: "look at the disks".into(),
+        }
+    }
+
+    #[test]
+    fn a_login_order_names_user_at_node_and_the_key() {
+        let o = login("root", "node-a", Some(3600));
+        let text = String::from_utf8(o.canonical().unwrap()).unwrap();
+        assert!(text.contains("action=login\ntarget=login\ntarget.id=root@node-a\n"), "{text}");
+        assert!(text.contains(&format!("target.key_sha256={}\n", ssh_key_sha256(SK_KEY).unwrap().1)));
+        assert!(text.contains("bounds.max_nodes=1\nbounds.duration_s=3600\n"));
+    }
+
+    #[test]
+    fn a_login_order_is_bounded_in_time_and_to_one_machine() {
+        assert!(login("root", "node-a", None).validate().is_err());
+        assert!(login("root", "node-a", Some(0)).validate().is_err());
+        assert!(login("root", "node-a", Some(MAX_LOGIN_S + 1)).validate().is_err());
+        let mut o = login("root", "node-a", Some(60));
+        o.bounds.max_nodes = 2;
+        assert!(o.validate().is_err());
+    }
+
+    #[test]
+    fn a_login_name_cannot_smuggle_a_second_principal() {
+        for bad in ["root,admin", "root@x", "", "-root", "ro ot", "root\n"] {
+            assert!(login(bad, "node-a", Some(60)).validate().is_err(), "{bad:?}");
+            assert!(login("root", bad, Some(60)).validate().is_err(), "{bad:?}");
+        }
+        assert!(login("furcate-ops", "node-a.example.internal", Some(60)).validate().is_ok());
+    }
+
+    #[test]
+    fn login_and_its_target_go_together() {
+        let mut o = login("root", "node-a", Some(60));
+        o.action = Action::Halt;
+        assert!(o.validate().is_err());
+        let mut o = halt(Target::Node { id: "node-a".into() });
+        o.action = Action::Login;
+        o.bounds = Bounds { max_nodes: 1, duration_s: Some(60) };
+        assert!(o.validate().is_err());
+    }
+
+    #[test]
+    fn the_ssh_key_digest_is_over_the_wire_blob_and_checks_the_type() {
+        let (kind, digest) = ssh_key_sha256(SK_KEY).unwrap();
+        assert_eq!(kind, FIDO_SSH_KEY_TYPES[0]);
+        let blob = data_encoding::BASE64.decode(SK_KEY.split(' ').nth(1).unwrap().as_bytes()).unwrap();
+        assert_eq!(digest, hex::encode(Sha256::digest(&blob)));
+        let lying = SK_KEY.replacen("sk-ecdsa-sha2-nistp256@openssh.com", "ssh-ed25519", 1);
+        assert!(ssh_key_sha256(&lying).is_err());
+        assert!(ssh_key_sha256("sk-ecdsa-sha2-nistp256@openssh.com !!!").is_err());
+        assert!(ssh_key_sha256("").is_err());
     }
 }

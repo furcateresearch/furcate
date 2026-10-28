@@ -7,13 +7,100 @@
 #   want: units an extension enables exist only now, after the boot
 #   transaction was computed), and .network files.
 #
-# Runs from systemd-sysext.service (ExecStartPost) at boot, and from
-# `furcate-os extension install` after a live merge. Never fatal: a failure
-# here is logged and the merge stands.
+#   post-merge --before   record the udev rules in /usr before a merge
+#   post-merge            after the merge
+#
+# Runs from systemd-sysext.service (ExecStartPre --before, ExecStartPost) at
+# boot, and from `furcate-os extension install` around a live merge. Never
+# fatal: a failure here is logged and the merge stands.
+#
+# At boot this runs before sysinit.target, so nothing here may wait for a unit
+# that is ordered after it: targets are queued with --no-block, and the udev
+# trigger waits only for udevd to process its own events (bounded).
 set -u
+RUN=/run/furcate-os
+RULES=/usr/lib/udev/rules.d
+BEFORE=$RUN/udev-rules.before
 log() { echo "<6>furcate-post-merge: $*" >&2; }
+
+rules_hashes() { for f in "$RULES"/*.rules; do [ -f "$f" ] && sha256sum "$f"; done; }
+
+if [ "${1:-}" = --before ]; then
+    mkdir -p "$RUN"
+    rules_hashes > "$BEFORE.tmp" && mv "$BEFORE.tmp" "$BEFORE"
+    exit 0
+fi
+
+# Match keys of the rules that act on devices, one per line: "name <KERNEL
+# glob>", "subsystem <SUBSYSTEM glob>", or "all" for a rule naming neither.
+# Lines that only jump (GOTO, LABEL) are not rules that act on a device.
+rule_keys() {
+    awk '
+    function val(s, key,   v) {
+        if (!match(s, "(^|[ ,])" key "==\"[^\"]*\"")) return ""
+        v = substr(s, RSTART, RLENGTH); sub(/^[ ,]*[A-Z]*=="/, "", v); sub(/"$/, "", v); return v
+    }
+    function emit(kind, v,   n, a, i) { n = split(v, a, "|"); for (i = 1; i <= n; i++) if (a[i] != "") print kind, a[i] }
+    {
+        line = $0
+        while (line ~ /\\$/ && (getline nx) > 0) line = substr(line, 1, length(line) - 1) nx
+        if (line ~ /^[ \t]*(#|$)/) next
+        rest = line
+        gsub(/[A-Z_]+(\{[^}]*\})?(==|!=)"[^"]*"/, "", rest)
+        gsub(/(GOTO|LABEL)="[^"]*"/, "", rest)
+        if (rest !~ /=/) next
+        k = val(line, "KERNEL"); s = val(line, "SUBSYSTEM")
+        if (k != "") emit("name", k); else if (s != "") emit("subsystem", s); else print "all"
+    }' "$@"
+}
+
+udev_apply() {
+    if ! systemctl -q is-active systemd-udevd.service; then
+        udevadm control --reload 2>/dev/null
+        log "udevd is not running yet; its coldplug applies the merged rules"
+        rm -f "$BEFORE"
+        return 0
+    fi
+    udevadm control --reload || { log "udev reload failed"; return 0; }
+    keys=""
+    if [ -r "$BEFORE" ]; then
+        # Rules this merge added or changed. A rule file that went away
+        # leaves no keys to scope by: apply to every device.
+        for f in "$RULES"/*.rules; do
+            [ -f "$f" ] || continue
+            h=$(sha256sum < "$f" | cut -c1-64)
+            grep -qx "$h  $f" "$BEFORE" || keys="$keys
+$(rule_keys "$f")"
+        done
+        while read -r h f; do
+            [ -f "$f" ] || keys="$keys
+all"
+        done < "$BEFORE"
+        rm -f "$BEFORE"
+    else
+        keys=all
+    fi
+    if printf '%s\n' "$keys" | grep -qx all; then
+        log "udev rules changed; re-applying to every device"
+        timeout 120 udevadm trigger --settle --action=change || log "udev trigger failed"
+        return 0
+    fi
+    names=$(printf '%s\n' "$keys" | sed -n 's/^name //p' | sort -u)
+    subs=$(printf '%s\n' "$keys" | sed -n 's/^subsystem //p' | sort -u)
+    [ -n "$names$subs" ] || return 0
+    log "udev rules changed; re-applying to:${names:+ devices $(echo $names)}${subs:+ subsystems $(echo $subs)}"
+    if [ -n "$names" ]; then
+        set --; for n in $names; do set -- "$@" "--sysname-match=$n"; done
+        timeout 120 udevadm trigger --settle --action=change "$@" || log "udev trigger failed"
+    fi
+    if [ -n "$subs" ]; then
+        set --; for s in $subs; do set -- "$@" "--subsystem-match=$s"; done
+        timeout 120 udevadm trigger --settle --action=change "$@" || log "udev trigger failed"
+    fi
+}
+
 systemd-sysusers || log "systemd-sysusers failed"
-udevadm control --reload 2>/dev/null && udevadm trigger --action=change 2>/dev/null || log "udev reload failed"
+udev_apply
 systemctl daemon-reload || log "daemon-reload failed"
 systemctl --no-block start multi-user.target || log "could not queue multi-user.target"
 [ -e /sys/class/bluetooth/hci0 ] && systemctl --no-block start bluetooth.target

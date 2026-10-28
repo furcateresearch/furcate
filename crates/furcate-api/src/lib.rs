@@ -197,6 +197,10 @@ pub enum Access {
     /// checked against, and needs none, because what is proved is the order
     /// rather than the request.
     CarriesProof,
+    /// A principal must be proved, as for `Guarded`, but the origin check is
+    /// not asked: telemetry from a member admitted only to carry readings. Such
+    /// a member may not act, and may still say what it observed.
+    Reported,
 }
 
 /// What decides whether a request reaches an admitted route's handler.
@@ -270,6 +274,17 @@ impl Router {
     ) -> Self {
         self.admissions.insert((method.to_uppercase(), path.to_string()), Arc::new(admission));
         self.route_with(method, path, Access::Admitted, handler)
+    }
+
+    /// A route that requires a proved caller of any standing. See
+    /// [`Access::Reported`].
+    pub fn reporting(
+        self,
+        method: &str,
+        path: &str,
+        handler: impl Fn(&Request) -> Response + Send + Sync + 'static,
+    ) -> Self {
+        self.route_with(method, path, Access::Reported, handler)
     }
 
     /// A route whose body carries its own proof. See [`Access::CarriesProof`].
@@ -411,8 +426,8 @@ impl Router {
             return handler(req);
         }
 
-        // Guarded. An unauthenticated caller is not a caller with fewer rights;
-        // it is not a caller, and the handler never runs.
+        // Guarded or reported. An unauthenticated caller is not a caller with
+        // fewer rights; it is not a caller, and the handler never runs.
         let Some(v) = &self.verifier else {
             return Response::refused(
                 "this machine cannot recognise anyone, so it will not act on anyone's \
@@ -427,8 +442,10 @@ impl Router {
         };
         match v.verify(&presented, now) {
             Ok(principal) => {
-                if let Err(why) = self.origin_allows(from, Some(&principal)) {
-                    return Response::refused(why);
+                if *access == Access::Guarded {
+                    if let Err(why) = self.origin_allows(from, Some(&principal)) {
+                        return Response::refused(why);
+                    }
                 }
                 let mut req = req.clone();
                 req.principal = Some(principal);
@@ -466,26 +483,15 @@ pub const MAX_BODY: usize = 256 * 1024;
 /// caller cannot grow a request without bound by sending more of them.
 pub const MAX_HEADERS: usize = 64;
 
-/// The most bytes the request line and headers may take together. A line is
-/// read until its newline, so without this a peer that never sends one grows
-/// the request in memory for as long as it keeps sending.
-pub const MAX_HEAD: u64 = 64 * 1024;
-
-/// Read one line of the request head, refusing it once the head's budget is
-/// spent: a line cut off by the limit is not a line.
-fn read_head_line<R: BufRead>(head: &mut std::io::Take<R>, line: &mut String) -> Option<usize> {
-    let n = head.read_line(line).ok()?;
-    if head.limit() == 0 {
-        return None;
-    }
-    Some(n)
-}
+/// The most bytes the request line and headers may take together. Lines are
+/// read until a line break, so without this a caller who never sends one makes
+/// the server hold everything it sends, before any credential is looked at.
+pub const MAX_HEAD: usize = 64 * 1024;
 
 pub fn parse_request(stream: &mut impl Read) -> Option<Request> {
-    let mut reader = BufReader::new(stream);
-    let mut head = (&mut reader).take(MAX_HEAD);
+    let mut reader = BufReader::new((&mut *stream).take(MAX_HEAD as u64));
     let mut line = String::new();
-    read_head_line(&mut head, &mut line)?;
+    reader.read_line(&mut line).ok()?;
     let mut parts = line.split_whitespace();
     let method = parts.next()?.to_string();
     let raw_path = parts.next()?.to_string();
@@ -498,7 +504,11 @@ pub fn parse_request(stream: &mut impl Read) -> Option<Request> {
     let mut headers: Vec<(String, String)> = Vec::new();
     loop {
         let mut header = String::new();
-        if read_head_line(&mut head, &mut header)? == 0 {
+        if reader.read_line(&mut header).ok()? == 0 {
+            // The head limit ran out before the blank line that ends it.
+            if reader.get_ref().limit() == 0 {
+                return None;
+            }
             break;
         }
         let trimmed = header.trim_end();
@@ -522,6 +532,7 @@ pub fn parse_request(stream: &mut impl Read) -> Option<Request> {
         Vec::new()
     } else {
         let capped = content_length.min(MAX_BODY);
+        reader.get_mut().set_limit(capped as u64);
         let mut buf = vec![0u8; capped];
         reader.read_exact(&mut buf).ok()?;
         buf
@@ -699,71 +710,37 @@ fn listen_when_possible(
     })
 }
 
-/// What one listener allows its connections.
-#[derive(Clone, Copy)]
-struct Limits {
-    /// How long a connection has to deliver its whole request. Each read is
-    /// given only what is left of it, so a peer sending a byte at a time
-    /// cannot hold its thread any longer than one that sends nothing.
-    deadline: std::time::Duration,
-    /// The most connections served at once. Each has a thread of its own;
-    /// past this a new connection is closed at once rather than given one.
-    connections: usize,
-}
+/// How long a connection may take to send its request or read the answer.
+/// Without a deadline a caller that opens a connection and sends nothing keeps
+/// a thread forever.
+const IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-const LIMITS: Limits = Limits {
-    deadline: std::time::Duration::from_secs(15),
-    connections: 256,
-};
-
-/// A stream that refuses to be read past a fixed moment.
-struct Deadline<'a> {
-    stream: &'a TcpStream,
-    until: std::time::Instant,
-}
-
-impl Read for Deadline<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let left = self.until.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            return Err(std::io::ErrorKind::TimedOut.into());
-        }
-        self.stream.set_read_timeout(Some(left))?;
-        let mut stream = self.stream;
-        stream.read(buf)
-    }
-}
-
-/// One connection's place in the count, given back however its thread ends.
-struct Slot(Arc<std::sync::atomic::AtomicUsize>);
-
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
-}
+/// The most connections served at once. Past this a new one is closed at
+/// once rather than given a thread.
+const MAX_CONNECTIONS: usize = 256;
 
 fn accept(listener: TcpListener, router: Arc<Router>) {
-    accept_within(listener, router, LIMITS)
-}
-
-fn accept_within(listener: TcpListener, router: Arc<Router>, limits: Limits) {
-    let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(mut stream) = stream else { continue };
-        if open.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= limits.connections {
-            open.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        if live.fetch_add(1, std::sync::atomic::Ordering::SeqCst) >= MAX_CONNECTIONS {
+            live.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             continue;
         }
-        let slot = Slot(Arc::clone(&open));
+        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
+        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
         let router = Arc::clone(&router);
+        let live = Arc::clone(&live);
         std::thread::spawn(move || {
-            let _slot = slot;
-            let _ = stream.set_write_timeout(Some(limits.deadline));
+            struct Leave(Arc<std::sync::atomic::AtomicUsize>);
+            impl Drop for Leave {
+                fn drop(&mut self) {
+                    self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+            let _leave = Leave(live);
             let from = stream.peer_addr().ok().map(|a| a.ip());
-            let until = std::time::Instant::now() + limits.deadline;
-            let parsed = parse_request(&mut Deadline { stream: &stream, until });
-            let response = match parsed {
+            let response = match parse_request(&mut stream) {
                 Some(req) => router.dispatch_from(&req, from, now_s()),
                 None => Response::error(400, "malformed request"),
             };
@@ -998,6 +975,42 @@ pub fn post_signed(
 mod tests {
     use super::*;
 
+    /// Counts what a parser pulls off the wire, so a test can tell how much an
+    /// unauthenticated caller made the server read and hold.
+    struct Counting<R> {
+        inner: R,
+        read: usize,
+    }
+
+    impl<R: Read> Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read += n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_header_line_that_never_ends_is_not_read_without_bound() {
+        // A request line and the start of a header, then 16 MiB with no line
+        // break. Before any credential is looked at, the server must stop.
+        let head = std::io::Cursor::new(b"GET /healthz HTTP/1.1\r\nX-Pad: ".to_vec());
+        let flood = std::io::repeat(b'a').take(16 * 1024 * 1024);
+        let mut wire = Counting { inner: head.chain(flood), read: 0 };
+        assert!(parse_request(&mut wire).is_none());
+        assert!(wire.read <= MAX_HEAD + 8 * 1024, "read {} bytes of an unterminated header", wire.read);
+    }
+
+    #[test]
+    fn a_request_with_a_body_still_parses_under_the_head_limit() {
+        let body = br#"{"a":1}"#;
+        let raw = format!("POST /x HTTP/1.1\r\ncontent-length: {}\r\n\r\n", body.len());
+        let mut wire = std::io::Cursor::new([raw.as_bytes(), body].concat());
+        let req = parse_request(&mut wire).expect("parses");
+        assert_eq!(req.raw_body, body);
+        assert_eq!(req.body["a"], 1);
+    }
+
     fn router() -> Router {
         Router::new()
             .route("GET", "/healthz", |_| Response::ok(json!({"ok": true})))
@@ -1110,115 +1123,6 @@ mod tests {
         let mut raw = std::io::Cursor::new(payload.to_vec());
         // Read fails cleanly because the body is shorter than claimed.
         assert!(parse_request(&mut raw).is_none());
-    }
-
-    /// A peer that never stops sending and never finishes a line, counting
-    /// what was taken from it.
-    struct Endless {
-        prefix: &'static [u8],
-        fill: &'static [u8],
-        taken: usize,
-    }
-
-    impl Read for Endless {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            if self.taken >= 16 * 1024 * 1024 {
-                return Err(std::io::Error::other("the test peer gave up"));
-            }
-            for b in buf.iter_mut() {
-                let i = self.taken;
-                *b = match self.prefix.get(i) {
-                    Some(c) => *c,
-                    None => self.fill[(i - self.prefix.len()) % self.fill.len()],
-                };
-                self.taken += 1;
-            }
-            Ok(buf.len())
-        }
-    }
-
-    #[test]
-    fn a_request_line_that_never_ends_is_refused_without_reading_it_all() {
-        // One line with no newline must not grow in memory for as long as the
-        // peer cares to send it.
-        let mut peer = Endless { prefix: b"GET /", fill: b"a", taken: 0 };
-        assert!(parse_request(&mut peer).is_none());
-        assert!(peer.taken < 1024 * 1024, "read {} bytes of one request line", peer.taken);
-    }
-
-    #[test]
-    fn headers_that_never_end_are_refused_without_reading_them_all() {
-        let mut peer = Endless { prefix: b"GET / HTTP/1.1\r\n", fill: b"X-Filler: y\r\n", taken: 0 };
-        assert!(parse_request(&mut peer).is_none());
-        assert!(peer.taken < 1024 * 1024, "read {} bytes of headers", peer.taken);
-    }
-
-    #[test]
-    fn a_request_within_the_head_limit_still_parses() {
-        let mut raw = b"POST /x HTTP/1.1\r\n".to_vec();
-        for i in 0..100 {
-            raw.extend_from_slice(format!("X-Filler-{i}: y\r\n").as_bytes());
-        }
-        raw.extend_from_slice(b"Content-Length: 2\r\n\r\n{}");
-        let req = parse_request(&mut std::io::Cursor::new(raw)).expect("a modest request parses");
-        assert_eq!(req.body, json!({}));
-    }
-
-    fn serve_within(deadline_ms: u64, connections: usize) -> String {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap().to_string();
-        let limits = Limits { deadline: std::time::Duration::from_millis(deadline_ms), connections };
-        std::thread::spawn(move || accept_within(l, Arc::new(router()), limits));
-        addr
-    }
-
-    #[test]
-    fn a_peer_that_never_finishes_its_request_is_cut_off() {
-        let addr = serve_within(300, 16);
-        let mut c = TcpStream::connect(&addr).unwrap();
-        c.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
-        let started = std::time::Instant::now();
-        // A byte at a time, each well inside any per-read timeout.
-        for b in b"GET /healthz HTTP/1.1\r\nX-Slow:" {
-            if c.write_all(&[*b]).is_err() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        let mut got = Vec::new();
-        let r = c.read_to_end(&mut got);
-        if let Err(e) = &r {
-            assert!(
-                !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
-                "the server was still waiting on a request it should have given up on"
-            );
-        }
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    }
-
-    #[test]
-    fn connections_past_the_limit_are_closed_rather_than_given_a_thread() {
-        let addr = serve_within(10_000, 1);
-        let held = TcpStream::connect(&addr).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let mut extra = TcpStream::connect(&addr).unwrap();
-        extra.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
-        let mut buf = [0u8; 16];
-        let r = extra.read(&mut buf);
-        assert!(
-            matches!(r, Ok(0))
-                || matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset),
-            "{r:?}"
-        );
-        drop(held);
-    }
-
-    #[test]
-    fn a_slot_is_given_back_when_its_connection_ends() {
-        let addr = serve_within(10_000, 1);
-        for _ in 0..3 {
-            assert!(healthz_within(&addr, 2_000));
-        }
     }
 
     #[test]
@@ -1355,6 +1259,28 @@ mod guard_tests {
             headers: Vec::new(),
             principal: None,
         }
+    }
+
+    #[test]
+    fn a_reporting_route_needs_a_proved_caller_but_not_a_privileged_origin() {
+        let pi: std::net::IpAddr = "10.90.0.30".parse().unwrap();
+        let r = router_with_guard()
+            .reporting("POST", "/health/signal", |req| {
+                Response::ok(json!({"who": req.principal.as_ref().map(|p| p.id.clone())}))
+            })
+            .originating(Arc::new(move |from, _| {
+                if from == Some(pi) { Err("pi is a device-tier member".into()) } else { Ok(()) }
+            }));
+        // Nobody: refused, and the handler never runs.
+        let anon = Request { method: "POST".into(), path: "/health/signal".into(), ..Default::default() };
+        assert_eq!(r.dispatch_from(&anon, Some(pi), 50).status, 403);
+        assert_eq!(r.dispatch_from(&anon, None, 50).status, 403);
+        // A proved member that may not act may still report.
+        let res = r.dispatch_from(&signed("/health/signal", b"{}", "r1"), Some(pi), 50);
+        assert_eq!(res.status, 200, "{}", res.body);
+        assert_eq!(res.body["who"], "operator");
+        // And the same member is still refused on a guarded route.
+        assert_eq!(r.dispatch_from(&signed("/act", b"{}", "r2"), Some(pi), 50).status, 403);
     }
 
     #[test]

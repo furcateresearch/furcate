@@ -1,0 +1,38 @@
+[Unit]
+StartLimitIntervalSec=0
+Description=Furcate input firewall
+Documentation=https://github.com/furcateresearch/furcate
+# Only where the node declares a firewall and nftables is installed. Without
+# either this unit does nothing, and says so in its condition.
+ConditionPathExists=/etc/furcate/firewall.json
+ConditionPathExists=|/usr/sbin/nft
+ConditionPathExists=|/usr/bin/nft
+# The overlay manager is started first, so the overlay is on its way when a
+# new ruleset has to be judged against it. The port the rules open for it comes
+# from configuration (overlay_port, else the FURCATE_WG_PORT the agent plans
+# the interface with), not from the interface, which does not exist yet at boot.
+After=network-online.target furcate-wg.service
+Wants=network-online.target furcate-wg.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A ruleset already confirmed here loads at once. A new one waits (up to two
+# minutes) for the overlay to be up, then for it to handshake through the new
+# rules, with a rollback timer armed first; see `furcatectl firewall apply`.
+# Where the overlay never comes up it refuses and changes nothing, and the unit
+# tries again: it does not leave the node unfiltered for good because the
+# overlay was late once.
+EnvironmentFile=-/etc/furcate/env
+ExecStart=/usr/bin/furcatectl firewall apply
+TimeoutStartSec=360
+Restart=on-failure
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/furcate
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

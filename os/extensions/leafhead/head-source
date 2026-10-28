@@ -1,0 +1,10 @@
+# The head's code is not in this repository. It is built from a checkout of the
+# leaf firmware repository, and only from files that checkout publishes in its
+# own OPEN-MANIFEST. The build runs the checkout's host/gateway/build.sh (its
+# own packaging of the gateway into one zipapp) and carries the result.
+#
+# The commit is pinned in head-commit. Each path below must be selected by the
+# checkout's OPEN-MANIFEST.
+host/gateway/build.sh
+host/gateway/fl_gateway.py
+host/fl_proto.py

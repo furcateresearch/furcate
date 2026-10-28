@@ -81,6 +81,24 @@ use std::sync::{Arc, Mutex};
 const MAX_NONCES: usize = 1024;
 /// Proposals kept, pending and decided together.
 const MAX_PROPOSALS: usize = 256;
+
+/// The most unauthenticated login requests that may wait for approval at once.
+pub const MAX_UNPROVED_LOGINS: usize = 16;
+
+/// The longest an unauthenticated login request waits for its approval.
+pub const MAX_UNPROVED_LOGIN_LIFETIME_S: u64 = 300;
+
+/// Who a login request without a proved caller is recorded as proposed by.
+pub const UNPROVED_LOGIN: &str = "login request (no authority until a passkey approves it)";
+
+/// The fields of a proposal, however it arrived.
+struct Proposed {
+    action: Action,
+    target: Target,
+    bounds: Bounds,
+    reason: String,
+    expires_in_s: u64,
+}
 /// Verified enrolments waiting to be admitted.
 const MAX_STAGED: usize = 64;
 
@@ -606,6 +624,98 @@ impl Desk {
             Ok(b) => b,
             Err(e) => return Response::error(400, format!("not a proposal: {e}")),
         };
+        self.propose_as(
+            cfg,
+            Proposed {
+                action: body.action,
+                target: body.target,
+                bounds: body.bounds,
+                reason: body.reason,
+                expires_in_s: body.expires_in_s,
+            },
+            &principal.id,
+            principal.class,
+            now,
+        )
+    }
+
+    /// Propose a `login` order for an SSH key without a proved caller.
+    ///
+    /// A login is asked for by the person who will approve it, from a laptop
+    /// or a browser that holds nothing this node recognises except the
+    /// passkey itself, so requiring a proved proposer would require a second
+    /// credential beside the passkey. Proposing changes nothing: the order
+    /// acts only once a passkey on the roster approves its hash. So only
+    /// `login` may be proposed this way, at most [`MAX_UNPROVED_LOGINS`]
+    /// undecided at once, each living no longer than
+    /// [`MAX_UNPROVED_LOGIN_LIFETIME_S`], so requests cannot crowd out
+    /// other orders.
+    pub fn propose_login(
+        &self,
+        target: Target,
+        duration_s: u64,
+        reason: String,
+        expires_in_s: u64,
+        now: u64,
+    ) -> Response {
+        let cfg = match self.config() {
+            Ok(c) => c,
+            Err(r) => return r,
+        };
+        if !matches!(target, Target::Login { .. }) {
+            return Response::error(400, "only a login may be requested without a proved caller");
+        }
+        if expires_in_s == 0 || expires_in_s > MAX_UNPROVED_LOGIN_LIFETIME_S {
+            return Response::error(
+                400,
+                format!("`expires_in_s` must be between 1 and {MAX_UNPROVED_LOGIN_LIFETIME_S}"),
+            );
+        }
+        {
+            let st = self.state.lock().expect("orders lock");
+            let open = st
+                .proposals
+                .values()
+                .filter(|p| {
+                    p.order.action == Action::Login
+                        && p.proposed_by == UNPROVED_LOGIN
+                        && p.outcome.is_none()
+                        && p.order.expires_at > now
+                })
+                .count();
+            if open >= MAX_UNPROVED_LOGINS {
+                return Response::error(
+                    503,
+                    "too many login requests are waiting for approval; try again shortly",
+                );
+            }
+        }
+        self.propose_as(
+            cfg,
+            Proposed {
+                action: Action::Login,
+                target,
+                bounds: Bounds {
+                    max_nodes: 1,
+                    duration_s: Some(duration_s),
+                },
+                reason,
+                expires_in_s,
+            },
+            UNPROVED_LOGIN,
+            Class::Person,
+            now,
+        )
+    }
+
+    fn propose_as(
+        &self,
+        cfg: &OrdersConfig,
+        body: Proposed,
+        proposed_by: &str,
+        class: Class,
+        now: u64,
+    ) -> Response {
         if body.expires_in_s == 0 || body.expires_in_s > cfg.max_order_lifetime_s {
             return Response::error(
                 400,
@@ -663,8 +773,8 @@ impl Desk {
             hash.clone(),
             Proposal {
                 order: order.clone(),
-                proposed_by: principal.id.clone(),
-                class: principal.class,
+                proposed_by: proposed_by.to_string(),
+                class,
                 tally,
                 counted: Vec::new(),
                 outcome: None,
@@ -682,8 +792,8 @@ impl Desk {
             "event": "proposed",
             "order_hash": hash,
             "action": order.action.as_str(),
-            "by": principal.id,
-            "class": principal.class,
+            "by": proposed_by,
+            "class": class,
         }));
         Response::ok(json!({
             "order_hash": hash,
@@ -1316,6 +1426,8 @@ mod tests {
             match target {
                 Target::Node { id } if id == "node-a" => Ok(()),
                 Target::Cluster | Target::Credential { .. } => Ok(()),
+                // The test node holds the site's SSH authority.
+                Target::Login { .. } => Ok(()),
                 other => Err(format!("{other:?} is not node-a")),
             }
         }
@@ -1516,6 +1628,86 @@ mod tests {
             node.events(),
             ["admitted", "proposed", "approved", "actuated"]
         );
+    }
+
+    fn login_target(user: &str) -> Target {
+        Target::Login {
+            user: user.into(),
+            node: "node-b".into(),
+            key_sha256: "ab".repeat(32),
+        }
+    }
+
+    /// A desk and its router, keeping the desk for calls the router does
+    /// not make (a login request arrives through the SSH route).
+    fn setup_desk() -> (Router, Arc<Desk>, Arc<Node>) {
+        let node = Arc::new(Node::default());
+        let cfg = OrdersConfig {
+            rp_id: RP.into(),
+            thresholds: Thresholds::default(),
+            challenge_ttl_s: 120,
+            max_order_lifetime_s: 3600,
+            add_passkey_delay_s: DELAY,
+        };
+        let desk = Arc::new(Desk::new(Ok(cfg), None, None, node.clone()).unwrap());
+        let router =
+            mount_at(Router::new(), Arc::clone(&desk), clock).verified_by(Arc::new(Named));
+        (router, desk, node)
+    }
+
+    #[test]
+    fn a_login_is_requested_without_a_caller_and_acts_only_once_a_passkey_approves() {
+        let (r, desk, node) = setup_desk();
+        let mut alice = Authenticator::new(1, RP);
+        enrol(&r, &alice);
+        let res = desk.propose_login(login_target("root"), 3600, "disks".into(), 120, clock());
+        assert_eq!(res.status, 200, "{}", res.body);
+        assert_eq!(res.body["order"]["action"], "login");
+        assert!(res.body["canonical"]
+            .as_str()
+            .unwrap()
+            .contains("target.id=root@node-b\n"));
+        let hash = res.body["order_hash"].as_str().unwrap().to_string();
+        assert!(node.executed.lock().unwrap().is_empty(), "requesting changes nothing");
+
+        let res = approve(&r, &hash, &mut alice);
+        assert_eq!(res.status, 200, "{}", res.body);
+        assert_eq!(res.body["outcome"]["status"], "actuated");
+        assert_eq!(*node.executed.lock().unwrap(), vec!["login".to_string()]);
+        let proposed = node.ledger.lock().unwrap()[1].clone();
+        assert_eq!(proposed["event"], "proposed");
+        assert_eq!(proposed["by"], UNPROVED_LOGIN);
+    }
+
+    #[test]
+    fn only_a_short_login_may_be_requested_without_a_caller() {
+        let (_r, desk, _node) = setup_desk();
+        let halt = desk.propose_login(Target::Node { id: "node-a".into() }, 60, String::new(), 60, clock());
+        assert_eq!(halt.status, 400, "{}", halt.body);
+        let long = desk.propose_login(
+            login_target("root"),
+            60,
+            String::new(),
+            MAX_UNPROVED_LOGIN_LIFETIME_S + 1,
+            clock(),
+        );
+        assert_eq!(long.status, 400, "{}", long.body);
+        let unbounded = desk.propose_login(login_target("root"), 0, String::new(), 60, clock());
+        assert_eq!(unbounded.status, 400, "{}", unbounded.body);
+    }
+
+    #[test]
+    fn login_requests_cannot_crowd_out_other_orders() {
+        let (r, desk, _node) = setup_desk();
+        for i in 0..MAX_UNPROVED_LOGINS {
+            let res = desk.propose_login(login_target(&format!("u{i}")), 60, String::new(), 60, clock());
+            assert_eq!(res.status, 200, "{}", res.body);
+        }
+        let res = desk.propose_login(login_target("one-more"), 60, String::new(), 60, clock());
+        assert_eq!(res.status, 503, "{}", res.body);
+        // A proved caller still proposes.
+        let res = propose(&r, "agent", "halt", node_a(), 1);
+        assert_eq!(res.status, 200, "{}", res.body);
     }
 
     #[test]

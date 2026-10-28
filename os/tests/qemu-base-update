@@ -29,7 +29,8 @@
 #   1. refusals: an unsigned bundle, a manifest signed for something else, an
 #      edited manifest and a payload with one byte changed are refused, and
 #      the idle slot, autoboot.txt and the state records are not written;
-#   2. a->b: update with a staged extension, one trial boot, confirmed, the
+#   2. a->b: update with a staged extension that is already installed live
+#      (the same image in the store), one trial boot, confirmed, the
 #      new base and extension running, node id, fur0, protected files
 #      unchanged, b stays the default over a plain reboot;
 #   3. a trial whose furcated never comes up is refused by the confirm step
@@ -256,7 +257,15 @@ done
 i1=$(idle)
 ok "refusals wrote nothing (select, boot-b, usr-b, usr-b-verity, records)" '[ "$i0" = "$i1" ]'
 
-# ---- 2. a -> b with the staged extension
+# ---- 2. a -> b with the staged extension, already installed live on slot a
+# (as on the board: the same furcate image staged and in the store). The
+# trial's confirm step takes it as installed instead of failing the trial.
+ev=$(sed -n 's/^FURCATE_VERSION=//p' "$ext/furcate.release" | tr -d '"')
+out=$(g "sudo furcate-os extension install /mnt/b/ext" 2>&1) && rc=0 || rc=$?
+echo "$out" | tail -1 | sed 's/^/   /'
+ok "furcate $ev installed live on slot a before the update" '[ "$rc" = 0 ] && g "test -f /var/lib/furcate/extensions/furcate/$ev/furcate.raw"'
+up || true
+fp1=$(fingerprint)
 out=$(g "sudo /var/tmp/furcate-base update /mnt/b/good --extension /mnt/b/ext" 2>&1) && rc=0 || rc=$?
 echo "$out" | sed 's/^/   /'
 ok "update to slot b written and armed" '[ "$rc" = 0 ] && echo "$out" | grep -q "armed for one boot"'
@@ -280,10 +289,11 @@ want=$(sed -n 's/^FURCATE_BASE_VERSION=//p' "$bundle/manifest")
 ok "slot b runs the new base $want" '[ "$ver" = "$want" ]'
 h=$(g "tr ' ' '\n' < /proc/cmdline | sed -n 's/^usrhash=//p'" || true)
 ok "/usr on dm-verity with the bundle's root hash" '[ "$h" = "$(sed -n "s/^USRHASH=//p" "$bundle/manifest")" ] && g "test -b /dev/mapper/usr"'
-ev=$(sed -n 's/^FURCATE_VERSION=//p' "$ext/furcate.release" | tr -d '"')
 sel=$(g 'cat /run/furcate-os/extensions.selected' || true); est=$(g 'head -1 /run/furcate-os/extensions.status' || true)
 echo "   selected: $sel; check: $est"
 ok "staged extension furcate $ev merged and checked" 'echo "$sel" | grep -qx "furcate $ev" && echo "$est" | grep -q "^ok"' 
+ok "the confirm step took the staged furcate $ev, already in the store, as installed" \
+    'g "journalctl -b -o cat --no-pager" | grep -q "installed staged extension furcate: furcate $ev already installed"'
 id2=$(nodeid)
 ok "node id unchanged across the switch ($id2)" '[ "$id2" = "$id0" ]'
 ok "fur0 configured on slot b" '[ "$(fur0)" = configured ]'

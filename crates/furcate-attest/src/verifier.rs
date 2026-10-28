@@ -113,6 +113,24 @@ impl Verifier {
         &self.policy
     }
 
+    /// Appraise claims without signing the result.
+    ///
+    /// For claims a caller asserts rather than evidence this verifier checked
+    /// against a quote. A signed result is a statement by this verifier; it
+    /// must not be issued for claims anybody can type.
+    pub fn evaluate(
+        &self,
+        node_id: &str,
+        assurance: AssuranceClass,
+        endorsed: bool,
+        registers: &BTreeMap<u32, String>,
+        now: u64,
+    ) -> AttestationResult {
+        let mut result = self.appraise(node_id, assurance, endorsed, registers, now);
+        result.signature = None;
+        result
+    }
+
     /// Appraise evidence and issue a signed result.
     ///
     /// A result is issued whether or not the node passes: a refusal is just as
@@ -169,6 +187,14 @@ mod tests {
 
     fn key() -> SigningKey {
         SigningKey::from_bytes(&[7u8; 32])
+    }
+
+    #[test]
+    fn claims_a_caller_asserts_are_evaluated_but_never_signed() {
+        let v = Verifier::new("site", key(), AppraisalPolicy::default(), 300);
+        let r = v.evaluate("anyone", AssuranceClass::Tpm, true, &good_registers(), 100);
+        assert!(r.signature.is_none());
+        assert!(!r.verify_signature(&v.verifying_key()));
     }
 
     fn good_registers() -> BTreeMap<u32, String> {

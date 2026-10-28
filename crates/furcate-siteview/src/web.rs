@@ -111,6 +111,8 @@ pub struct NodeRow {
     pub controller: bool,
     /// Whether the node holds key custody, at what class, or why not.
     pub custody: Option<String>,
+    /// Its power supply, from a fresh board report; `None` is not measured.
+    pub supply: Option<String>,
 }
 
 /// A site this cluster hosts.
@@ -212,12 +214,12 @@ fn node_table(nodes: &[NodeRow]) -> String {
     let mut s = String::from(
         "<div class=scroll><table><thead><tr>\
          <th>node</th><th>running</th><th>wall</th><th>hottest</th>\
-         <th>workloads</th><th>overlay</th><th>custody</th></tr></thead><tbody>",
+         <th>workloads</th><th>overlay</th><th>custody</th><th>supply</th></tr></thead><tbody>",
     );
     for n in nodes {
         s.push_str(&format!(
             "<tr><td>{}{}</td><td>{}</td><td class=num>{}</td><td class=num>{}</td>\
-             <td class=num>{}</td><td>{}</td><td>{}</td></tr>",
+             <td class=num>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             esc(&n.id),
             if n.controller {
                 " <span class=dim>controller</span>"
@@ -234,6 +236,7 @@ fn node_table(nodes: &[NodeRow]) -> String {
                 format!("<span class=dim>{ABSENT}</span>")
             },
             or_absent(n.custody.as_ref().map(|c| esc(c))),
+            or_absent(n.supply.as_ref().map(|c| esc(c))),
         ));
     }
     s.push_str("</tbody></table></div>");
@@ -368,6 +371,7 @@ mod tests {
                 on_overlay: true,
                 controller: false,
                 custody: Some("holds (elected, tpm)".into()),
+                supply: Some("undervoltage, 5V rail 4.71 V".into()),
             }],
             sites: vec![HostedSite {
                 name: "furcate-xyz".into(),

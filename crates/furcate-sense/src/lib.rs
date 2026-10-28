@@ -8,8 +8,15 @@
 //! consensus cheap while making every sensor in the building addressable from
 //! every machine on it.
 
+pub mod bhy2;
+pub mod cascade;
+pub mod frame;
+pub mod identity;
 pub mod leaf;
+pub mod nicla;
 pub mod registry;
+pub mod serial;
+pub mod text;
 
 pub use leaf::{Attachment, Leaf, LeafError, Reading};
 pub use registry::{Actuator, Modality, Sensor, SensorKind, SensorRegistry, Unit};

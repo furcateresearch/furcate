@@ -36,6 +36,11 @@ uint8_t fl_net_config(const uint8_t *tlv, size_t n, fl_wbuf_t *r);
 bool fl_net_ready(void);
 // Opens the outbound connection to the controller; returns a socket or -1.
 int fl_net_dial(int timeout_ms);
+// Opens an outbound connection to another port on the controller host (the
+// cell's head), e.g. its model gateway; returns a socket or -1.
+int fl_net_dial_port(uint16_t port, int timeout_ms);
+// The controller host from the signed configuration ("" when none).
+const char *fl_net_host(void);
 uint32_t fl_net_auth_window_ms(void);
 void fl_net_info(fl_wbuf_t *w);
 

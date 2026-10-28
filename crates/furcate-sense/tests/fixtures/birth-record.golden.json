@@ -1,0 +1,252 @@
+{
+  "record": {
+    "format": "birth-record",
+    "version": 1,
+    "signer": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+    "issued_ms": 1761686400000,
+    "valid_from_ms": 1761686400000,
+    "valid_until_ms": 1769462400000,
+    "artefact": {
+      "kind": "policy",
+      "hashes": [
+        "c888ba01fc26cf67f0a3e842623811fca62ba871d78171ce6688f4d4cfe7bce6"
+      ],
+      "knowledge_set_hash": "4f95c68c7f1f447ed9ace486fc62c18e6355fe359930951fcd124845d79cb54f"
+    },
+    "lineage": {
+      "world_id": "world-demo",
+      "world_version": "3",
+      "twin_id": "twin-demo",
+      "twin_version": "5"
+    },
+    "run": {
+      "run_id": "run-demo-0001",
+      "seed": 7,
+      "started_ms": 1761600000000,
+      "finished_ms": 1761600006000,
+      "data_sources": [
+        {
+          "kind": "physical_batch",
+          "batch_id": "batch-site-test-01-0001",
+          "batch_hash": "8f5815465303ca0a3b700c07068ef3ef0bf6f4d8a6cd60bf7220cd3d33e7c77e",
+          "min_attestation": "device"
+        }
+      ]
+    },
+    "results": {
+      "benchmarks": [
+        {
+          "name": "rollout_error",
+          "score_ppm": 910000,
+          "threshold_ppm": 900000
+        },
+        {
+          "name": "twin_fidelity",
+          "score_ppm": 940000
+        }
+      ],
+      "fidelity_ppm": 940000,
+      "fidelity_minimum_ppm": 900000
+    },
+    "band_certificate": {
+      "calibration_id": "cal-0001",
+      "band": {
+        "load": [
+          0,
+          100
+        ],
+        "temp": [
+          10,
+          30
+        ]
+      },
+      "release_point": {
+        "load": 50,
+        "temp": 20
+      }
+    },
+    "experience": {
+      "ledger_head": "8a8f18594a58ea8042cc79203adadc7bc71d036834565e9184edf575dfb7913b",
+      "ledger_entries": 8,
+      "simulated_seconds_total": 378432000,
+      "simulated_seconds_validated": 315360000,
+      "simulated_seconds_unvalidated": 63072000,
+      "wall_clock_seconds": 4500,
+      "cpu_core_seconds": 9000,
+      "gpu_seconds": 2200,
+      "episodes_total": 1200,
+      "episodes_validated": 1000,
+      "scenarios_total": 48,
+      "scenarios_validated": 40,
+      "coverage": {
+        "load": [
+          0,
+          100
+        ],
+        "temp": [
+          5,
+          35
+        ]
+      },
+      "coverage_validated": {
+        "load": [
+          5,
+          90
+        ],
+        "temp": [
+          12,
+          28
+        ]
+      },
+      "validated_scope": "inside_band_only"
+    },
+    "signature": "b24fb8d2e71a16292e8591f740096ccedf0740a36dc0937bb16e3c1f48925947dedaa253d7c6a9cdf945f0c1287533067a00e86863dc1e942c0b67c7a837e207"
+  },
+  "ledger": [
+    {
+      "seq": 0,
+      "ts_ms": 1761600000000,
+      "kind": "run_started",
+      "body": {
+        "run_id": "run-demo-0001",
+        "seed": 7,
+        "world_id": "world-demo",
+        "world_version": "3",
+        "twin_id": "twin-demo",
+        "twin_version": "5",
+        "artefact_kind": "policy"
+      },
+      "prev": "6cf468354b763d35fb055d63b08b82161c81a06aaae4b871533882dd247be716",
+      "hash": "98bf9265c2baf5271d7842a728d31356b9318218df5ea588507b6702e8ba41c7"
+    },
+    {
+      "seq": 1,
+      "ts_ms": 1761600001000,
+      "kind": "calibration_update",
+      "body": {
+        "calibration_id": "cal-0001",
+        "band": {
+          "load": [
+            0,
+            100
+          ],
+          "temp": [
+            10,
+            30
+          ]
+        }
+      },
+      "prev": "98bf9265c2baf5271d7842a728d31356b9318218df5ea588507b6702e8ba41c7",
+      "hash": "67cfbf66970de381361728d1ab4ceb664eaa5b3df5d8001c82d8c264af511ef3"
+    },
+    {
+      "seq": 2,
+      "ts_ms": 1761600002000,
+      "kind": "physical_batch_ingested",
+      "body": {
+        "batch_id": "batch-site-test-01-0001",
+        "batch_hash": "8f5815465303ca0a3b700c07068ef3ef0bf6f4d8a6cd60bf7220cd3d33e7c77e",
+        "min_attestation": "device"
+      },
+      "prev": "67cfbf66970de381361728d1ab4ceb664eaa5b3df5d8001c82d8c264af511ef3",
+      "hash": "6fb3ad2981d5dd58aff4bc9503f870e370c131e29558f30877dd8d8219842c15"
+    },
+    {
+      "seq": 3,
+      "ts_ms": 1761600003000,
+      "kind": "episode_batch",
+      "body": {
+        "episodes": 1000,
+        "scenarios": 40,
+        "simulated_seconds": 315360000,
+        "wall_clock_seconds": 3600,
+        "cpu_core_seconds": 7200,
+        "gpu_seconds": 1800,
+        "ranges": {
+          "load": [
+            5,
+            90
+          ],
+          "temp": [
+            12,
+            28
+          ]
+        },
+        "in_band": true
+      },
+      "prev": "6fb3ad2981d5dd58aff4bc9503f870e370c131e29558f30877dd8d8219842c15",
+      "hash": "db5d8da757f0c2978560b6cd3a07e0e542ddc4dd7eee042d4fd8d70ec00ad936"
+    },
+    {
+      "seq": 4,
+      "ts_ms": 1761600004000,
+      "kind": "episode_batch",
+      "body": {
+        "episodes": 200,
+        "scenarios": 8,
+        "simulated_seconds": 63072000,
+        "wall_clock_seconds": 900,
+        "cpu_core_seconds": 1800,
+        "gpu_seconds": 400,
+        "ranges": {
+          "load": [
+            0,
+            100
+          ],
+          "temp": [
+            5,
+            35
+          ]
+        },
+        "in_band": false
+      },
+      "prev": "db5d8da757f0c2978560b6cd3a07e0e542ddc4dd7eee042d4fd8d70ec00ad936",
+      "hash": "6b315685b8f82051ed8bb0b347d9bb0714cef7b1acd9ed30e0f220acbadeda36"
+    },
+    {
+      "seq": 5,
+      "ts_ms": 1761600005000,
+      "kind": "benchmark_result",
+      "body": {
+        "name": "rollout_error",
+        "score_ppm": 910000,
+        "threshold_ppm": 900000
+      },
+      "prev": "6b315685b8f82051ed8bb0b347d9bb0714cef7b1acd9ed30e0f220acbadeda36",
+      "hash": "e7391d03875c3158a33a1553f2cf4dbde24b450fd0dcf99ffcecd16cb4b97ece"
+    },
+    {
+      "seq": 6,
+      "ts_ms": 1761600005001,
+      "kind": "benchmark_result",
+      "body": {
+        "name": "twin_fidelity",
+        "score_ppm": 940000
+      },
+      "prev": "e7391d03875c3158a33a1553f2cf4dbde24b450fd0dcf99ffcecd16cb4b97ece",
+      "hash": "bb238f9055502cdb040a6963c837dc3d36e28afb7b78938d50e192539429a2ca"
+    },
+    {
+      "seq": 7,
+      "ts_ms": 1761600006000,
+      "kind": "run_finished",
+      "body": {
+        "artefact_hashes": [
+          "c888ba01fc26cf67f0a3e842623811fca62ba871d78171ce6688f4d4cfe7bce6"
+        ],
+        "knowledge_set_hash": "4f95c68c7f1f447ed9ace486fc62c18e6355fe359930951fcd124845d79cb54f"
+      },
+      "prev": "bb238f9055502cdb040a6963c837dc3d36e28afb7b78938d50e192539429a2ca",
+      "hash": "8a8f18594a58ea8042cc79203adadc7bc71d036834565e9184edf575dfb7913b"
+    }
+  ],
+  "expected": {
+    "signer_key_id": "ed25519:2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12",
+    "record_hash": "0c4b84e5b2241ba4a93547f92a52772fa08b94cf287a5d91557682215a36c04c",
+    "ledger_head": "8a8f18594a58ea8042cc79203adadc7bc71d036834565e9184edf575dfb7913b",
+    "verify_now_ms": 1762464000000,
+    "model_hash": "c888ba01fc26cf67f0a3e842623811fca62ba871d78171ce6688f4d4cfe7bce6",
+    "simulated_seconds_validated": 315360000,
+    "simulated_seconds_unvalidated": 63072000
+  }
+}

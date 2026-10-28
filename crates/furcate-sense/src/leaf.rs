@@ -212,6 +212,23 @@ enum LeafKey {
     P256(p256::ecdsa::SigningKey),
 }
 
+pub(crate) fn domain_digest(domain: &str, msg: &[u8]) -> Vec<u8> {
+    let mut h = Sha256::new();
+    h.update((domain.len() as u64).to_be_bytes());
+    h.update(domain.as_bytes());
+    h.update((msg.len() as u64).to_be_bytes());
+    h.update(msg);
+    h.finalize().to_vec()
+}
+
+/// Check a [`Leaf::sign_message`] signature against a key as a cell link names
+/// it (`ed25519:<hex>` or `p256:<hex>`).
+pub fn verify_with_key(public_key: &str, domain: &str, msg: &[u8], sig_hex: &str) -> Result<(), LeafError> {
+    let key = CellKey::parse(public_key).map_err(|_| LeafError::BadSignature)?;
+    key.verify_hex(&domain_digest(domain, msg), sig_hex)
+        .map_err(|_| LeafError::BadSignature)
+}
+
 /// A leaf device, as seen from its own side.
 pub struct Leaf {
     pub id: String,
@@ -248,6 +265,21 @@ impl Leaf {
             public_key: self.public_key(),
             key_custody,
             attached_at: now,
+        }
+    }
+
+    /// Sign an arbitrary message under a domain, for envelopes that carry more
+    /// than a reading. The domain separates these signatures from every other
+    /// use of the key.
+    pub fn sign_message(&self, domain: &str, msg: &[u8]) -> String {
+        let digest = domain_digest(domain, msg);
+        match &self.key {
+            LeafKey::Ed25519(k) => hex::encode(k.sign(&digest).to_bytes()),
+            LeafKey::P256(k) => {
+                use p256::ecdsa::signature::Signer as _;
+                let sig: p256::ecdsa::Signature = k.sign(&digest);
+                hex::encode(sig.to_bytes())
+            }
         }
     }
 
@@ -295,6 +327,12 @@ impl ParentPort {
     pub fn detach(&mut self, leaf_id: &str) -> bool {
         self.last_seq.remove(leaf_id);
         self.attachments.remove(leaf_id).is_some()
+    }
+
+    /// Verify a message signed with [`Leaf::sign_message`] by an attached leaf.
+    pub fn verify_message(&self, leaf_id: &str, domain: &str, msg: &[u8], sig_hex: &str) -> Result<(), LeafError> {
+        let att = self.attachments.get(leaf_id).ok_or(LeafError::NotAttached)?;
+        verify_with_key(&att.public_key, domain, msg, sig_hex)
     }
 
     /// Verify a reading and record its sequence.

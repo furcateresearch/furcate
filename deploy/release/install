@@ -6,7 +6,8 @@
 #   install ext   <edition> <bin-dir> <root>            the board extension
 #   install stage <edition> <bin-dir> <root>            a host rollout stage
 #   install model <edition> <bin-dir> <root>            the model-server extension
-#   install --list <deb|ext|stage|model> <edition>      print "<package> <dest>"
+#   install leafhead <edition> <bin-dir> <root>         the leaf-head extension
+#   install --list <deb|ext|stage|model|leafhead> <edition>      print "<package> <dest>"
 #                                                       for every file, install
 #                                                       nothing
 #
@@ -31,9 +32,9 @@ die() { echo "release/install: $*" >&2; exit 1; }
 
 list=0
 if [ "${1:-}" = --list ]; then list=1; shift; fi
-target=${1:?usage: install [--list] deb|ext|stage|model <edition> [<bin-dir> <root>]}
+target=${1:?usage: install [--list] deb|ext|stage|model|leafhead <edition> [<bin-dir> <root>]}
 edition=${2:?edition: open or full}
-case "$target" in deb|ext|stage|model) ;; *) die "unknown target $target" ;; esac
+case "$target" in deb|ext|stage|model|leafhead) ;; *) die "unknown target $target" ;; esac
 case "$edition" in open|full) ;; *) die "edition must be open or full, not $edition" ;; esac
 bins= root=
 if [ "$list" = 0 ]; then
@@ -43,9 +44,9 @@ fi
 
 selected() { # selected <ships> <edition>
     case "$target:$1" in
-        deb:pkg|deb:all|stage:pkg|stage:all|ext:all|ext:ext|model:model) ;;
-        *:pkg|*:ext|*:all|*:model) return 1 ;;
-        *) die "ships must be pkg, ext, all or model, not $1" ;;
+        deb:pkg|deb:all|stage:pkg|stage:all|ext:all|ext:ext|model:model|leafhead:leafhead) ;;
+        *:pkg|*:ext|*:all|*:model|*:leafhead) return 1 ;;
+        *) die "ships must be pkg, ext, all, model or leafhead, not $1" ;;
     esac
     case "$2" in
         any|each) return 0 ;;

@@ -28,6 +28,7 @@ mod grid;
 pub mod extension;
 mod session;
 mod viz;
+pub mod web;
 pub mod style;
 mod term;
 mod ui;
@@ -400,6 +401,11 @@ fn draw(a: &Addrs) {
 
 /// The console's entry point.
 pub fn main() {
+    // `web`: the browser terminal, a different program sharing this binary.
+    let argv0: Vec<String> = std::env::args().collect();
+    if argv0.get(1).map(String::as_str) == Some("web") {
+        std::process::exit(web::main(&argv0[2..]));
+    }
     let a = Addrs::from_env();
 
     // `--once` prints one screen and leaves. For a script, a log, or somebody

@@ -376,9 +376,24 @@ pub fn tpm_kind_from_driver(present: bool, driver: Option<&str>) -> TpmKind {
     }
 }
 
-/// Read how this machine's first TPM is provided.
+/// Read how this machine's TPM is provided: the chip `/dev/tpmrm0` reaches,
+/// else the first one the kernel lists.
 pub fn tpm_kind() -> TpmKind {
-    tpm_kind_at(Path::new("/sys/class/tpm/tpm0"))
+    tpm_kind_at(&tpm_class_dir(Path::new("/dev/tpmrm0"), Path::new("/sys/class/tpm")))
+}
+
+/// The sysfs entry of the chip a TPM device path reaches. Rebinding the
+/// driver while the first chip is still held registers the same TPM as tpm1,
+/// with /dev/tpmrm0 left as a link to /dev/tpmrm1; tpm0 is then absent and
+/// the machine would read as having no TPM at all.
+pub fn tpm_class_dir(device: &Path, class: &Path) -> std::path::PathBuf {
+    let reached = std::fs::canonicalize(device).ok();
+    let name = reached
+        .as_deref()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .and_then(|n| n.strip_prefix("tpmrm").map(|i| format!("tpm{i}")));
+    class.join(name.unwrap_or_else(|| "tpm0".to_string()))
 }
 
 pub fn tpm_kind_at(class_dir: &Path) -> TpmKind {
@@ -557,6 +572,19 @@ mod tests {
         assert!(matches!(tegra_secure_boot(Some("0x00000000\n")), SecureBoot::Off { .. }));
         assert!(matches!(tegra_secure_boot(Some("0x1")), SecureBoot::Enforced { .. }));
         assert!(matches!(tegra_secure_boot(Some("yes")), SecureBoot::Unknown { .. }));
+    }
+
+    #[test]
+    fn the_class_entry_follows_the_device_link() {
+        let dir = std::env::temp_dir().join(format!("furcate-tpmclass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("tpmrm1"), b"").unwrap();
+        std::os::unix::fs::symlink(dir.join("tpmrm1"), dir.join("tpmrm0")).unwrap();
+        let class = Path::new("/sys/class/tpm");
+        assert_eq!(tpm_class_dir(&dir.join("tpmrm0"), class), class.join("tpm1"));
+        assert_eq!(tpm_class_dir(&dir.join("absent"), class), class.join("tpm0"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A fake `/sys` with `class/tpm/tpm0` linked to `target`, relative to the

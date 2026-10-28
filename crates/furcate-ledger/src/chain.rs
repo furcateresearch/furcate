@@ -82,6 +82,20 @@ pub enum OpKind {
     ///
     /// Appended last, as every variant here must be.
     Meter,
+    /// A command from a simulation platform reached a site gate and was decided.
+    ///
+    /// One entry per decision, refusals included: the subject is the command
+    /// id and the result is decision, code and a digest of the signed receipt
+    /// without its ledger and signature members. Appended last, as every
+    /// variant here must be.
+    Command,
+    /// A batch of decisions a sandboxed agent runtime made about one agent,
+    /// committed by count and Merkle root, signed by the node. See
+    /// [`crate::agent`]. Appended last, as every variant here must be.
+    AgentDecision,
+    /// A verified kill order tore a sandboxed agent down. See
+    /// [`crate::agent`]. Appended last, as every variant here must be.
+    AgentKilled,
 }
 
 /// One committed operation.

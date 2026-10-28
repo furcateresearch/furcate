@@ -1,0 +1,47 @@
+# Power-failure handling on a node. Three files in /etc/furcate, all root-owned.
+# Nothing is stopped or powered off until the operator turns it on, and a
+# node with none of these files does nothing about the supply.
+#
+# 1. ups.json - where to ask about the supply. Read only: the node asks the
+#    NUT daemon (upsd) over the overlay with LIST VAR and sends nothing else.
+#    A credential, if upsd ever needs one, is a systemd credential named here,
+#    never a file in the repository or a command-line argument.
+#
+#   {
+#     "source": { "host": "192.0.2.5", "port": 3493, "ups": "mainsupply" },
+#     "triggers": {
+#       "dwell_secs": 20,
+#       "confirm_reads": 3, "confirm_secs": 20, "commbad_secs": 60,
+#       "capture_charge_pct": 80, "capture_after_secs": 180,
+#       "quiesce_charge_pct": 65, "quiesce_after_secs": 420,
+#       "halt_charge_pct": 50,    "halt_after_secs": 900,
+#       "trust_lb": false
+#     }
+#   }
+#
+#   An outage is acted on only after confirm_reads consecutive on-battery
+#   reads spread over confirm_secs. Losing upsd while on line is logged as
+#   COMMBAD and nothing more.
+#
+# 2. ups-shutdown - this node's authority and turn (key=value).
+#
+#   mode=dry-run            # dry-run (default) or enforce
+#   delay_secs=0            # seconds after the ladder reaches halt before this
+#                           # node starts stopping itself; dependents small,
+#                           # the node that holds the supply's USB cable last
+#   ups_host=no             # yes on that one node; needs delay_secs >= 120
+#
+#   To go live: set mode=enforce here. To stop everything on one node at once:
+#     sudo touch /etc/furcate/ups-actuation-disabled      (remove it to re-enable)
+#
+# 3. ups-stop - what to stop on the way down, one unit per line. Stop order is
+#    the reverse of bring-up: a unit is stopped before the units it needs.
+#    systemd sends SIGTERM and waits; the ladder kills nothing. timeout is the
+#    window for a stop; grace is a longer window for a job that checkpoints on
+#    SIGTERM. stop= names a service's own safe-stop executable (absolute path,
+#    root-owned, run before the unit is stopped).
+#
+#   unit=batch-job.service      needs=database.service timeout=30 grace=300
+#   unit=database.service       needs=secrets.service  timeout=120 stateful=yes
+#   unit=secrets.service        timeout=60 stateful=yes
+#   unit=chain-node.service     needs=secrets.service  timeout=120 stateful=yes stop=/usr/local/libexec/node-safe-stop

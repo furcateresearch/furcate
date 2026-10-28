@@ -29,6 +29,7 @@ furcate-machine = { path = "../furcate-machine" }
 furcate-vault = { path = "../furcate-vault" }
 anyhow.workspace = true
 hex.workspace = true
+data-encoding.workspace = true
 furcate-net = { path = "../furcate-net" }
 # For administration::Appointment — the client signs exactly the bytes the
 # site verifies, from one definition rather than two that drift apart.
@@ -41,6 +42,8 @@ serde_json.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
+ureq.workspace = true
+url.workspace = true
 
 [features]
 # The open build is the default. Everything Apache-2.0 must compile with no

@@ -165,6 +165,32 @@ impl LeafState {
     }
 }
 
+/// Length of the model hash bound into a reading.
+pub const MODEL_HASH_LEN: usize = 32;
+
+impl LeafState {
+    /// Bytes a leaf signs for a sample that also names the model, if any,
+    /// that stood between the sensor and the number.
+    ///
+    /// `model` is the SHA-256 of the signed model artifact active when the
+    /// reading was taken, or all zero bytes when no model is active. The
+    /// firmware computes the same bytes; the vector in the tests is shared
+    /// with its host test. Readings forwarded through further nodes keep this
+    /// payload: each node signs over the signature below it rather than
+    /// changing what the origin signed.
+    pub fn bound_payload(&self, device_id: &[u8; 8], s: &Sample, model: &[u8; MODEL_HASH_LEN]) -> [u8; 32] {
+        let mut h = Sha256::new();
+        h.update(b"furcate/leaf/sample/v2");
+        h.update(device_id);
+        h.update(self.generation.to_be_bytes());
+        h.update([s.sensor]);
+        h.update(s.value.to_be_bytes());
+        h.update(s.seq.to_be_bytes());
+        h.update(model);
+        h.finalize().into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +283,36 @@ mod tests {
         b.clear();
         assert!(b.is_empty());
         assert_eq!(b.iter().count(), 0);
+    }
+
+    #[test]
+    fn the_bound_payload_matches_the_firmware_vector() {
+        // The same vectors as the leaf firmware's host test.
+        let st = LeafState::new(0, 3);
+        let sample = Sample { sensor: 0, value: 21.5, seq: 7 };
+        let dev = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut model = [0u8; MODEL_HASH_LEN];
+        for (i, b) in model.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        assert_eq!(
+            hex::encode(st.bound_payload(&dev, &sample, &model)),
+            "e9f6dae460a5c7af5134556ad39d651aaa61dbbee5e239e167506670987ff3fb"
+        );
+        assert_eq!(
+            hex::encode(st.bound_payload(&dev, &sample, &[0u8; MODEL_HASH_LEN])),
+            "716948ddde3cd1ea6edcebf712dc76344c6e70fc2d4a37a4f2cf014d57a9e174"
+        );
+    }
+
+    #[test]
+    fn the_bound_payload_binds_the_model() {
+        let st = LeafState::default();
+        let sample = Sample { sensor: 1, value: 21.5, seq: 7 };
+        let a = st.bound_payload(b"device01", &sample, &[1u8; MODEL_HASH_LEN]);
+        let b = st.bound_payload(b"device01", &sample, &[2u8; MODEL_HASH_LEN]);
+        assert_ne!(a, b);
+        // And it is not the unbound payload.
+        assert_ne!(a, st.payload(b"device01", &sample));
     }
 }

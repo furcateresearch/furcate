@@ -29,6 +29,7 @@
 //! whose value proposition is that some things cannot happen.
 
 pub mod action;
+pub mod agent;
 pub mod change;
 pub mod custody;
 pub mod delegation;

@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "role": "micro_processing",
+      "attachment": {
+        "leaf_id": "CHANGE-ME: the micro processing node's id",
+        "parent": "CHANGE-ME: this node's id",
+        "public_key": "CHANGE-ME: ed25519:<hex> or p256:<hex>, from that node's enrolment",
+        "attached_at": 0,
+        "key_custody": { "kind": "fuse-key" }
+      }
+    }
+  ],
+  "sensing": [
+    {
+      "sensing_node": "CHANGE-ME: the id enrolment gave the sensing node",
+      "gateway": "CHANGE-ME: the micro processing node's id above"
+    }
+  ]
+}

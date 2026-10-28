@@ -3,8 +3,10 @@ Description=Furcate node agent
 Documentation=https://github.com/furcateresearch/furcate
 # The agent needs its root of trust, and nothing else. It must start even when
 # the site controller is absent: staying up without a controller is the
-# designed behaviour, not a degraded one.
-After=network.target
+# designed behaviour, not a degraded one. Where it ships in a system
+# extension, it also needs what the merge brings (users, udev rules for the
+# signing device), so it starts after the merge and its post-merge step.
+After=network.target systemd-sysext.service
 Wants=network.target
 
 [Service]

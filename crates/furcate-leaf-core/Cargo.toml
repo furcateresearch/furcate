@@ -12,3 +12,6 @@ repository.workspace = true
 # so inheriting would have pulled std back into a no-std crate while appearing
 # to do the opposite.
 sha2 = { version = "0.11", default-features = false }
+
+[dev-dependencies]
+hex.workspace = true

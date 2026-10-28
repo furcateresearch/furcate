@@ -15,18 +15,23 @@
 //! x86 package counters, [`rails`] the INA3221/INA238 rail monitors on Jetson
 //! carriers and the Raspberry Pi 5 PMIC. Each figure names the interface it
 //! came from, and a rail that did not read is not measured rather than zero.
+//! [`supply`] reads what a board OS reports about its own supply.
 
 pub mod actuator;
 pub mod bringup;
+pub mod confirm;
+pub mod halt;
 pub mod ladder;
 pub mod rails;
 pub mod rapl;
+pub mod shutdown;
+pub mod supply;
 pub mod thermal;
 pub mod wake;
 
 pub use actuator::{Applied, Capabilities, Governor, Lever};
 pub use bringup::{BringUp, Gate, GateState, Unit};
-pub use ladder::{Ladder, PowerState, Rung};
+pub use ladder::{Ladder, PowerState, Rung, Triggers, UpsObservation};
 pub use rails::{PowerMode, Rail};
 pub use rapl::{Power, Sample, Scope};
 pub use thermal::{rung_for, rung_from, Origin, Reading, Thresholds};

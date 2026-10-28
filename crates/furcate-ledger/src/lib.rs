@@ -11,6 +11,7 @@
 //! covers every node and any single operation can be proven against it with a
 //! short inclusion path.
 
+pub mod agent;
 pub mod chain;
 pub mod checkpoint;
 pub mod merkle;

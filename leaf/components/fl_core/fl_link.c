@@ -27,6 +27,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "driver/uart.h"
+#include "sdkconfig.h"
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"
+#endif
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
@@ -47,9 +51,31 @@ static const char *TAG = "fl-link";
 
 static SemaphoreHandle_t s_tx_lock;
 
+// The serial transport is UART0 on boards with a UART bridge and the chip's
+// own USB-Serial-JTAG port where the console is configured there (ESP32-S3).
+// Same framing on both.
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+static void ser_write(const char *s, size_t n) {
+    while (n) {
+        int k = usb_serial_jtag_write_bytes(s, n, pdMS_TO_TICKS(100));
+        if (k <= 0) {
+            // No host reading: drop the output rather than stall the leaf.
+            if (!usb_serial_jtag_is_connected()) return;
+            continue;
+        }
+        s += k;
+        n -= (size_t)k;
+    }
+}
+static int ser_read(uint8_t *c) { return usb_serial_jtag_read_bytes(c, 1, pdMS_TO_TICKS(50)) == 1; }
+#else
+static void ser_write(const char *s, size_t n) { uart_write_bytes(PORT, s, n); }
+static int ser_read(uint8_t *c) { return uart_read_bytes(PORT, c, 1, pdMS_TO_TICKS(50)) == 1; }
+#endif
+
 static void tx_raw(const char *s, size_t n) {
     xSemaphoreTake(s_tx_lock, portMAX_DELAY);
-    uart_write_bytes(PORT, s, n);
+    ser_write(s, n);
     xSemaphoreGive(s_tx_lock);
 }
 
@@ -68,7 +94,12 @@ static int log_vprintf(const char *fmt, va_list ap) {
 // the 128-byte receive FIFO to overrun mid-record (OTA and SINK streams
 // stalled on 0.1.6 and 0.1.8).
 static void uart_install_task(void *arg) {
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    usb_serial_jtag_driver_config_t cfg = {.tx_buffer_size = 8192, .rx_buffer_size = 16384};
+    usb_serial_jtag_driver_install(&cfg);
+#else
     uart_driver_install(PORT, 16384, 8192, 0, NULL, 0);
+#endif
     xTaskNotifyGive((TaskHandle_t)arg);
     vTaskDelete(NULL);
 }
@@ -106,7 +137,7 @@ static void tx_frame(const char *s, size_t n) {
 // One byte from the current transport: 1, 0 on a quiet 50 ms, -1 when the
 // connection has gone.
 static int rx_byte(uint8_t *c) {
-    if (s_sock < 0) return uart_read_bytes(PORT, c, 1, pdMS_TO_TICKS(50)) == 1;
+    if (s_sock < 0) return ser_read(c);
     if (s_dead) return -1;
     if (s_rpos == s_rlen) {
         int k = recv(s_sock, s_rbuf, sizeof s_rbuf, 0);
@@ -302,9 +333,11 @@ fail:
 static uint8_t required_role(uint8_t type) {
     switch (type) {
     case FL_MSG_INFO_REQ:
+    case FL_MSG_SENSE_REQ:
     case FL_MSG_BYE:
         return FL_ROLE_READ;
     case FL_MSG_INFER:
+    case FL_MSG_GATEWAY_ASK:
         return FL_ROLE_COMMAND;
     case FL_MSG_MODEL_OFFER:
     case FL_MSG_MODEL_CHUNK:

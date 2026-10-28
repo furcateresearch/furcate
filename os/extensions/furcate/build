@@ -90,9 +90,10 @@ tree="$work/tree"
 mkdir -p "$out"
 
 # 1. The tree: /usr only, exactly the rows of deploy/release/manifest that
-# ship in the board extension. The units and the overlay are shipped, never
-# enabled: an extension carries no .wants links, so nothing here starts until
-# the operator enables it.
+# ship in the board extension. The units are shipped with a preset file
+# (05-furcate.preset) naming the ones the extension enables, and one unit,
+# furcate-extension-enable, linked into multi-user.target.wants, that applies it
+# at every merge. The base's own presets cannot turn those units off.
 sh "$repo/deploy/release/install" ext "$edition" "$bins" "$tree"
 
 # 2. The release file. ID=_any: systemd matches on ARCHITECTURE only, and

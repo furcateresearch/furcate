@@ -89,6 +89,20 @@ impl Rumours {
         Taken::New
     }
 
+    /// Replace the statement held for this origin by another of the same
+    /// version, for a caller that has verified the new body is the origin's
+    /// own and later than the one held. Returns whether anything was held to
+    /// replace; a different version goes through [`Rumours::offer`].
+    pub fn replace_same_version(&mut self, r: Rumour, now: u64) -> bool {
+        match self.held.get_mut(&r.origin) {
+            Some(have) if have.version == r.version && have.expires > now && r.expires > now => {
+                *have = r;
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn get(&self, origin: &str) -> Option<&Rumour> {
         self.held.get(origin)
     }

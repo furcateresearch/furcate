@@ -1,6 +1,6 @@
 # Models for Furcate leaf nodes
 
-Every published number below names its source. "V" means measured by the vendor or the model's author; "3P" means measured by someone else. Numbers measured on our own development board are in [TEST-RESULTS.md](TEST-RESULTS.md).
+Every published number below names its source. "V" means measured by the vendor or the model's author; "3P" means measured by someone else. Numbers measured on our own development board are in TEST-RESULTS.md.
 
 ## Classic ESP32 (development board: no PSRAM, about 330 KB internal RAM)
 

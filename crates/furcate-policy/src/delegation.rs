@@ -587,7 +587,9 @@ impl Scope {
             ))
         };
         match &order.target {
-            Target::Node { id } => {
+            // A login is access to one machine, so it is in scope exactly where
+            // acting on that machine is.
+            Target::Node { id } | Target::Login { node: id, .. } => {
                 let at = locate(id);
                 if self.admits_cell(at.as_deref()) {
                     Ok(())

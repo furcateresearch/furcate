@@ -17,6 +17,7 @@
 
 use super::firmware_tpm::{self, Classified, EkChain};
 use super::optee::{self, KnownTa};
+use super::rpi_fw_broker::{RpiFwBroker, BROKER_SOCKET};
 use super::rpi_fw_crypto::RpiFwCrypto;
 use super::tpm2_tools::{self, Tpm2Tools};
 use crate::rot::{AssuranceClass, RootOfTrust};
@@ -30,6 +31,12 @@ use std::sync::Arc;
 /// Meant for private test networks; a node using one is `Soft`.
 pub const ALLOW_EMULATED_TPM: &str = "allow-emulated-tpm";
 
+/// File name, under the node's configuration directory, whose presence lets
+/// this node reach a Raspberry Pi's OTP key through the firmware mailbox
+/// itself, when the board runs no signing broker. The board OS writes it for
+/// its transition path; nothing else turns the direct path on.
+pub const FWCRYPTO_DIRECT: &str = "fwcrypto-direct";
+
 /// Operator configuration that affects classification.
 #[derive(Clone, Debug, Default)]
 pub struct Policy {
@@ -42,6 +49,12 @@ pub struct Policy {
     /// The operator's reason for accepting an emulated TPM, when they have
     /// recorded one. `None` means an emulated TPM is ignored.
     pub allow_emulated_tpm: Option<String>,
+    /// The board's firmware signing broker. When its socket exists, a Pi's
+    /// OTP key is reached through it and no other way.
+    pub fwcrypto_broker: Option<PathBuf>,
+    /// Whether the operator has enabled the direct firmware path
+    /// ([`FWCRYPTO_DIRECT`]), used only when there is no broker.
+    pub fwcrypto_direct: bool,
 }
 
 impl Policy {
@@ -51,6 +64,8 @@ impl Policy {
             ek_ca_bundle: Some(dir.join(firmware_tpm::EK_CA_BUNDLE)),
             secure_enclave_key: Some(dir.join("secure-enclave.key")),
             allow_emulated_tpm: emulated_tpm_allowed(dir),
+            fwcrypto_broker: Some(PathBuf::from(BROKER_SOCKET)),
+            fwcrypto_direct: dir.join(FWCRYPTO_DIRECT).exists(),
         }
     }
 }
@@ -134,7 +149,7 @@ pub fn select(policy: &Policy) -> Result<Selection, NoHardwareRoot> {
         attempts.push(Attempt { backend: "tee", outcome });
     }
 
-    for probe in [probe_rpi(&board), probe_secure_enclave(policy)] {
+    for probe in [probe_rpi(policy, &board), probe_secure_enclave(policy)] {
         match probe {
             Probe::Opened(s) => return Ok(Selection { attempts, ..s }),
             Probe::Failed(a) => attempts.push(a),
@@ -154,7 +169,7 @@ pub fn open_backend(policy: &Policy, name: &str) -> Result<Selection, String> {
     let board = board::read();
     let probe = match name {
         "tpm" | "firmware-tpm" | "emulated-tpm" => probe_tpm(policy, &board),
-        "rpi-fw-crypto" => probe_rpi(&board),
+        "rpi-fw-crypto" => probe_rpi(policy, &board),
         "secure-enclave" => probe_secure_enclave(policy),
         other => return Err(format!("{other:?} is not a hardware backend this build knows")),
     };
@@ -271,26 +286,79 @@ fn emulated_by_answers(tpm: &Tpm2Tools) -> Option<String> {
     issuer.and_then(|i| firmware_tpm::emulator_issuer(&i))
 }
 
-fn probe_rpi(board: &Board) -> Probe {
+/// How this machine reaches a Raspberry Pi's OTP key, decided by what the
+/// board provides and what the operator enabled, never by what happens to
+/// answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FwCryptoPath {
+    /// The board's signing broker, at this socket.
+    Broker(PathBuf),
+    /// The firmware mailbox itself, because the operator enabled it and the
+    /// board runs no broker.
+    Direct,
+    /// Neither: no broker, and the direct path is not enabled.
+    None,
+}
+
+/// The broker when its socket exists; else the direct path when it is
+/// enabled; else none. A broker that exists and fails is a failure, not a
+/// reason to try the mailbox.
+pub fn fwcrypto_path(policy: &Policy) -> FwCryptoPath {
+    match &policy.fwcrypto_broker {
+        Some(socket) if socket.exists() => FwCryptoPath::Broker(socket.clone()),
+        _ if policy.fwcrypto_direct => FwCryptoPath::Direct,
+        _ => FwCryptoPath::None,
+    }
+}
+
+fn probe_rpi(policy: &Policy, board: &Board) -> Probe {
     if !matches!(board, Board::RaspberryPi(_)) {
         return Probe::Absent;
     }
-    match RpiFwCrypto::open() {
-        Ok(fw) => {
-            let reason = format!(
-                "Raspberry Pi OTP device key via the firmware; raw OTP read {} at open, \
-                 no measured boot",
-                if fw.read_locked() { "locked" } else { "NOT locked" }
-            );
-            Probe::Opened(Selection {
+    // One backend name for both paths: the key, and so the node, is the same
+    // whichever way it is reached, and a node enrolled on one keeps its
+    // identity on the other.
+    let failed = |outcome: String| Probe::Failed(Attempt { backend: "rpi-fw-crypto", outcome });
+    match fwcrypto_path(policy) {
+        FwCryptoPath::Broker(socket) => match RpiFwBroker::open(&socket) {
+            Ok(fw) => Probe::Opened(Selection {
                 class: fw.assurance(),
+                reason: format!(
+                    "Raspberry Pi OTP device key via the signing broker at {}; no measured boot",
+                    socket.display()
+                ),
                 rot: Arc::new(fw),
                 backend: "rpi-fw-crypto",
-                reason,
                 attempts: Vec::new(),
-            })
-        }
-        Err(e) => Probe::Failed(Attempt { backend: "rpi-fw-crypto", outcome: e.to_string() }),
+            }),
+            Err(e) => failed(format!(
+                "the signing broker at {} did not answer: {e:#}. The direct firmware path is not \
+                 tried while a broker is present",
+                socket.display()
+            )),
+        },
+        FwCryptoPath::Direct => match RpiFwCrypto::open() {
+            Ok(fw) => {
+                let reason = format!(
+                    "Raspberry Pi OTP device key via the firmware mailbox directly ({FWCRYPTO_DIRECT} is set \
+                     and the board runs no signing broker); raw OTP read {} at open, no measured boot",
+                    if fw.read_locked() { "locked" } else { "NOT locked" }
+                );
+                Probe::Opened(Selection {
+                    class: fw.assurance(),
+                    rot: Arc::new(fw),
+                    backend: "rpi-fw-crypto",
+                    reason,
+                    attempts: Vec::new(),
+                })
+            }
+            Err(e) => failed(format!("the direct firmware path ({FWCRYPTO_DIRECT} is set) failed: {e:#}")),
+        },
+        FwCryptoPath::None => failed(format!(
+            "no signing broker at {} and the direct firmware path is not enabled ({FWCRYPTO_DIRECT} \
+             is absent from the configuration directory); the OTP key cannot be reached",
+            policy.fwcrypto_broker.as_deref().unwrap_or(Path::new(BROKER_SOCKET)).display()
+        )),
     }
 }
 
@@ -372,6 +440,25 @@ fn endorsement_of(class: AssuranceClass, cert: Option<&[u8]>, verify: impl FnOnc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_broker_is_used_when_present_and_the_direct_path_only_when_enabled() {
+        let dir = std::env::temp_dir().join(format!("furcate-select-fw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("fwcrypto.sock");
+        let mut policy = Policy { fwcrypto_broker: Some(socket.clone()), ..Policy::default() };
+        assert_eq!(fwcrypto_path(&policy), FwCryptoPath::None, "no broker and no marker reaches nothing");
+        policy.fwcrypto_direct = true;
+        assert_eq!(fwcrypto_path(&policy), FwCryptoPath::Direct);
+        std::fs::write(&socket, b"").unwrap();
+        assert_eq!(fwcrypto_path(&policy), FwCryptoPath::Broker(socket.clone()), "the broker wins over the marker");
+        policy.fwcrypto_direct = false;
+        assert_eq!(fwcrypto_path(&policy), FwCryptoPath::Broker(socket));
+        std::fs::write(dir.join(FWCRYPTO_DIRECT), b"").unwrap();
+        assert!(Policy::in_config_dir(&dir).fwcrypto_direct);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_regular_file_at_the_tpm_path_is_passed_over() {

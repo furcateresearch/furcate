@@ -279,7 +279,7 @@ pub fn orchestrator_set(id: &str) -> Result<()> {
     println!();
     println!("serve and register it:");
     println!("  furcatectl model gateway");
-    println!("  furcatectl call KEY 127.0.0.1:7616 /models/load \\");
+    println!("  furcatectl call <operator-key> 127.0.0.1:7616 /models/load \\");
     println!("    '{{\"id\":\"{id}\",\"path\":\"{}\",\"endpoint\":\"http://127.0.0.1:8750\"}}'", weights(id).display());
     Ok(())
 }
@@ -354,7 +354,7 @@ pub fn orchestrator_push(id: &str, node: &str) -> Result<()> {
 }
 
 /// The digest of a file, so two machines can agree they hold the same weights.
-fn sha256_file(path: &std::path::Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read as _;
     // Read in chunks rather than to a Vec: these files are gigabytes, and a
@@ -709,116 +709,10 @@ pub fn pull(id: &str) -> Result<()> {
     }
 
     std::fs::create_dir_all(models_dir())?;
-
-    let head = Command::new("curl")
-        .args(["-sIL", "--max-time", "60", &url])
-        .output()
-        .context("running curl to read the model's headers")?;
-    let headers = String::from_utf8_lossy(&head.stdout);
-    // The LAST such header: -L follows redirects and each hop may carry one, so
-    // the final hop is the one that served the bytes.
-    let want = headers
-        .lines()
-        .rev()
-        .find(|l| l.to_ascii_lowercase().starts_with("x-linked-etag:"))
-        .and_then(|l| l.split_once(':'))
-        .map(|(_, v)| v.trim().trim_matches('"').to_string())
-        // A SHA-256, or nothing: a git blob id (what a non-LFS file carries
-        // here) names the bytes but is not the digest checked below.
-        .filter(|v| v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit()));
-
-    // Weights reach a node only with a digest to check them against. A source
-    // that advertises none is refused before a byte is fetched.
-    let Some(want) = want else {
-        bail!(
-            "refusing to pull {id}: {url} advertised no SHA-256 (x-linked-etag), so the\n\
-             weights could not be verified. Nothing was downloaded."
-        );
-    };
     println!("pulling {id} — {:.2} GiB from {}", e.gib, e.repo);
-
-    // Download beside the target and rename, so an interrupted pull never leaves
-    // a half file that looks like a model. `--fail` matters: without it curl
-    // writes an HTML error page to the output file and exits zero.
-    let part = dest.with_extension("part");
-
-    // Resume rather than restart.
-    //
-    // These are gigabytes over a link that may drop: the 9B failed at 51% with
-    // curl 92 (an HTTP/2 stream the far end cancelled), and the old code then
-    // deleted 2.7 GB of perfectly good bytes so the next attempt began at zero.
-    // `-C -` continues from whatever is on disk and is harmless on a fresh
-    // file; the digest check at the end is what decides whether the result is
-    // the model, so resuming cannot quietly produce a wrong one.
-    //
-    // More retries and a longer delay for the same reason: the failure this is
-    // built for is a transfer interrupted midway, not a server that is down.
-    let mut attempt = 0;
-    let st = loop {
-        attempt += 1;
-        let st = Command::new("curl")
-            .args([
-                "-fL", "-C", "-",
-                "--retry", "5", "--retry-delay", "3", "--retry-all-errors",
-                // A stall is a failure worth retrying rather than waiting out:
-                // under 30 KB/s for a minute means the transfer has stopped
-                // moving, whatever the socket believes.
-                "--speed-limit", "30000", "--speed-time", "60",
-                "-o",
-            ])
-            .arg(&part)
-            .arg(&url)
-            .status()
-            .context("running curl to fetch the model")?;
-        if st.success() || attempt >= 3 {
-            break st;
-        }
-        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-        println!(
-            "  interrupted at {:.2} GiB — resuming (attempt {})",
-            have as f64 / 1_073_741_824.0,
-            attempt + 1
-        );
-    };
-    if !st.success() {
-        // The partial file is KEPT. It is most of a model, and the next run
-        // continues from it; deleting it is how a flaky link turns into a
-        // download that can never finish.
-        let have = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
-        bail!(
-            "download failed for {id} — curl exited {}. {:.2} GiB is kept at {}; \
-             run the same command again to continue from there",
-            st.code().unwrap_or(-1),
-            have as f64 / 1_073_741_824.0,
-            part.display()
-        );
-    }
-
-    {
-        use sha2::{Digest, Sha256};
-        use std::io::Read;
-        // Chunked rather than read-to-end: the largest catalog entry is over five
-        // gigabytes and hashing it must not require holding it in memory.
-        let mut f = std::fs::File::open(&part)?;
-        let mut h = Sha256::new();
-        let mut buf = vec![0u8; 1 << 20];
-        loop {
-            let n = f.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            h.update(&buf[..n]);
-        }
-        let got = hex::encode(h.finalize());
-        if !got.eq_ignore_ascii_case(&want) {
-            let _ = std::fs::remove_file(&part);
-            bail!("digest mismatch for {id}\n  expected {want}\n  got      {got}\nThe file was removed.");
-        }
-        println!("  digest verified: {}", &got[..16]);
-    }
-
-    std::fs::rename(&part, &dest)?;
-    let n = std::fs::metadata(&dest)?.len();
+    // In process, not through a download tool: the node's base carries none.
+    // Digest, resume and the partial-file rules are in model_fetch.
+    let n = crate::model_fetch::fetch_verified(&url, &dest, id, &crate::model_fetch::Opts::default())?;
     println!("  {} — {:.2} GiB", dest.display(), n as f64 / 1_073_741_824.0);
     gateway_refresh();
     Ok(())
@@ -845,7 +739,7 @@ fn gateway_refresh() {
         .unwrap_or(false);
     // Only the gateway that reads this store. A pull into another store
     // (FURCATE_MODELS_DIR) has nothing to tell the running one.
-    let reads_this_store = std::fs::read_to_string(unit_path(ROUTER))
+    let reads_this_store = std::fs::read_to_string(shipped_unit_path(ROUTER))
         .map(|t| t.contains(&format!("--models-dir {} ", models_dir().display())))
         .unwrap_or(false);
     if !active || !reads_this_store {
@@ -1238,6 +1132,17 @@ fn gateway_unit() -> String {
     unit_name("gateway")
 }
 
+/// The gateway's and the router's units, shipped by the model-server extension.
+fn shipped_unit_path(id: &str) -> PathBuf {
+    Path::new("/usr/lib/systemd/system").join(unit_name(id))
+}
+
+/// What this node chose for them: bind address, residency, context, threads,
+/// offload, reasoning. Their units are inert without it.
+fn gateway_env_path() -> PathBuf {
+    furcate_paths::config("model-gateway.env")
+}
+
 /// Serve every local model from one OpenAI-compatible endpoint.
 ///
 /// ## Why this exists as well as `serve`
@@ -1320,93 +1225,35 @@ pub fn gateway(args: &[&str]) -> Result<()> {
     let tok = token("gateway")?;
     let t = threads().saturating_sub(1).max(1);
 
-    let router = format!(
-        "# Generated by `furcatectl model gateway`. Edits are overwritten.\n\
-         [Unit]\n\
-         Description=Furcate model router (every local model, loopback only)\n\
-         OnFailure=notify-failure@%N.service\n\
-         StartLimitIntervalSec=0\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         Environment=LD_LIBRARY_PATH={runtime}\n\
-         # Router mode. The runtime starts a child per model on demand, so the\n\
-         # binary must be able to execute itself, which is why this unit is not\n\
-         # locked down as hard as a single-model one.\n\
-         ExecStart={bin} --models-dir {models} --models-max {max} \\\n\
-             --host 127.0.0.1 --port {port} --ctx-size {ctx} --threads {t} \\\n\
-             --n-gpu-layers {ngl} --reasoning {reasoning} --jinja --api-key-file {tokfile}\n\
-         Restart=on-failure\n\
-         RestartSec=5\n\
-         TimeoutStartSec=600\n\
-         TimeoutStopSec=30\n\
-         KillSignal=SIGTERM\n\
-         \n\
-         NoNewPrivileges=true\n\
-         PrivateTmp=yes\n\
-         ProtectSystem=strict\n\
-         ProtectHome=yes\n\
-         ReadOnlyPaths={models}\n\
-         RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\
-         DeviceAllow=/dev/dri rw\n\
-         DeviceAllow=char-nvidia rw\n\
-         SupplementaryGroups=video render\n",
-        runtime = runtime_dir().display(),
-        bin = server().display(),
-        models = models_dir().display(),
-        tokfile = token_path("gateway").display(),
-        port = ROUTER_PORT,
-        ctx = ctx,
-        ngl = ngl,
-        max = max,
-        reasoning = reasoning,
-        t = t,
+    // The units are the model-server extension's own, in /usr, enabled by its
+    // preset. What this node chose is the one file they read.
+    for id in [ROUTER, "gateway"] {
+        let shipped = shipped_unit_path(id);
+        if !shipped.is_file() {
+            bail!(
+                "{} is not installed\n\n\
+                 The gateway's units ship in the model-server extension. A node that\n\
+                 does not have them runs an extension built before they did; take a\n\
+                 cluster update and try again.",
+                shipped.display()
+            );
+        }
+    }
+    let env = gateway_env_path();
+    let text = format!(
+        "# Written by `furcatectl model gateway`; read by furcate-model-router.service\n\
+         # and furcate-model-gateway.service. Edits are overwritten.\n\
+         FURCATE_MODEL_BIND={bind}\n\
+         FURCATE_MODEL_MAX={max}\n\
+         FURCATE_MODEL_CONTEXT={ctx}\n\
+         FURCATE_MODEL_THREADS={t}\n\
+         FURCATE_MODEL_GPU_LAYERS={ngl}\n\
+         FURCATE_MODEL_REASONING={reasoning}\n",
     );
-    let me = std::env::current_exe().context("finding this furcatectl to run the gateway's door")?;
-    // The door reads the cell's files where this command does, and the
-    // router's credential from the store it was minted in.
-    let door = format!(
-        "# Generated by `furcatectl model gateway`. Edits are overwritten.\n\
-         [Unit]\n\
-         Description=Furcate model gateway (signed requests from the cell)\n\
-         Requires={router_unit}\n\
-         After={router_unit} network-online.target\n\
-         Wants=network-online.target\n\
-         OnFailure=notify-failure@%N.service\n\
-         StartLimitIntervalSec=0\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         Environment=FURCATE_CONFIG_DIR={config}\n\
-         Environment=FURCATE_STATE_DIR={state}\n\
-         Environment=FURCATE_MODELS_DIR={models}\n\
-         ExecStart={me} model front --bind {bind} --port {port} --upstream-port {router_port}\n\
-         Restart=on-failure\n\
-         RestartSec=2\n\
-         \n\
-         NoNewPrivileges=true\n\
-         PrivateTmp=yes\n\
-         PrivateDevices=yes\n\
-         ProtectSystem=strict\n\
-         ProtectHome=yes\n\
-         ProtectKernelTunables=yes\n\
-         ProtectControlGroups=yes\n\
-         RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6\n\
-         MemoryMax=256M\n\
-         \n\
-         [Install]\n\
-         WantedBy=multi-user.target\n",
-        router_unit = unit_name(ROUTER),
-        config = furcate_paths::config_dir().display(),
-        state = furcate_paths::state_dir().display(),
-        models = models_dir().display(),
-        me = me.display(),
-        bind = bind,
-        port = GATEWAY_PORT,
-        router_port = ROUTER_PORT,
-    );
-    std::fs::write(unit_path(ROUTER), router)?;
-    std::fs::write(unit_path("gateway"), door)?;
+    if let Some(dir) = env.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&env, text).with_context(|| format!("writing {}", env.display()))?;
     let _ = Command::new("systemctl").arg("daemon-reload").status();
 
     // The router restarts first so the door's start finds it; the door
@@ -1519,10 +1366,24 @@ pub fn stop(id: &str) -> Result<()> {
     let ids: &[&str] = if id == "gateway" { &["gateway", ROUTER] } else { &[id] };
     for id in ids {
         let unit = unit_name(id);
+        if *id == "gateway" || *id == ROUTER {
+            // Shipped units: stopping them is not deleting them. The
+            // extension's preset enables the gateway at every merge, so what
+            // keeps it off is the file they require.
+            let _ = Command::new("systemctl").args(["stop", &unit]).status();
+            continue;
+        }
         let _ = Command::new("systemctl").args(["disable", "--now", &unit]).status();
         let p = unit_path(id);
         if p.exists() {
             std::fs::remove_file(&p)?;
+        }
+    }
+    if id == "gateway" {
+        match std::fs::remove_file(gateway_env_path()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).context("removing the gateway's configuration"),
         }
     }
     let _ = Command::new("systemctl").arg("daemon-reload").status();

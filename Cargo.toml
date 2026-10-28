@@ -6,6 +6,7 @@ members = [
     "crates/furcate-authn",
     "crates/furcate-breakglass",
     "crates/furcate-build",
+    "crates/furcate-command",
     "crates/furcate-console",
     "crates/furcate-deploy",
     "crates/furcate-health",
@@ -28,6 +29,7 @@ members = [
     "crates/furcate-session",
     "crates/furcate-siteview",
     "crates/furcate-sql",
+    "crates/furcate-test-fido",
     "crates/furcate-topology",
     "crates/furcate-vault",
     "crates/furcatectl",
@@ -64,5 +66,12 @@ ciborium = "0.2"
 # `struct termios` and got the Linux layout, which is a stack overrun on
 # macOS (60 bytes vs 72). See furcate-console/src/term.rs for the table.
 libc = "0.2"
+# HTTPS for fetching model weights, in process: the node's base has no curl or
+# wget. rustls with the Mozilla roots compiled in (webpki-roots), so a base
+# without a CA bundle still verifies the source; proxies from the standard
+# environment variables. Blocking, with a per-read timeout, which is what a
+# long transfer needs to notice a dead connection.
+ureq = { version = "2.12", default-features = false, features = ["tls"] }
+url = "2"
 
 # Workspace-level integration tests (see tests/).

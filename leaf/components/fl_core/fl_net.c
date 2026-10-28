@@ -20,6 +20,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "fl_crypto.h"
+#include "fl_gateway.h"
 #include "fl_identity.h"
 #include "fl_link.h"
 #include "fl_trust.h"
@@ -111,7 +112,7 @@ static void check_country(void) {
     }
     ESP_LOGI(TAG, "driver country %.2s, channels %u-%u, %s policy, max TX %d dBm", got.cc, got.schan,
              got.schan + got.nchan - 1, got.policy == WIFI_COUNTRY_POLICY_MANUAL ? "manual" : "auto",
-             got.max_tx_power / 4);
+             got.max_tx_power);
 }
 
 static uint8_t radio_channel(void) {
@@ -197,6 +198,7 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         int rssi = esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
         ESP_LOGI(TAG, "Wi-Fi up: %s, RSSI %d dBm, channel %d, %lld ms after boot", s_ip, rssi,
                  rssi ? ap.primary : 0, s_ip_at_us / 1000);
+        fl_time_start(s_cfg.host);
     }
 }
 
@@ -364,9 +366,13 @@ uint8_t fl_net_config(const uint8_t *tlv, size_t n, fl_wbuf_t *r) {
     return result(r, true, NULL);
 }
 
-int fl_net_dial(int timeout_ms) {
-    if (!fl_net_ready()) return -1;
-    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(s_cfg.port)};
+const char *fl_net_host(void) { return s_cfg.host; }
+
+int fl_net_dial(int timeout_ms) { return fl_net_dial_port(s_cfg.port, timeout_ms); }
+
+int fl_net_dial_port(uint16_t port, int timeout_ms) {
+    if (!fl_net_ready() || !port) return -1;
+    struct sockaddr_in a = {.sin_family = AF_INET, .sin_port = htons(port)};
     if (inet_aton(s_cfg.host, &a.sin_addr) == 0) return -1;
     int s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s < 0) return -1;

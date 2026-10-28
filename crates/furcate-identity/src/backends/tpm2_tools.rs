@@ -56,7 +56,12 @@ pub fn unusable_device(device: &Path, sysfs_class: &Path) -> Option<String> {
     if let Err(e) = std::fs::OpenOptions::new().read(true).write(true).open(device) {
         return Some(format!("it does not open: {e}"));
     }
-    let name = device.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // The kernel names the device it registered, which a link at the usual
+    // path may point elsewhere from: rebinding the driver while the first
+    // chip is still held registers the same TPM as tpm1, and /dev/tpmrm0 is
+    // then a link to /dev/tpmrm1. Ask sysfs about the device the path reaches.
+    let real = std::fs::canonicalize(device).unwrap_or_else(|_| device.to_path_buf());
+    let name = real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let class_name = match name.strip_prefix("tpmrm") {
         Some(n) => format!("tpm{n}"),
         None => name,
@@ -405,6 +410,19 @@ mod tests {
     fn a_missing_device_is_not_a_tpm() {
         let dir = scratch("missing");
         assert!(unusable_device(&dir.join("tpmrm0"), &dir).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_at_the_device_path_is_judged_by_the_device_it_reaches() {
+        let dir = scratch("link");
+        let link = dir.join("tpmrm0");
+        std::os::unix::fs::symlink("/dev/null", &link).unwrap();
+        std::fs::create_dir_all(dir.join("class/tpm0")).unwrap();
+        let why = unusable_device(&link, &dir.join("class")).expect("the reached device is not listed");
+        assert!(why.contains("null"), "{why}");
+        std::fs::create_dir_all(dir.join("class/null")).unwrap();
+        assert_eq!(unusable_device(&link, &dir.join("class")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -17,6 +17,7 @@ mod custody;
 mod hardware;
 mod host;
 mod image;
+pub mod journal;
 mod keycustody;
 pub mod extension;
 mod network;
@@ -26,8 +27,12 @@ pub mod policyfile;
 mod resources;
 mod power;
 mod runtime;
+mod runsign;
+mod sessionledger;
+mod sshlogin;
 mod wake;
 mod ups;
+mod upshalt;
 pub mod workloads;
 
 use furcate_api::{listen_also, serve_also, Request, Response, Router};
@@ -73,6 +78,8 @@ struct Agent {
     last_intent: Option<String>,
     controller_seen_at: Option<u64>,
     ups: ups::Reading,
+    /// Where the ordered shutdown stands, as /healthz reports it.
+    shutdown: serde_json::Value,
     /// Whether the current cordon was caused by a workload rather than by the
     /// machine itself.
     ///
@@ -383,6 +390,7 @@ impl Agent {
             last_intent: None,
             controller_seen_at: None,
             ups: ups::Reading::Absent,
+            shutdown: serde_json::json!({"configured": false}),
             cordoned_by_workload: false,
         }
     }
@@ -778,7 +786,13 @@ pub fn main() -> anyhow::Result<()> {
             }
         }
     }
-    run()
+    let ran = run();
+    // One sentence on why, for the console panel and `furcate-os log why`;
+    // the full error still follows from the caller, as before.
+    if let Err(e) = &ran {
+        journal::refused(e);
+    }
+    ran
 }
 
 /// Where this node keeps what decides its identity; `furcatectl` reads the
@@ -844,11 +858,25 @@ fn open_root_of_trust() -> anyhow::Result<Arc<dyn RootOfTrust + Send + Sync>> {
     }
 
     let chosen = resolved.opened;
-    if chosen.backend == pin::SOFT_BACKEND {
-        eprintln!("furcated: no TPM — identity from {}", chosen.reason);
+    let (message, severity, hint) = if chosen.backend == pin::SOFT_BACKEND {
+        (
+            format!("furcated: no TPM — identity from {}", chosen.reason),
+            journal::Severity::Warning,
+            "this proves continuity, not possession: a TPM, or a board's OTP device key \
+(furcate-os otp-provision), makes it a hardware identity",
+        )
     } else {
-        eprintln!("furcated: identity from {} as {}: {}", chosen.backend, chosen.class, chosen.reason);
-    }
+        (
+            format!("furcated: identity from {} as {}: {}", chosen.backend, chosen.class, chosen.reason),
+            journal::Severity::Notice,
+            "",
+        )
+    };
+    journal::on_change(
+        "identity",
+        &message,
+        &journal::Event { component: "identity", event: "identity-opened", severity, message: &message, hint },
+    );
     Ok(chosen.rot)
 }
 
@@ -876,18 +904,14 @@ pub fn run() -> anyhow::Result<()> {
     // person's home, where it depended on that account continuing to exist.
     let key_dir = furcate_paths::state("node-key");
     let signing = match node_signing_key(&key_dir, assurance == AssuranceClass::Soft) {
-        Ok(k) => {
-            eprintln!(
-                "furcated: receipt signing key {}",
-                &hex::encode(k.verifying_key().to_bytes())[..16]
-            );
-            Some(Arc::new(k))
-        }
+        // Which key signs receipts is said once, in `build_router`, where the
+        // choice between this key and the root of trust's is made.
+        Ok(k) => Some(Arc::new(k)),
         Err(e) => {
-            // Serving unsigned receipts is worse than not serving them, so
-            // this is loud. Inference still works; receipts say they are
-            // unsigned.
-            eprintln!("furcated: WARNING receipts will be unsigned: {e}");
+            // Not the end of receipts: a root of trust that signs for itself,
+            // such as a Pi's firmware-held key, signs them instead. Which key
+            // signs is decided and printed in `build_router`.
+            eprintln!("furcated: no sealed node key: {e}");
             None
         }
     };
@@ -932,6 +956,9 @@ pub fn run() -> anyhow::Result<()> {
     );
 
     register_local_sensors(Arc::clone(&agent), &node_id);
+    // Passkey SSH sessions on this machine are anchored in its chain. The
+    // recorder (`furcatectl ssh-session serve`) commits through this socket.
+    sessionledger::spawn(Arc::clone(&agent));
     spawn_power_loop(&sched, Arc::clone(&agent));
     spawn_health_loop(&sched, Arc::clone(&agent));
     spawn_checkpoint_loop(&sched, Arc::clone(&agent), Arc::clone(&rot));
@@ -957,7 +984,18 @@ pub fn run() -> anyhow::Result<()> {
     // but they are only further ways in: the node reports and advertises
     // FURCATE_LISTEN alone.
     let also = listen_also(&std::env::var("FURCATE_LISTEN_ALSO").unwrap_or_default());
-    eprintln!("furcated: listening on {addr}");
+    let up = format!("furcated: listening on {addr}");
+    journal::on_change(
+        "agent",
+        &up,
+        &journal::Event {
+            component: "furcated",
+            event: "agent-up",
+            severity: journal::Severity::Notice,
+            message: &up,
+            hint: "",
+        },
+    );
     serve_also(addr, &also, router)?;
     Ok(())
 }
@@ -1184,10 +1222,11 @@ fn spawn_overlay_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>,
         eprintln!("furcated: no site configured; the overlay keeps its held peers");
     }
     let addr = overlay_addr();
-    // Loaded once, at start. A policy that could be swapped underneath a
-    // running loop would be one an attacker could swap underneath a running
-    // loop; changing it is a restart, which is visible.
-    let policy = std::sync::Arc::new(overlay::load_policy());
+    // Loaded at start, and replaced in one way only: by a newer site policy
+    // that an anchor signed, checked here before it is used. A file edited
+    // underneath a running loop still changes nothing until a restart.
+    let mut policy = std::sync::Arc::new(overlay::load_policy());
+    let mut policy_refused = String::new();
 
     furcate_sched::spawn(
         sched,
@@ -1222,7 +1261,6 @@ fn spawn_overlay_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>,
             // holds" true of the design and not of the code.
             let me = node_id.clone();
             let now = now_s();
-            let policy = std::sync::Arc::clone(&policy);
             // Read every pass rather than captured once, so adding an anchor
             // takes effect on the next cycle instead of at the next restart —
             // and so a file that becomes unreadable is noticed rather than
@@ -1231,6 +1269,40 @@ fn spawn_overlay_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>,
                 Ok(a) => a,
                 Err(e) => return furcate_sched::Ran::Skipped(e),
             };
+            // The site's signed rules, when the coordinator holds a newer
+            // document than this node. The coordinator only carries it: the
+            // anchors decide whether it is the operator's.
+            if !site.trim().is_empty() {
+                let offered = furcate_api::get_json(&site, "/overlay/policy", 4000)
+                    .ok()
+                    .and_then(|v| v.get("policy").cloned())
+                    .filter(|v| !v.is_null())
+                    .and_then(|v| serde_json::from_value::<furcate_net::sitepolicy::SignedPolicy>(v).ok());
+                if let Some(doc) = offered {
+                    match policyfile::accept(&anchors, &doc, &policyfile::signed_path(), &policyfile::rendered_path()) {
+                        Ok(Some(set)) => {
+                            eprintln!(
+                                "furcated: overlay policy is now the site's v{} ({}, {} rules)",
+                                doc.version,
+                                doc.key_id,
+                                set.policies.len()
+                            );
+                            policy = std::sync::Arc::new(set);
+                            policy_refused.clear();
+                        }
+                        Ok(None) => {}
+                        Err(why) => {
+                            // Once per distinct reason: the coordinator offers
+                            // the same document every pass.
+                            if why != policy_refused {
+                                eprintln!("furcated: WARNING overlay policy refused: {why}");
+                                policy_refused = why;
+                            }
+                        }
+                    }
+                }
+            }
+            let policy = std::sync::Arc::clone(&policy);
             if !anchors.state().is_locked() {
                 // Said out loud every pass. An operator who never sees this
                 // line is entitled to assume peers are being verified.
@@ -1268,7 +1340,16 @@ fn spawn_overlay_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>,
 /// Runs whether or not a supply is present: a machine with no UPS reports that
 /// honestly rather than claiming to be on line.
 fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
-    let ups_name = std::env::var("FURCATE_UPS").unwrap_or_else(|_| "ups".to_string());
+    // State the loop keeps between passes. The debounce decides what the
+    // ladder is told; the plan decides when this node's turn comes; the halt
+    // sequence runs on its own thread so the loop keeps beating and observing,
+    // and `cancel` is how mains returning reaches it.
+    let mut debounce = furcate_power::confirm::Debounce::new(furcate_power::Triggers::default());
+    let mut plan = furcate_power::shutdown::Plan::new(furcate_power::shutdown::Config::default());
+    let mut last_complaint = String::new();
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let running = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seq_agent = Arc::clone(&agent);
     // Recognised once. DMI does not change while a machine is running, and
     // re-reading the registry every ten seconds would be work done to reach the
     // same answer.
@@ -1290,7 +1371,22 @@ fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
         if let Err(e) = bmc::publish_quiet(&bmc::declared().acoustics) {
             eprintln!("furcated: WARNING quiet-hours declaration not published ({e})");
         }
-        let reading = ups::read(&ups_name);
+        let now = now_s();
+        let ups::Pass { reading, triggers } = ups::read(now);
+        let shutdown_cfg = furcate_power::shutdown::load(std::path::Path::new(furcate_power::shutdown::CONFIG_PATH));
+        {
+            let complaint = match (&reading, &shutdown_cfg) {
+                (ups::Reading::Invalid(w), _) => w.clone(),
+                (_, furcate_power::shutdown::Loaded::Invalid(w)) => w.clone(),
+                _ => String::new(),
+            };
+            if complaint != last_complaint {
+                if !complaint.is_empty() {
+                    eprintln!("furcated: WARNING UPS configuration is wrong ({complaint}); no shutdown will be carried out on its account");
+                }
+                last_complaint = complaint;
+            }
+        }
         // Heat is read whether or not a supply is present. This used to sit
         // inside the `Reading::Present` arm, which meant a machine with no UPS
         // — the common case, and the one this loop's own doc comment promises
@@ -1316,8 +1412,18 @@ fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
             // happens — so they get one mechanism rather than two that could
             // disagree.
             let mut rung = before;
-            if let ups::Reading::Present { state, runtime_left, .. } = reading {
-                rung = a.ladder.observe(state, now_s(), runtime_left);
+            // Only what the debounce has confirmed reaches the ladder. A read
+            // that is on battery, a parse error, stale data or a daemon that
+            // cannot be reached starts nothing by itself.
+            let sample = reading.sample();
+            let ev = sample.map(|smp| {
+                debounce.retune(triggers.clone());
+                debounce.feed(smp, now)
+            });
+            if sample.is_some() {
+                let mut obs = reading.observation();
+                obs.state = debounce.ladder_state(now);
+                rung = a.ladder.observe_ups(obs, reading.low_flag(), &triggers, now);
             }
             if let Some(t) = thermal {
                 if t > rung {
@@ -1353,6 +1459,137 @@ fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
                 a.signals.retain(|s| !matches!(s.kind, SignalKind::MemoryPressure { .. }));
             }
 
+            // Said when it happens. An on-battery read is announced at once as
+            // unconfirmed; the ledger entry and the signal wait for the
+            // confirmation, so nothing durable rests on one read.
+            {
+                use furcate_power::confirm::Event;
+                let detail = match &reading {
+                    ups::Reading::Measured(r) => format!(
+                        "supply {} says {}; charge {}",
+                        r.source,
+                        r.status.value,
+                        r.charge_pct.as_ref().map_or("not measured".to_string(), |c| format!("{:.0}% ({})", c.value, c.from)),
+                    ),
+                    ups::Reading::NotMeasured(w) => w.clone(),
+                    _ => String::new(),
+                };
+                match ev {
+                    Some(Event::ObSeen { reads }) => {
+                        eprintln!("furcated: mains may be lost: {reads} of {} on-battery reads, not confirmed, nothing is acted on ({detail})", triggers.confirm_reads);
+                    }
+                    Some(Event::OutageConfirmed) => {
+                        let d = format!("mains lost, confirmed over {} reads; {detail}", triggers.confirm_reads);
+                        eprintln!("furcated: MAINS LOST: {d}");
+                        a.chain.append(now_ms(), OpKind::Power, "mains", "lost", d.clone());
+                        a.signals.retain(|s| !matches!(&s.kind, SignalKind::PowerFault { detail } if detail.starts_with("mains lost")));
+                        let sig = Signal::new(&a.node_id, SignalKind::PowerFault { detail: d }, now);
+                        a.signals.push(sig);
+                    }
+                    Some(Event::MainsConfirmed) => {
+                        eprintln!("furcated: mains on line (confirmed)");
+                        a.chain.append(now_ms(), OpKind::Power, "mains", "on-line", "supply reports mains on line");
+                        a.signals.retain(|s| !matches!(&s.kind, SignalKind::PowerFault { detail } if detail.starts_with("mains lost")));
+                    }
+                    Some(Event::CommBad) => {
+                        let acts = debounce.confirmed() == furcate_power::confirm::Confirmed::OnBattery;
+                        let d = format!(
+                            "COMMBAD: no usable answer from upsd ({detail}); last confirmed state {:?}; {}",
+                            debounce.confirmed(),
+                            if acts { "on battery, so the ladder keeps counting once this has lasted" } else { "nothing is acted on" }
+                        );
+                        eprintln!("furcated: {d}");
+                        a.chain.append(now_ms(), OpKind::Power, "mains", "commbad", d);
+                    }
+                    Some(Event::CommRestored) => {
+                        eprintln!("furcated: contact with upsd restored");
+                        a.chain.append(now_ms(), OpKind::Power, "mains", "comm-restored", "upsd answers again");
+                    }
+                    _ => {}
+                }
+            }
+
+            // The ordered shutdown. Each node stops itself on its own turn;
+            // nothing here asks another machine to do anything. Live only when
+            // the operator wrote mode=enforce and the kill switch is absent.
+            {
+                use furcate_power::{halt, shutdown as sd};
+                use std::sync::atomic::Ordering::SeqCst;
+                let kill = std::path::Path::new(sd::KILL_SWITCH_PATH).exists();
+                let (cfg, mut note) = match &shutdown_cfg {
+                    sd::Loaded::Some(c) => (*c, serde_json::json!({"configured": true})),
+                    sd::Loaded::Absent => (sd::Config::default(), serde_json::json!({"configured": false})),
+                    sd::Loaded::Invalid(w) => (sd::Config::default(), serde_json::json!({"configured": false, "invalid": w})),
+                };
+                let cfg = sd::effective(cfg, kill);
+                plan.reconfigure(cfg);
+                let stop_list = halt::load(std::path::Path::new(halt::STOP_LIST_PATH));
+                let on_line = debounce.confirmed() == furcate_power::confirm::Confirmed::OnLine && sample == Some(furcate_power::confirm::Sample::OnLine);
+                if on_line && running.load(SeqCst) {
+                    cancel.store(true, SeqCst);
+                }
+                let action = plan.observe(&mut a.ladder, on_line, now);
+                rung = a.ladder.rung();
+                let mode = if cfg.mode == sd::Mode::Enforce { "enforce" } else { "dry-run" };
+                match action {
+                    sd::Action::None => {}
+                    sd::Action::Armed { fire_at } => {
+                        let d = format!("INTENT: the ladder reached halt; this node starts its stop sequence at {fire_at} ({}s from now), mode {mode}{}", cfg.delay_secs, if kill { " (kill switch present)" } else { "" });
+                        eprintln!("furcated: WARNING {d}");
+                        a.chain.append(now_ms(), OpKind::Power, "shutdown", "armed", d);
+                    }
+                    sd::Action::Cancelled => {
+                        eprintln!("furcated: mains returned before this node's turn; the pending shutdown is withdrawn");
+                        a.chain.append(now_ms(), OpKind::Power, "shutdown", "cancelled", "mains confirmed on line; nothing further is stopped");
+                    }
+                    sd::Action::Fire { enforce } => {
+                        let (units, mode_now) = match &stop_list {
+                            halt::Loaded::Some(u) => (u.clone(), if enforce { sd::Mode::Enforce } else { sd::Mode::DryRun }),
+                            halt::Loaded::Absent => (Vec::new(), if enforce { sd::Mode::Enforce } else { sd::Mode::DryRun }),
+                            // A list nobody can read is not a list that says
+                            // nothing is stateful: act on nothing.
+                            halt::Loaded::Invalid(w) => {
+                                eprintln!("furcated: ERROR the stop list is invalid ({w}); rehearsing only");
+                                (Vec::new(), sd::Mode::DryRun)
+                            }
+                        };
+                        cancel.store(false, SeqCst);
+                        running.store(true, SeqCst);
+                        let (cancel, running, ag) = (Arc::clone(&cancel), Arc::clone(&running), Arc::clone(&seq_agent));
+                        let host = overlay::local_name().unwrap_or_else(|| a.node_id.clone());
+                        std::thread::spawn(move || {
+                            let mut ledger = upshalt::AgentLedger { agent: ag, host: host.clone() };
+                            let mut real = upshalt::Real;
+                            let out = halt::run(&units, mode_now, &host, &mut real, &mut ledger, &|| cancel.load(SeqCst));
+                            eprintln!("furcated: halt sequence ended: {out:?}");
+                            running.store(false, SeqCst);
+                        });
+                    }
+                }
+                if let Some(o) = note.as_object_mut() {
+                    o.insert("mode".into(), mode.into());
+                    o.insert("kill_switch".into(), kill.into());
+                    o.insert("delay_secs".into(), cfg.delay_secs.into());
+                    o.insert("ups_host".into(), cfg.ups_host.into());
+                    o.insert("pending_at".into(), plan.pending().map_or(serde_json::Value::Null, Into::into));
+                    o.insert(
+                        "stop_plan".into(),
+                        match &stop_list {
+                            halt::Loaded::Some(u) => serde_json::json!({"units": halt::describe(u), "expected_secs": halt::expected_secs(u)}),
+                            halt::Loaded::Absent => serde_json::json!("no stop list; no stateful unit is declared on this node"),
+                            halt::Loaded::Invalid(w) => serde_json::json!({"invalid": w}),
+                        },
+                    );
+                }
+                a.shutdown = note;
+                // An intent is written down before it is acted on: anything
+                // appended this pass is on disk before the pass ends.
+                let notable = ev.is_some_and(|e| !matches!(e, furcate_power::confirm::Event::None | furcate_power::confirm::Event::ObSeen { .. }));
+                if notable || !matches!(action, sd::Action::None) {
+                    a.persist_chain();
+                }
+            }
+
             if rung != before {
                 // Which of the three put it here. A record saying only
                 // "shed" leaves somebody guessing whether the building lost
@@ -1370,9 +1607,14 @@ fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
                     OpKind::Power,
                     cause,
                     rung.as_str(),
-                    format!("from {}", before.as_str()),
+                    format!(
+                        "INTENT: from {}; will {}",
+                        before.as_str(),
+                        furcate_power::Ladder::actions(rung).join(", ")
+                    ),
                 );
                 eprintln!("furcated: power rung {} -> {}", before.as_str(), rung.as_str());
+                a.persist_chain();
 
                 // And now the part that was missing. Until this line the
                 // ladder observed, chained, printed, and left the CPU at 100%.
@@ -1478,6 +1720,16 @@ fn spawn_power_loop(sched: &furcate_sched::Registry, agent: Arc<Mutex<Agent>>) {
                             .map(|w| w.kind.as_str())
                             .unwrap_or("unit");
                         let nonce = format!("shed-{}-{}", id, now_ms());
+                        // On a confirmed outage a shed is live only when the
+                        // operator enabled actuation on this node; otherwise
+                        // it is logged as what it would have done.
+                        let live = a.shutdown.get("mode").and_then(|m| m.as_str()) == Some("enforce");
+                        if debounce.confirmed() == furcate_power::confirm::Confirmed::OnBattery && !live {
+                            a.chain.append(now_ms(), OpKind::Power, "shed", id.clone(), format!("WOULD STOP {kind} {id} (dry run, nothing stopped)"));
+                            eprintln!("furcated: WOULD STOP {kind} {id} (dry run)");
+                            return furcate_sched::Ran::Ok;
+                        }
+                        a.chain.append(now_ms(), OpKind::Power, "shed", id.clone(), format!("INTENT: stop {kind} {id}"));
                         match actuate::write_shed(kind, id, &nonce) {
                             Ok(()) => {
                                 a.chain.append(
@@ -1584,34 +1836,74 @@ fn spawn_rejoin(
     // The signed announcement is reused for a minute: a lost datagram is
     // resent as it was, and the hardware is asked at most once a minute, and
     // only while some peer is not handshaking.
-    let mut sealed: Option<(u64, String, Vec<u8>)> = None;
+    let mut sealed = furcate_net::announce::SealCache::new();
     let mut last_targets: Vec<std::net::SocketAddr> = Vec::new();
-    furcate_sched::spawn(sched, "overlay-rejoin", furcate_sched::Cadence::FixedRate { secs: 15 }, furcate_sched::Backoff::default(), move || {
+    // Each address backs off on its own: a peer that never handshakes with
+    // this node is told at most every minute, not on every pass.
+    let mut pacing = furcate_net::announce::Pacing::new(overlay::announce_max_interval());
+    // This node's own underlay, looked at on every pass. A change (another
+    // interface, another address, a route lost and back) is news to every
+    // peer whatever their backoff says, and invalidates the source address
+    // WireGuard cached for each of them.
+    let mut underlay = furcate_net::announce::Underlay::new();
+    let toward = std::env::var("FURCATE_OVERLAY_TOWARD").unwrap_or_else(|_| "192.0.2.1".into());
+    furcate_sched::spawn(sched, "overlay-rejoin", furcate_sched::Cadence::FixedRate { secs: overlay::link_poll_interval() }, furcate_sched::Backoff::default(), move || {
         if !overlay::leased_here() {
             return furcate_sched::Ran::Ok;
         }
         let now = now_s();
+        let local = overlay::local_endpoint_addr(&toward);
+        if underlay.changed(local.clone()) {
+            eprintln!(
+                "furcated: overlay: this node's underlay address changed to {}; announcing to every peer without waiting and applying the WireGuard peers again",
+                local.as_deref().unwrap_or("none (no route)")
+            );
+            pacing.reset();
+            overlay::request_refresh(now);
+        }
+        let Some(local) = local else { return furcate_sched::Ran::Skipped("this node has no route toward its peers".into()) };
         let targets = overlay::announce_targets(port, now);
+        let key = overlay::kernel_key().unwrap_or_default();
         if targets.is_empty() {
+            // Every peer handshakes: forget the waits, so one that goes stale
+            // later is told at once.
+            pacing.due(&key, &[], now);
             last_targets.clear();
             return furcate_sched::Ran::Ok;
         }
-        let key = overlay::kernel_key().unwrap_or_default();
-        let reuse = sealed.as_ref().is_some_and(|(at, k, _)| *k == key && now.saturating_sub(*at) < 60);
-        if !reuse {
-            let h = match serde_json::from_value::<furcate_net::overlay::Hint>(overlay_hint(&me, assurance)) {
-                Ok(h) if h.lease.is_some() => h,
-                Ok(_) => return furcate_sched::Ran::Skipped("this node's lease is not bound yet; nothing to announce".into()),
-                Err(_) => return furcate_sched::Ran::Skipped("the overlay is not up yet; nothing to announce".into()),
-            };
-            match overlay::announcement(&h, now) {
-                Ok(d) => sealed = Some((now, h.public_key.clone(), d)),
-                Err(e) => return furcate_sched::Ran::Failed(e),
+        let targets = pacing.due(&key, &targets, now);
+        if targets.is_empty() {
+            return furcate_sched::Ran::Ok;
+        }
+        match sealed.plan(&key, &local, now) {
+            furcate_net::announce::Seal::Reuse => {}
+            furcate_net::announce::Seal::Wait => {
+                // The hardware signed under a minute ago, with the old
+                // address. Announce on the pass that may sign again.
+                pacing.reset();
+                return furcate_sched::Ran::Ok;
+            }
+            furcate_net::announce::Seal::Fresh => {
+                let h = match serde_json::from_value::<furcate_net::overlay::Hint>(overlay_hint(&me, assurance)) {
+                    Ok(h) if h.lease.is_some() => h,
+                    Ok(_) => return furcate_sched::Ran::Skipped("this node's lease is not bound yet; nothing to announce".into()),
+                    Err(_) => return furcate_sched::Ran::Skipped("the overlay is not up yet; nothing to announce".into()),
+                };
+                match overlay::announcement(&h, now) {
+                    Ok(d) => sealed.put(&h.public_key, &local, now, d),
+                    Err(e) => return furcate_sched::Ran::Failed(e),
+                }
             }
         }
-        let Some((_, _, datagram)) = sealed.as_ref() else { return furcate_sched::Ran::Ok };
+        let Some(datagram) = sealed.datagram() else { return furcate_sched::Ran::Ok };
         if targets != last_targets {
-            let list: Vec<String> = targets.iter().map(|t| t.to_string()).collect();
+            let list: Vec<String> = targets
+                .iter()
+                .map(|t| match pacing.interval(t) {
+                    Some(w) => format!("{t} (next in {w}s)"),
+                    None => t.to_string(),
+                })
+                .collect();
             eprintln!(
                 "furcated: overlay: announcing this node's leased key over the underlay to {} peer address(es) with no recent handshake: {}",
                 targets.len(),
@@ -1697,11 +1989,17 @@ fn spawn_announce_listener(
             match furcate_net::announce::open(&buf[..n], &me, &anchors, &trusted, &mut replay, now, overlay::lease_ceiling()) {
                 Ok(h) => {
                     let mut a = agent.lock().expect("agent lock");
-                    if overlay::hold(&mut a.membership, &h, now) {
-                        eprintln!(
+                    match overlay::hold_announced(&mut a.membership, &h, now) {
+                        overlay::Held::Key => eprintln!(
                             "furcated: overlay: {} announced its leased key {} from {from}; carried from the next reconciliation",
                             h.node_id, h.public_key
-                        );
+                        ),
+                        overlay::Held::Moved => eprintln!(
+                            "furcated: overlay: {} announced from {from} that it is now at {}; its WireGuard endpoint follows from the next reconciliation",
+                            h.node_id,
+                            h.endpoints.join(", ")
+                        ),
+                        overlay::Held::Same | overlay::Held::Nothing => {}
                     }
                 }
                 // The same signed datagram resent: the sender repeats each one
@@ -1830,9 +2128,28 @@ fn spawn_membership_loop(
                             eprintln!("furcated: WARNING membership: {peer} claims {claimed} but sent no signature (an agent from before signed pings?); not joined");
                             return None;
                         };
-                        let Some(key) = peer_keys.get(claimed) else {
-                            eprintln!("furcated: WARNING membership: {peer} claims {claimed}, which is not a machine this node's trust store recognises; not joined");
-                            return None;
+                        // The trust store first; else a key an overlay anchor
+                        // admitted for that node, carried by its lease — which
+                        // arrived in this same answer if the peer holds one.
+                        let from_lease;
+                        let key = match peer_keys.get(claimed) {
+                            Some(k) => k,
+                            None => {
+                                let admitted = anchors.as_ref().ok().and_then(|an| {
+                                    let a = agent.lock().expect("agent lock");
+                                    overlay::admitted_key(&a.membership, an, claimed, now)
+                                });
+                                match admitted {
+                                    Some(k) => {
+                                        from_lease = k;
+                                        &from_lease
+                                    }
+                                    None => {
+                                        eprintln!("furcated: WARNING membership: {peer} claims {claimed}, which is not a machine this node's trust store recognises and has no anchor-admitted lease; not joined");
+                                        return None;
+                                    }
+                                }
+                            }
                         };
                         let ok = hex::decode(sig_hex)
                             .ok()
@@ -2291,52 +2608,6 @@ fn load_trust_store() -> furcate_authn::TrustStore {
     }
 }
 
-/// Register a model this node serves.
-///
-/// It reads a path on this machine, points inference at an endpoint and
-/// writes the registry, so it is the operator's to call.
-fn model_load_route(r: Router, agent: Arc<Mutex<Agent>>) -> Router {
-    r.guarded("POST", "/models/load", {
-        let agent = Arc::clone(&agent);
-        move |req: &Request| {
-            let (Some(id), Some(path), Some(endpoint)) = (
-                req.body.get("id").and_then(|v| v.as_str()),
-                req.body.get("path").and_then(|v| v.as_str()),
-                req.body.get("endpoint").and_then(|v| v.as_str()),
-            ) else {
-                return Response::error(400, "`id`, `path` and `endpoint` are required");
-            };
-            // Measure the artifact before serving it. A node that serves
-            // weights it never hashed cannot say which model it ran.
-            let digest = match runtime::measure(std::path::Path::new(path)) {
-                Ok(d) => d,
-                Err(e) => return Response::error(400, format!("measuring {path}: {e}")),
-            };
-            if !runtime::reachable(endpoint) {
-                return Response::error(
-                    503,
-                    format!("no runtime answering at {endpoint}; not registering a model this node cannot serve"),
-                );
-            }
-            let mut a = agent.lock().expect("agent lock");
-            a.models.insert(
-                id.to_string(),
-                runtime::LoadedModel {
-                    id: id.to_string(),
-                    digest: digest.clone(),
-                    endpoint: endpoint.to_string(),
-                    path: Some(path.to_string()),
-                },
-            );
-            let all: Vec<_> = a.models.values().cloned().collect();
-            let _ = runtime::save(&model_registry_path(), &all);
-            a.chain.append(now_ms(), OpKind::ModelLoad, "api", id, &digest[..16]);
-            a.persist_chain();
-            Response::ok(json!({ "loaded": id, "digest": digest }))
-        }
-    })
-}
-
 /// A new directory that only this process's user can enter, under a name
 /// nobody could have made first.
 ///
@@ -2373,6 +2644,52 @@ fn build_router(
                 Arc::new(furcate_identity::Ed25519Signer(k)) as Arc<dyn furcate_identity::MessageSigner>
             }),
         };
+    // What signs inference receipts: the node key where this machine seals
+    // one (TPM, Secure Enclave, or a soft node's file), so receipts keep the
+    // key verifiers already hold; else the key the root of trust signs with
+    // itself, a Pi's firmware-held OTP key through its broker. A node with
+    // neither refuses inference: an unsigned receipt proves nothing, and
+    // serving answers with one would look like proof to anyone not reading
+    // the signature field.
+    let receipt_signer: Option<Arc<dyn furcate_identity::MessageSigner>> = match &signing {
+        Some(k) => Some(Arc::new(furcate_identity::Ed25519Signer(Arc::clone(k)))),
+        None => furcate_identity::RootOfTrustSigner::of(Arc::clone(&rot))
+            .map(|s| Arc::new(s) as Arc<dyn furcate_identity::MessageSigner>),
+    };
+    let held = if signing.is_some() { "the sealed node key" } else { "the root of trust's own key" };
+    let receipt_key: Option<String> = match &receipt_signer {
+        Some(s) => match furcate_policy::delegation::CellKey::of(s.as_ref()) {
+            Ok(k) => Some(k.id()),
+            Err(e) => {
+                eprintln!("furcated: ERROR the receipt signer cannot say its key ({e}); inference is refused");
+                None
+            }
+        },
+        // Said once, below, by the same event either way: a start used to
+        // print the signer here and again as the journal event.
+        None => None,
+    };
+    {
+        let (message, severity, hint) = match &receipt_key {
+            Some(k) => (format!("furcated: receipts are signed by {held} {k}"), journal::Severity::Notice, ""),
+            None => (
+                "furcated: no key can sign receipts: no sealed node key and the root of trust signs only \
+its own quotes; inference is refused"
+                    .to_string(),
+                journal::Severity::Error,
+                "a TPM-sealed node key, or a board key reached through its signing broker \
+(or /etc/furcate/fwcrypto-direct on a board without one), signs receipts",
+            ),
+        };
+        // Every start, once: which key signs is a fact about this process, and
+        // a restart that said nothing would leave the previous start's line as
+        // the only statement of it.
+        journal::emit(&journal::Event { component: "receipts", event: "receipt-signer", severity, message: &message, hint });
+    }
+    let receipt_signer = receipt_signer.filter(|_| receipt_key.is_some());
+    // Local services that run work for others (Silo) have their run receipts
+    // signed by the same key, under a domain of their own.
+    runsign::spawn(receipt_signer.clone());
     // The same key binds this node's overlay leases, so a Pi's leases are
     // signed by its firmware-held key and never by a key on disk.
     if let Some(s) = &cell_signer {
@@ -2489,19 +2806,23 @@ fn build_router(
         .originating(Arc::new(overlay::may_originate))
         .route("GET", "/healthz", {
             let agent = Arc::clone(&agent);
+            let cell_key = cell_signer.as_ref().and_then(|s| furcate_topology::cell::signer_id(s.as_ref()).ok());
             move |_: &Request| {
                 let a = agent.lock().expect("agent lock");
                 Response::ok(json!({
                     "node_id": a.node_id,
+                    // What a cell record calls this machine, so a site view
+                    // that reads it by node id can find it by either.
+                    "cell_key": cell_key,
+                    "name": overlay::local_name(),
                     "edition": extension::get().edition(),
                     "state": a.lifecycle.state().as_str(),
                     "chain_length": a.chain.len(),
                     "power_rung": a.ladder.rung().as_str(),
-                    "ups": match &a.ups {
-                        ups::Reading::Present { state, charge_pct, .. } =>
-                            json!({ "present": true, "state": format!("{state:?}"), "charge_pct": charge_pct }),
-                        ups::Reading::Absent => json!({ "present": false }),
-                    },
+                    "ups": a.ups.to_json(now_s()),
+                    "ups_shutdown": a.shutdown.clone(),
+                    // The board's own supply report, or why there is none.
+                    "supply": furcate_power::supply::read(now_s()).to_json(now_s()),
                     "members": a.membership.alive().len(),
                     "sensors": a.sensors.len(),
                     "signals": a.signals.len(),
@@ -3814,7 +4135,9 @@ fn build_router(
                 Response::ok(json!({ "readings": readings }))
             }
         })
-        .route("POST", "/sensors/register", {
+        // Reporting, not open: an unproved caller could otherwise register
+        // sensors without bound.
+        .reporting("POST", "/sensors/register", {
             let agent = Arc::clone(&agent);
             move |req: &Request| {
                 let (Some(id), Some(host)) = (
@@ -3836,7 +4159,9 @@ fn build_router(
                 Response::ok(json!({ "registered": id, "count": a.sensors.len() }))
             }
         })
-        .route("POST", "/health/signal", {
+        // Reporting, not open: an attestation_drift or disk signal fences or
+        // cordons this node, which no unproved caller may cause.
+        .reporting("POST", "/health/signal", {
             let agent = Arc::clone(&agent);
             move |req: &Request| {
                 let kind = match req.body.get("kind").and_then(|v| v.as_str()) {
@@ -3884,6 +4209,49 @@ fn build_router(
                 }))
             }
         })
+        // Guarded: registering a model names a file this node hashes and an
+        // endpoint it will forward inference to and sign receipts for. Open, any
+        // caller could hash any file on the machine, point the node at an
+        // address of its choosing, and replace a served model under its id.
+        .guarded("POST", "/models/load", {
+            let agent = Arc::clone(&agent);
+            move |req: &Request| {
+                let (Some(id), Some(path), Some(endpoint)) = (
+                    req.body.get("id").and_then(|v| v.as_str()),
+                    req.body.get("path").and_then(|v| v.as_str()),
+                    req.body.get("endpoint").and_then(|v| v.as_str()),
+                ) else {
+                    return Response::error(400, "`id`, `path` and `endpoint` are required");
+                };
+                // Measure the artifact before serving it. A node that serves
+                // weights it never hashed cannot say which model it ran.
+                let digest = match runtime::measure(std::path::Path::new(path)) {
+                    Ok(d) => d,
+                    Err(e) => return Response::error(400, format!("measuring {path}: {e}")),
+                };
+                if !runtime::reachable(endpoint) {
+                    return Response::error(
+                        503,
+                        format!("no runtime answering at {endpoint}; not registering a model this node cannot serve"),
+                    );
+                }
+                let mut a = agent.lock().expect("agent lock");
+                a.models.insert(
+                    id.to_string(),
+                    runtime::LoadedModel {
+                        id: id.to_string(),
+                        digest: digest.clone(),
+                        endpoint: endpoint.to_string(),
+                        path: Some(path.to_string()),
+                    },
+                );
+                let all: Vec<_> = a.models.values().cloned().collect();
+                let _ = runtime::save(&model_registry_path(), &all);
+                a.chain.append(now_ms(), OpKind::ModelLoad, "api", id, &digest[..16]);
+                a.persist_chain();
+                Response::ok(json!({ "loaded": id, "digest": digest }))
+            }
+        })
         .route("GET", "/models", {
             let agent = Arc::clone(&agent);
             move |_: &Request| {
@@ -3899,18 +4267,29 @@ fn build_router(
         })
         .route("GET", "/receipt-key", {
             let signing = signing.clone();
-            move |_: &Request| match &signing {
-                Some(k) => Response::ok(json!({
-                    "public_key": hex::encode(k.verifying_key().to_bytes()),
-                    "sealed_to_tpm": true,
-                })),
-                None => Response::ok(json!({ "public_key": null, "sealed_to_tpm": false })),
+            let receipt_key = receipt_key.clone();
+            move |_: &Request| {
+                Response::ok(json!({
+                    // The Ed25519 node key in bare hex, as it has always been
+                    // given; null when receipts are signed by another kind.
+                    "public_key": signing.as_ref().map(|k| hex::encode(k.verifying_key().to_bytes())),
+                    // The key receipts are signed with, `ed25519:` or `p256:`.
+                    "key": receipt_key,
+                    "held_by": match (&signing, &receipt_key) {
+                        (Some(_), _) => "node key",
+                        (None, Some(_)) => "root of trust",
+                        (None, None) => "none",
+                    },
+                }))
             }
         })
         .route("POST", "/infer", {
             let agent = Arc::clone(&agent);
-            let signing = signing.clone();
+            let receipt_signer = receipt_signer.clone();
             move |req: &Request| {
+                let Some(receipt_signer) = &receipt_signer else {
+                    return Response::error(503, "this node has no key to sign receipts; inference is refused");
+                };
                 let Some(model) = req.body.get("model").and_then(|v| v.as_str()) else {
                     return Response::error(400, "`model` is required");
                 };
@@ -3937,7 +4316,6 @@ fn build_router(
                 // holding the agent lock would stall power observation.
                 match runtime::complete_as(&loaded.endpoint, Some(model), input, max_tokens) {
                     Ok(output) => {
-                        let mut a = agent.lock().expect("agent lock");
                         let receipt = InferenceReceipt::new(
                             loaded.digest.clone(),
                             "llama.cpp",
@@ -3948,10 +4326,15 @@ fn build_router(
                             head,
                             VerificationLevel::Bound,
                         );
-                        let receipt = match &signing {
-                            Some(k) => receipt.sign(k),
-                            None => receipt,
+                        let receipt = match receipt.sign_with(receipt_signer.as_ref()) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                return Response::error(503, format!("the receipt could not be signed: {e}"))
+                            }
                         };
+                        // Signed before the lock is taken: a hardware signer
+                        // answers over a socket and must not stall the agent.
+                        let mut a = agent.lock().expect("agent lock");
                         a.chain.append(now_ms(), OpKind::Inference, "api", model, &receipt.output_digest[..16]);
                         a.persist_chain();
                         Response::ok(json!({
@@ -3999,7 +4382,6 @@ fn build_router(
     //
     // WARNING: OUTWARD ONLY. Nothing here parses an inbound agent request or
     // accepts a skill string.
-    let r = model_load_route(r, Arc::clone(&agent));
     let r = ["/.well-known/agent-card.json", "/.well-known/agent.json"]
         .into_iter()
         .fold(r, |r, path| {
@@ -4477,17 +4859,16 @@ fn build_router(
     let cell_readings: Arc<dyn Fn(u64) -> furcate_topology::cell::Readings + Send + Sync> = {
         let view = Arc::clone(&view);
         let agent = Arc::clone(&agent);
-        Arc::new(move |now| furcate_topology::cell::Readings {
-            machines: view.lock().expect("siteview lock").machine_readings(now),
-            sensors: agent
+        Arc::new(move |now| {
+            let sensors = agent
                 .lock()
                 .expect("agent lock")
                 .sensors
                 .sensors()
                 .into_iter()
                 .cloned()
-                .collect(),
-            ..Default::default()
+                .collect();
+            cell_readings_of(&view.lock().expect("siteview lock"), sensors, now)
         })
     };
     {
@@ -4567,6 +4948,8 @@ fn build_router(
                 Err(format!("the declared out-of-band path is unusable: {why}"))
             }
         };
+        r = sshlogin::mount_ca(r, std::path::PathBuf::from("/etc/ssh"));
+        let ssh_logins = Arc::new(sshlogin::LoginKeys::default());
         let executor = Arc::new(orders::NodeOrders::new(
             node_id.clone(),
             Arc::clone(&agent),
@@ -4574,14 +4957,21 @@ fn build_router(
             out_of_band,
             Some(furcate_paths::state("killswitch.json")),
         )
-        .with_custody(Arc::clone(&key_custody)));
+        .with_custody(Arc::clone(&key_custody))
+        .with_ssh_logins(Arc::clone(&ssh_logins)));
         match furcate_api::orders::Desk::new(
             config,
             Some(furcate_paths::state("passkeys.json")),
             Some(furcate_paths::state("orders-desk.json")),
             executor,
         ) {
-            Ok(desk) => r = furcate_api::orders::mount(r, Arc::new(desk)),
+            Ok(desk) => {
+                let desk = Arc::new(desk);
+                // Passkey SSH logins are requested here and approved as orders;
+                // only the node holding the SSH CA takes them (see `covers`).
+                r = sshlogin::mount(r, Arc::clone(&desk), ssh_logins);
+                r = furcate_api::orders::mount(r, desk)
+            }
             Err(why) => eprintln!(
                 "furcated: WARNING the passkey roster could not be read, so this node takes no \
                  orders: {why}"
@@ -4651,9 +5041,80 @@ fn site_view_routes(
     })
 }
 
+/// What a cell is rolled up from: the site view's figures for each machine
+/// by node id, the sensors, and which node answers to which cell key or name.
+fn cell_readings_of(
+    view: &furcate_siteview::SiteView,
+    sensors: Vec<furcate_sense::registry::Sensor>,
+    now: u64,
+) -> furcate_topology::cell::Readings {
+    furcate_topology::cell::Readings {
+        machines: view.machine_readings(now),
+        aliases: view.machine_aliases(),
+        sensors,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cell names its head by the key it signed the link with; the site view
+    /// knows machines by node id. The head's own figures must still reach it.
+    #[test]
+    fn a_cell_head_named_by_key_is_read_by_its_node_id() {
+        use furcate_topology::cell::{roll_up, Cell, Member, Scale, SupplyState};
+        const KEY: &str = "p256:04aabbccddeeff";
+        let mut v = furcate_siteview::SiteView::new(Some("10.0.0.9:7616".into()), Vec::<String>::new());
+        v.readings.insert(
+            "10.0.0.9:7616".into(),
+            furcate_siteview::Reading {
+                at: 1_000,
+                reachable: true,
+                health: Some(json!({
+                    "node_id": "furcate:node:pi",
+                    "cell_key": KEY,
+                    "name": "pi",
+                    "power_w": 4.5,
+                    "supply": { "measured": true, "state": "ok", "age_secs": 2, "status": {} },
+                })),
+                workloads: None,
+                custody: None,
+            },
+        );
+        let member = |holder: &str, name: &str| Member {
+            holder: holder.into(),
+            name: name.into(),
+            endpoint: String::new(),
+            assurance: None,
+            until: 9_999,
+        };
+        let cell = |head: Member| Cell {
+            id: "home".into(),
+            scale: Scale::Home,
+            depth: 1,
+            head,
+            leaf_min_class: furcate_identity::leaf::DEFAULT_LEAF_FLOOR,
+            parent: String::new(),
+            edge_ai: vec![],
+            leaves: vec![],
+            managers: vec![],
+            cells: vec![],
+        };
+        let readings = cell_readings_of(&v, vec![], 1_010);
+        // By the key the head signs with, which is not the node id.
+        let up = roll_up(&cell(member(KEY, "head-of-home")), &readings, 1_010);
+        assert_eq!((up.machines, up.machines_up), (1, 1));
+        assert_eq!(up.head_supply, Some(SupplyState::Ok));
+        assert_eq!(up.power_w, Some(4.5));
+        // By the name it gives itself, when the record carries no known key.
+        let up = roll_up(&cell(member("p256:04other", "pi")), &readings, 1_010);
+        assert_eq!(up.machines_up, 1);
+        // A key nobody reports is still not measured, never a guess.
+        let up = roll_up(&cell(member("p256:04other", "stranger")), &readings, 1_010);
+        assert_eq!((up.machines_up, up.head_supply, up.power_w), (0, None, None));
+    }
 
     // Only the tests exercise the ladder directly; the agent reaches these
     // through `Ladder` and `ups::Reading`.
@@ -4672,23 +5133,6 @@ mod tests {
 
     /// An agent on a fresh chain, independent of whatever ledger happens to
     /// exist on the machine running the tests.
-    #[test]
-    fn registering_a_model_needs_the_operator() {
-        // It hashes any path the caller names as this daemon's user, sends
-        // every later /infer for that id to the endpoint the caller names, and
-        // persists both. An unsigned caller must not get as far as any of it.
-        let r = model_load_route(Router::new(), Arc::new(Mutex::new(agent())));
-        let res = r.dispatch(&Request {
-            method: "POST".into(),
-            path: "/models/load".into(),
-            body: json!({ "id": "m", "path": "/etc/hostname", "endpoint": "http://192.0.2.1:9" }),
-            raw_body: br#"{"id":"m","path":"/etc/hostname","endpoint":"http://192.0.2.1:9"}"#.to_vec(),
-            ..Default::default()
-        });
-        assert_eq!(res.status, 403, "{}", res.body);
-        assert!(r.guarded_paths().contains(&"POST /models/load".to_string()));
-    }
-
     #[test]
     fn an_ssh_request_is_staged_where_nobody_else_could_have_put_anything() {
         use std::os::unix::fs::PermissionsExt as _;

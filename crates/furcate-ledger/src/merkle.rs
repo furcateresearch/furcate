@@ -29,6 +29,12 @@ fn hash_node(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// The digest a leaf with this payload has in a tree, for a verifier that holds
+/// the payload and checks it against a proof's leaf.
+pub fn leaf_digest(data: &[u8]) -> [u8; 32] {
+    hash_leaf(data)
+}
+
 /// A binary Merkle tree over leaves held in insertion order.
 #[derive(Clone, Debug)]
 pub struct MerkleTree {

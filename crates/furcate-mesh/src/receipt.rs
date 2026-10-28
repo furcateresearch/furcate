@@ -12,7 +12,9 @@
 //! redundant execution, and those are recorded explicitly in
 //! [`VerificationLevel`] so a consumer is never left guessing.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{SigningKey, VerifyingKey};
+use furcate_identity::MessageSigner;
+use furcate_policy::delegation::CellKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -65,6 +67,12 @@ pub struct InferenceReceipt {
     pub chain_head: String,
     pub level: VerificationLevel,
     pub signature: Option<String>,
+    /// The key that signed, as cell links name keys: `ed25519:<hex>` for a
+    /// node key, `p256:<hex>` for a key the hardware holds, such as a Pi's
+    /// firmware-held OTP key. A verifier still checks it is the key it
+    /// expects for `node_id`; this says which one to check against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -116,6 +124,7 @@ impl InferenceReceipt {
             chain_head: chain_head.into(),
             level,
             signature: None,
+            signer: None,
         }
     }
 
@@ -137,22 +146,37 @@ impl InferenceReceipt {
         h.finalize().to_vec()
     }
 
-    pub fn sign(mut self, key: &SigningKey) -> Self {
-        let sig: Signature = key.sign(&self.payload());
-        self.signature = Some(hex::encode(sig.to_bytes()));
-        self
+    /// Sign with a node's Ed25519 key.
+    pub fn sign(self, key: &SigningKey) -> Self {
+        let signer = furcate_identity::Ed25519Signer(std::sync::Arc::new(key.clone()));
+        self.sign_with(&signer).expect("an Ed25519 key always signs")
     }
 
+    /// Sign with whatever holds the node's key: the node key, or a key the
+    /// hardware holds and signs with itself. The signature is checked against
+    /// the signer's own key before it is attached, so a receipt never carries
+    /// a signature that does not verify.
+    pub fn sign_with(mut self, signer: &dyn MessageSigner) -> Result<Self, String> {
+        let key = CellKey::of(signer)?;
+        let payload = self.payload();
+        let raw = signer.sign(&payload).map_err(|e| format!("signing the receipt: {e:#}"))?;
+        self.signature = Some(key.seal(&payload, &raw)?);
+        self.signer = Some(key.id());
+        Ok(self)
+    }
+
+    /// Verify under a node's Ed25519 key.
     pub fn verify(&self, key: &VerifyingKey) -> Result<(), ReceiptError> {
+        self.verify_by(&CellKey::Ed25519(*key))
+    }
+
+    /// Verify under the key the caller trusts for this node, whichever kind
+    /// it is.
+    pub fn verify_by(&self, key: &CellKey) -> Result<(), ReceiptError> {
         let Some(hexsig) = &self.signature else {
             return Err(ReceiptError::BadSignature);
         };
-        let bytes: [u8; 64] = hex::decode(hexsig)
-            .ok()
-            .and_then(|b| b.try_into().ok())
-            .ok_or(ReceiptError::BadSignature)?;
-        key.verify(&self.payload(), &Signature::from_bytes(&bytes))
-            .map_err(|_| ReceiptError::BadSignature)?;
+        key.verify_hex(&self.payload(), hexsig).map_err(|_| ReceiptError::BadSignature)?;
 
         if let VerificationLevel::Redundant { agreeing_nodes } = self.level {
             if agreeing_nodes < 2 {
@@ -262,6 +286,58 @@ mod tests {
             r.verify(&key().verifying_key()),
             Err(ReceiptError::BadSignature)
         );
+    }
+
+    #[test]
+    fn a_hardware_held_p256_key_signs_a_receipt_that_verifies() {
+        struct Firmware(p256::ecdsa::SigningKey);
+        impl MessageSigner for Firmware {
+            fn public_key(&self) -> anyhow::Result<furcate_identity::SignerKey> {
+                Ok(furcate_identity::SignerKey::P256(
+                    self.0.verifying_key().to_sec1_point(true).as_bytes().to_vec(),
+                ))
+            }
+            fn sign(&self, message: &[u8]) -> anyhow::Result<Vec<u8>> {
+                use p256::ecdsa::signature::Signer as _;
+                let sig: p256::ecdsa::Signature = self.0.sign(message);
+                Ok(sig.to_der().as_bytes().to_vec())
+            }
+        }
+        let fw = Firmware(p256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap());
+        let r = InferenceReceipt::new("m", "r", "furcate:node:pi", b"in", b"out", "p", "h", VerificationLevel::Bound)
+            .sign_with(&fw)
+            .unwrap();
+        let fw_key = CellKey::of(&fw).unwrap();
+        assert_eq!(r.signer.as_deref(), Some(fw_key.id().as_str()));
+        assert_eq!(r.verify_by(&fw_key), Ok(()));
+        // Not anyone else's, and not after the answer changes.
+        assert_eq!(r.verify(&key().verifying_key()), Err(ReceiptError::BadSignature));
+        let mut changed = r.clone();
+        changed.output_digest = digest(b"other");
+        assert_eq!(changed.verify_by(&fw_key), Err(ReceiptError::BadSignature));
+    }
+
+    #[test]
+    fn a_signer_that_signs_with_another_key_is_refused() {
+        struct Liar(p256::ecdsa::SigningKey, p256::ecdsa::SigningKey);
+        impl MessageSigner for Liar {
+            fn public_key(&self) -> anyhow::Result<furcate_identity::SignerKey> {
+                Ok(furcate_identity::SignerKey::P256(
+                    self.0.verifying_key().to_sec1_point(true).as_bytes().to_vec(),
+                ))
+            }
+            fn sign(&self, message: &[u8]) -> anyhow::Result<Vec<u8>> {
+                use p256::ecdsa::signature::Signer as _;
+                let sig: p256::ecdsa::Signature = self.1.sign(message);
+                Ok(sig.to_bytes().to_vec())
+            }
+        }
+        let liar = Liar(
+            p256::ecdsa::SigningKey::from_slice(&[1; 32]).unwrap(),
+            p256::ecdsa::SigningKey::from_slice(&[2; 32]).unwrap(),
+        );
+        let r = InferenceReceipt::new("m", "r", "n", b"i", b"o", "p", "h", VerificationLevel::Bound);
+        assert!(r.sign_with(&liar).is_err());
     }
 
     #[test]

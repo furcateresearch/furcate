@@ -41,6 +41,7 @@ host/gateway/build.sh            # -> host/gateway/fl-gateway.pyz (not committed
 | `--signer` | Key | When |
 |---|---|---|
 | `tpm:NAME` | a TPM key on this host, through `host/tpm/fl-tpm` (non-exportable, no persistent handle) | a gateway with a TPM |
+| `broker[:PATH[#KEY_ID]]` | the node's OTP device key through the Furcate OS signing broker (default `/run/furcate-os/fwcrypto.sock`, key 1); JSON lines `pubkey` and `sign` (`ecdsa-p256-sha256`, the broker hashes). The process must be in the socket's group. No fallback: an unreachable or refusing broker stops the program with the broker's reason | the Pi head |
 | `cmd:CMD` | any command that reads the message on stdin and prints a DER ECDSA P-256 signature (hex) over SHA-256 of it. The same command with `pub` in place of `sign` prints the public key | the Pi's OTP device key, once provisioned; or remote signing |
 
 **Until the Pi's OTP key exists**, the Pi signs through the controller's TPM key `fl-node`:
@@ -84,8 +85,29 @@ Release manifests are signed by the release threshold. The gateway only relays t
 
 `--leaf` takes the leaf id as INFO and the boot log show it: 32 hex digits, the first 16 bytes of SHA-256 of the leaf's public key. The full 64-hex digest is also accepted. Any other leaf is refused before the gateway signs anything.
 
+## The head on the Pi
+
+The long-running head keeps the leaf's session and takes requests on a local control socket:
+
+```
+python3 fl-gateway.pyz --link listen://<pi-wlan>:7781 --signer broker: \
+    --grant /etc/furcate-leaf/head.grant.json --leaf <leaf id> \
+    head --control /run/furcate-leaf-head/control.sock --every 30
+```
+
+- `--link`: the address and port in the leaf's operator-signed config (the leaf dials only that one).
+- `--grant`: `{"grant": hex, "sig": hex, ...}`, the operator-signed FLG1 grant for the Pi's broker key. The program stops if the grant names another key than the broker's.
+- `--leaf`: the enrolled leaf id; any other leaf is refused before anything is signed.
+- `--control`: created mode 0660 (the head's user and group). One JSON line in, one out: `{"op":"info"}`, `{"op":"infer","input_b64":...}`, `{"op":"ask","method":"GET","target":"/v1/models"}`, `{"op":"bye"}`. An optional `"grant"` object runs that request in its own session under another operator-signed grant for the same key (a narrower grant, for tests); the head's own grant is used again afterwards.
+- stdout: one JSON line per event (session opened or refused, INFO every `--every` seconds, each control request).
+
+Modules: the Python standard library and `cryptography`. `pyserial` is imported only for a serial link.
+
 ## Not done here
 
-- Not installed on the Pi.
-- The OTP signer wrapper waits for `furcate-os otp-provision` (chain step 3).
+- Not installed on the Pi by this repository; the Pi's own extension packages it.
 - On a Wi-Fi link the gateway's listening port must be reachable from the leaf's network. On the bench Pi (2026-10-12) there is no packet filter: no nft or iptables, and no netfilter modules loaded. So the only need is a process listening on the LAN at the controller port (7781). That listener waits on approval from the session that owns the Pi's system.
+
+## Verified readings at the head
+
+The head asks each connected leaf for its readings, verifies them, keeps them per leaf in a bounded buffer and answers the control-socket op `sense` with everything after a cursor. Several leaves, and the grants for them, come from `FL_LEAF` (comma-separated) and `FL_CONFIG`. `fl-gateway shim` re-verifies and emits one JSON line per reading. See `docs/pi-head-sense.md`.

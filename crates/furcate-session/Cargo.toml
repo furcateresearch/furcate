@@ -9,3 +9,13 @@ description = "What somebody did while they held authority, recorded so it can b
 [dependencies]
 serde.workspace = true
 furcate-ledger = { path = "../furcate-ledger" }
+furcate-authn = { path = "../furcate-authn" }
+furcate-paths = { path = "../furcate-paths" }
+serde_json.workspace = true
+libc.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+furcate-authn = { path = "../furcate-authn", features = ["test-authenticator"] }
+ed25519-dalek.workspace = true
+p256.workspace = true

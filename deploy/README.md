@@ -54,6 +54,10 @@ tree.
   express, ownership of `/run/furcate`, and ownership of the sealed key
   directories, repaired on every boot.
 
+## Small processing node
+
+- `small-node/`: the unit, configuration templates and the build, deploy and verify scripts for `furcate-small`, the Pi-class rung of the sensing cascade. The unit is inert without `/etc/furcate/small-node.env` and is not in the release manifest; `small-node/README.md` is the procedure.
+
 ## Overlay
 
 - `furcate-wg.sh`: the privileged helper described above.

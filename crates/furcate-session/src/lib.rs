@@ -53,6 +53,8 @@
 //! where confidence matters most. [`Session::broken`] latches, and
 //! [`Session::must_stop`] says so.
 
+pub mod ssh;
+
 use furcate_ledger::{Chain, ChainError, OpKind};
 use serde::{Deserialize, Serialize};
 

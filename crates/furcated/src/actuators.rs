@@ -475,7 +475,13 @@ mod tests {
     fn the_helper_resumes_exactly_what_its_halts_stopped() {
         use std::os::unix::fs::PermissionsExt as _;
         let d = scratch("helper");
-        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../deploy/furcate-order-actuator.sh");
+        // Found by walking up from the crate, not by counting `..`: the crate sits one
+        // level deeper here than in the published tree.
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .map(|a| a.join("deploy/furcate-order-actuator.sh"))
+            .find(|p| p.is_file())
+            .expect("deploy/furcate-order-actuator.sh above the crate");
         let text = std::fs::read_to_string(&script).unwrap();
         // The functions only: everything from the start-up re-isolation on is
         // the service loop.

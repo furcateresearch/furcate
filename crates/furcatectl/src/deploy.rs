@@ -1123,8 +1123,27 @@ fn state_writable_in_unit(unit: &str, state: &Path) -> Option<bool> {
 /// Reported, not rolled back: every release of a site runs under the same unit
 /// and the same grant, so going back to the previous release would change
 /// nothing about this, and the site is serving.
+/// The probe, asked again for a few seconds while it says no.
+///
+/// Right after a start or a restart the unit's main process can still be
+/// setting up, and a state directory the service could write was reported
+/// refused on a site whose uploads were working. A real refusal says no every
+/// time; a race says yes on a later ask. `None` (nothing to ask) is returned
+/// at once.
+fn state_writable_settled(unit: &str, state: &Path) -> Option<bool> {
+    let mut answer = state_writable_in_unit(unit, state);
+    for _ in 0..8 {
+        if answer != Some(false) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        answer = state_writable_in_unit(unit, state);
+    }
+    answer
+}
+
 fn report_state_writable(unit: &str, state: &Path) {
-    match state_writable_in_unit(unit, state) {
+    match state_writable_settled(unit, state) {
         Some(true) => println!("state     writable from inside the unit's sandbox"),
         Some(false) => {
             // The commonest cause is the unit on disk not being the one running:
@@ -1134,7 +1153,7 @@ fn report_state_writable(unit: &str, state: &Path) {
             println!("state     not writable yet; reloading the unit and asking once more");
             systemctl(&["daemon-reload"]);
             systemctl(&["restart", unit]);
-            match state_writable_in_unit(unit, state) {
+            match state_writable_settled(unit, state) {
                 Some(true) => println!("state     writable from inside the unit's sandbox"),
                 _ => eprintln!(
                     "state     NOT WRITABLE from inside {unit}: every write to FURCATE_STATE_DIR will fail.\n\
@@ -1336,6 +1355,20 @@ fn withdraw_unit(
 /// because a file could not be read is how authority an operator removed gets
 /// quietly restored.
 fn policy() -> Result<furcate_policy::PolicySet> {
+    // The site's signed overlay policy first, as the node agent reads it, and
+    // refused rather than skipped when it no longer verifies.
+    if std::env::var("FURCATE_OVERLAY_POLICY").unwrap_or_default().is_empty() {
+        let signed = furcate_paths::state("overlay-policy.signed.json").display().to_string();
+        if let Some(doc) = furcate_net::sitepolicy::read(&signed).map_err(|e| anyhow::anyhow!(e))? {
+            let anchors = furcate_net::lock::Anchors::read("/etc/furcate/overlay-anchors.json")
+                .map_err(|e| anyhow::anyhow!(e))?;
+            let set = furcate_net::sitepolicy::verify(&anchors, &doc).map_err(|e| {
+                anyhow::anyhow!("{signed}: {e}\nRefusing to deploy without knowing what is permitted")
+            })?;
+            println!("policy    site overlay policy v{} ({} rules)", doc.version, set.policies.len());
+            return Ok(set);
+        }
+    }
     let candidates = furcate_policy::file::default_candidates(
         &furcate_paths::config("overlay-policy.yaml")
             .display()
@@ -1481,6 +1514,7 @@ pub fn deploy(src: &str, name: &str, domains: &str, principal: &str) -> Result<(
     // statements is a mistake, and guessing which would publish or hide a
     // service its operator meant the other way.
     let local = site_local(Path::new(src))?;
+    let health_secs = site_health_seconds(Path::new(src))?;
     if local && !domains.is_empty() {
         bail!(
             "furcate-deploy.json says `local`, but domains were given: a local site answers \
@@ -1824,8 +1858,8 @@ pub fn deploy(src: &str, name: &str, domains: &str, principal: &str) -> Result<(
         systemctl(&["restart", &unit]);
 
         // The gate. Not "did systemd fork something" but "does the port answer".
-        if !health_gate(port, 90, &unit) {
-            eprintln!("health    {port} did not serve HTTP within 90s — rolling back");
+        if !health_gate(port, health_secs, &unit) {
+            eprintln!("health    {port} did not serve HTTP within {health_secs}s — rolling back");
             match &previous {
                 Some(prev) => {
                     // Put the link back and restart, so the site keeps serving
@@ -1848,7 +1882,7 @@ pub fn deploy(src: &str, name: &str, domains: &str, principal: &str) -> Result<(
                 }
             }
             bail!(
-                "{name} did not answer on 127.0.0.1:{port} within 90s. \n\
+                "{name} did not answer on 127.0.0.1:{port} within {health_secs}s. \n\
                  The release is on disk and the unit exists; inspect with:\n  \
                  journalctl -u furcate-app-{name} -n 50"
             );
@@ -2130,6 +2164,28 @@ fn site_memory(src: &Path) -> Result<Option<release::MemoryBound>> {
     })?;
     m.check().map_err(|e| anyhow::anyhow!("{e} (in {})", p.display()))?;
     Ok(Some(m))
+}
+
+/// How long a deploy waits for a new release to answer before rolling back, unless the site says otherwise.
+const DEFAULT_HEALTH_SECS: u64 = 90;
+
+/// How long a site needs to answer after it starts, from `health_seconds` in `furcate-deploy.json` (10 to 1800; 90 when
+/// absent). A service that loads a model or warms a cache before it can serve declares its own startup time instead of
+/// being rolled back for being slow, and the gate still holds it to that number.
+fn site_health_seconds(src: &Path) -> Result<u64> {
+    let p = src.join("furcate-deploy.json");
+    let Ok(text) = std::fs::read_to_string(&p) else {
+        return Ok(DEFAULT_HEALTH_SECS);
+    };
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not valid JSON", p.display()))?;
+    match v.get("health_seconds") {
+        None => Ok(DEFAULT_HEALTH_SECS),
+        Some(n) => match n.as_u64() {
+            Some(s) if (10..=1800).contains(&s) => Ok(s),
+            _ => bail!("`health_seconds` in {} must be a whole number of seconds from 10 to 1800", p.display()),
+        },
+    }
 }
 
 /// Whether a source tree declares itself `local` in `furcate-deploy.json`.
@@ -2654,8 +2710,10 @@ pub fn rollback(name: &str, release_id: &str, principal: &str) -> Result<()> {
         Some(port) => {
             let unit = format!("furcate-app-{name}.service");
             systemctl(&["restart", &unit]);
-            if !health_gate(port, 90, &unit) {
-                eprintln!("health    {port} did not serve HTTP within 90s — undoing the rollback");
+            // the release rolled back to says how long it takes to start, as it did when it was deployed
+            let health_secs = site_health_seconds(&link).unwrap_or(DEFAULT_HEALTH_SECS);
+            if !health_gate(port, health_secs, &unit) {
+                eprintln!("health    {port} did not serve HTTP within {health_secs}s — undoing the rollback");
                 if let Some(prev) = &previous {
                     let _ = point_current(&link, prev);
                     systemctl(&["restart", &unit]);
@@ -3192,39 +3250,12 @@ pub fn verify_cmd(name: &str, authority: &str) -> Result<()> {
     // that and reported every correctly-served site as broken — a check that
     // cannot pass is worse than no check, because it is read as a real failure.
     //
-    // `--resolve` rather than DNS on purpose: this asks whether *this machine's*
-    // edge serves what was placed. Whether the name points here is a separate
-    // question, and answering both at once makes neither answer conclusive.
-    let mut args: Vec<String> = vec![
-        "-s".into(),
-        "-o".into(),
-        "-".into(),
-        "-w".into(),
-        "\n%{http_code}".into(),
-        "--max-time".into(),
-        "10".into(),
-    ];
-    let url = if tls {
-        args.push("--resolve".into());
-        args.push(format!("{authority}:{port}:127.0.0.1"));
-        format!("https://{authority}:{port}/")
-    } else {
-        args.push("-H".into());
-        args.push(format!("Host: {authority}"));
-        format!("http://127.0.0.1:{port}/")
-    };
-    args.push(url);
-    let out = Command::new("curl")
-        .args(&args)
-        .output()
-        .context("running curl")?;
-    let body = String::from_utf8_lossy(&out.stdout);
-    let (body, status) = body.rsplit_once('\n').unwrap_or(("", "0"));
-    let fetched = verify::Fetched {
-        status: status.trim().parse().unwrap_or(0),
-        body: body.as_bytes().to_vec(),
-    };
-
+    // Pinned to 127.0.0.1 rather than resolved through DNS, on purpose: this
+    // asks whether *this machine's* edge serves what was placed. Whether the
+    // name points here is a separate question, and answering both at once
+    // makes neither answer conclusive. In process (ureq over rustls), because
+    // the node's base has no curl.
+    let fetched = fetch_from_local_edge(authority, &port, tls);
     let (ok, description) = match &placed {
         Some(bytes) => {
             let verdict = verify::check(&fetched, bytes);
@@ -3655,6 +3686,38 @@ pub fn show_env(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// GET `/` for `authority` from the edge on this machine. On TLS the name goes
+/// in SNI and the certificate is verified against it, with the connection
+/// pinned to 127.0.0.1; on plain HTTP the name goes in `Host:`. An edge that
+/// cannot be reached is status 0 with no body, which the checks read as a
+/// failure.
+fn fetch_from_local_edge(authority: &str, port: &str, tls: bool) -> verify::Fetched {
+    let port_n: u16 = port.parse().unwrap_or(0);
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(10))
+        .resolver(move |_: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+            Ok(vec![std::net::SocketAddr::from(([127, 0, 0, 1], port_n))])
+        })
+        .build();
+    let req = if tls {
+        agent.get(&format!("https://{authority}:{port}/"))
+    } else {
+        agent.get(&format!("http://127.0.0.1:{port}/")).set("Host", authority)
+    };
+    let resp = match req.call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(ureq::Error::Transport(_)) => {
+            return verify::Fetched { status: 0, body: Vec::new() };
+        }
+    };
+    let status = resp.status();
+    let mut body = Vec::new();
+    let _ = std::io::Read::read_to_end(&mut resp.into_reader(), &mut body);
+    verify::Fetched { status, body }
+}
+
 #[cfg(test)]
 mod upstream_tests {
     use super::*;
@@ -3730,6 +3793,20 @@ mod upstream_tests {
         std::fs::write(src.join("furcate-deploy.json"), r#"{"start":["./bin/x"]}"#).unwrap();
         assert!(!site_local(&src).unwrap());
         std::fs::remove_dir_all(&src).ok();
+    }
+
+    #[test]
+    fn a_site_declares_how_long_it_takes_to_start() {
+        let src = std::env::temp_dir().join(format!("furcate-health-{}", std::process::id()));
+        std::fs::create_dir_all(&src).unwrap();
+        assert_eq!(site_health_seconds(&src).unwrap(), DEFAULT_HEALTH_SECS);
+        std::fs::write(src.join("furcate-deploy.json"), r#"{"local":true,"health_seconds":600}"#).unwrap();
+        assert_eq!(site_health_seconds(&src).unwrap(), 600);
+        for bad in [r#"{"health_seconds":5}"#, r#"{"health_seconds":4000}"#, r#"{"health_seconds":"600"}"#, r#"{"health_seconds":1.5}"#] {
+            std::fs::write(src.join("furcate-deploy.json"), bad).unwrap();
+            assert!(site_health_seconds(&src).is_err(), "{bad}");
+        }
+        std::fs::remove_dir_all(&src).unwrap();
     }
 
     #[test]
@@ -4511,4 +4588,55 @@ mod launcher_tests {
         assert!(l.contains("  ...(token ? { token } : {}),\n});\n"));
         assert!(!l.contains("{{") && !l.contains("}}"), "a format escape leaked into the file");
     }
+}
+
+
+#[cfg(test)]
+mod local_edge_fetch {
+    use super::fetch_from_local_edge;
+    use std::io::{Read, Write};
+
+    /// One plain-HTTP answer from a listener on 127.0.0.1, returning the
+    /// request it saw so the Host header can be checked.
+    fn serve_once(reply: &'static str) -> (u16, std::thread::JoinHandle<String>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut c, _) = l.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let n = c.read(&mut buf).unwrap();
+            c.write_all(reply.as_bytes()).unwrap();
+            String::from_utf8_lossy(&buf[..n]).into_owned()
+        });
+        (port, h)
+    }
+
+    #[test]
+    fn plain_http_sends_the_name_in_host_and_reads_the_body() {
+        let (port, h) = serve_once("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello");
+        let f = fetch_from_local_edge("site.example", &port.to_string(), false);
+        assert_eq!(f.status, 200);
+        assert_eq!(f.body, b"hello");
+        let req = h.join().unwrap().to_ascii_lowercase();
+        assert!(req.contains("host: site.example"), "{req}");
+    }
+
+    #[test]
+    fn an_error_status_is_reported_with_its_body() {
+        let (port, h) = serve_once("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad");
+        let f = fetch_from_local_edge("site.example", &port.to_string(), false);
+        assert_eq!((f.status, f.body.as_slice()), (502, &b"bad"[..]));
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn an_edge_that_is_not_listening_is_status_zero() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let f = fetch_from_local_edge("site.example", &port.to_string(), false);
+        assert_eq!((f.status, f.body.len()), (0, 0));
+    }
+
+
 }

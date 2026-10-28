@@ -2,11 +2,14 @@
 //
 // Boot order:
 //   1. read the SRAM start-up fingerprint before anything else uses memory
+//      (classic ESP32 only; the ESP32-S3 derives from eFuse values instead)
 //   2. derive the leaf identity from it (no identity = no communication)
 //   3. load pinned trust anchors, the model server and its active model
 //   4. confirm or roll back a freshly installed firmware image
 //   5. start Wi-Fi when the operator has configured it (station, dial-out only)
-//   6. run the channel: the leaf initiates, and only operator-granted nodes
+//   6. set the clock by SNTP once the station has an address (gateway requests
+//      need it)
+//   7. run the channel: the leaf initiates, and only operator-granted nodes
 //      get a session
 
 #include <string.h>
@@ -14,12 +17,18 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "fl_crypto.h"
+#include "fl_gateway.h"
 #include "fl_identity.h"
 #include "fl_link.h"
 #include "fl_models.h"
 #include "fl_net.h"
+#if CONFIG_IDF_TARGET_ESP32S3
+#include "fl_nicla.h"
+#endif
 #include "fl_ota.h"
 #include "fl_puf.h"
+#include "fl_sensors.h"
+#include "sdkconfig.h"
 #include "fl_trust.h"
 #include "nvs_flash.h"
 
@@ -36,6 +45,8 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
         fl_ota_info(r);
         fl_w_str(r, 70, fl_link_transport());
         fl_net_info(r);
+        fl_gateway_info(r);
+        fl_sensors_info(r);
         return FL_MSG_INFO;
     case FL_MSG_CONFIG:
         return fl_net_config(tlv, n, r);
@@ -54,6 +65,10 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
         return fl_models_rollback(r);
     case FL_MSG_INFER:
         return fl_models_infer(tlv, n, r);
+    case FL_MSG_SENSE_REQ:
+        return fl_sensors_read(r);
+    case FL_MSG_GATEWAY_ASK:
+        return fl_gateway_ask(tlv, n, r);
     case FL_MSG_OTA_OFFER:
         return fl_ota_offer(tlv, n, r);
     case FL_MSG_OTA_CHUNK:
@@ -74,7 +89,9 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
 }
 
 void app_main(void) {
+#if CONFIG_IDF_TARGET_ESP32
     fl_puf_capture();  // must run first; may deep-sleep to power SRAM down
+#endif
 
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -90,10 +107,17 @@ void app_main(void) {
     // boot and roll back), so an image that must enroll is judged on its
     // other checks and enrolls after confirmation. An enrolled leaf whose
     // fingerprint does not reconstruct fails the health check.
+#if CONFIG_IDF_TARGET_ESP32
     bool enrolled = fl_puf_enrolled();
+#else
+    bool enrolled = true;  // nothing to enrol: the identity comes from eFuse values
+#endif
     bool id_ok = enrolled && fl_identity_init() == ESP_OK;
     fl_trust_init();
     fl_net_init();  // before the model arena takes the largest free block
+#if CONFIG_IDF_TARGET_ESP32S3
+    fl_nicla_ble_start();  // BLE central for the sensing module; the model arena takes what is left
+#endif
     bool models_ok = fl_models_init() == ESP_OK;
 
     bool healthy = (enrolled ? id_ok : true) && models_ok;
@@ -105,6 +129,11 @@ void app_main(void) {
     if (!enrolled) {
         ESP_LOGW(TAG, "no fingerprint enrollment for the fixed region; enrolling now");
         id_ok = fl_identity_init() == ESP_OK;
+    }
+    fl_sensors_init();
+    if (id_ok) {
+        ESP_LOGI(TAG, "identity %s, assurance %s, transport serial, models %s", fl_identity_id_hex(),
+                 fl_identity_assurance(), models_ok ? "ready" : "unavailable");
     }
     ESP_LOGI(TAG, "free internal heap %u bytes", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
 

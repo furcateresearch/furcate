@@ -330,6 +330,11 @@ fn reenrol_head(f: &BTreeMap<String, String>, anchor: &str, until: Option<u64>, 
     }
     let scale = a.own.scale.context("the anchor's link names no scale")?;
     let until = until.unwrap_or(a.own.not_after);
+    // Keeping the old expiry is only right while it is still ahead: re-signing a link that has already run
+    // out would hand the gateway an anchor that is dead on arrival. Ask for a new lifetime instead.
+    if until <= now {
+        bail!("the anchor's link ran out at {until} (now {now}); re-enrol with a new lifetime (--ttl) to give it one");
+    }
     let next = enrol_once(&f2, &key, &a.own.holder, &a.own.scope, scale, until, &controller)?;
     write_anchor(f.get("out").map(String::as_str).unwrap_or(anchor), &next)
 }
@@ -419,10 +424,97 @@ pub(crate) fn local_tree(files: &[std::path::PathBuf], operator_pub: &Path, anch
 }
 
 /// `furcatectl cell ...`
+/// The domain an operator signs a list of receipt keys under.
+const RECEIPT_KEYS_DOMAIN: &[u8] = b"furcate-receipt-keys-v1";
+
+/// What the operator signs: the domain, a zero byte, and the payload as
+/// canonical JSON (keys sorted, no whitespace).
+fn receipt_keys_message(payload: &serde_json::Value) -> Vec<u8> {
+    let mut m = RECEIPT_KEYS_DOMAIN.to_vec();
+    m.push(0);
+    m.extend(serde_json::to_vec(payload).expect("JSON"));
+    m
+}
+
+/// Each node's receipt key, read from the node itself, as one list the operator
+/// signs. A verifier that settles or checks receipts builds its allowlist from
+/// this, never from the key a receipt names. Run again when a node's key
+/// changes (a lost seal, a re-enrolment): the newest list is the one to use.
+fn receipt_keys(endpoints: &[&str], key: &SigningKey, ttl: u64, now: u64) -> Result<serde_json::Value> {
+    let mut nodes = Vec::new();
+    for ep in endpoints {
+        let id = furcate_api::get_json(ep, "/identity", 5_000).with_context(|| format!("{ep}: /identity"))?;
+        let rk = furcate_api::get_json(ep, "/receipt-key", 5_000).with_context(|| format!("{ep}: /receipt-key"))?;
+        let node_id = id.get("node_id").and_then(|v| v.as_str()).with_context(|| format!("{ep} reports no node id"))?;
+        let Some(k) = rk.get("key").and_then(|v| v.as_str()) else {
+            bail!("{ep} ({node_id}) has no key to sign receipts with; it is left out by refusing the whole list");
+        };
+        nodes.push(serde_json::json!({
+            "node_id": node_id,
+            "endpoint": ep,
+            "key_id": key_id(k)?,
+            "held_by": rk.get("held_by").cloned().unwrap_or(serde_json::Value::Null),
+            // soft, device, tpm, se...: a verifier may accept only hardware-held keys
+            "assurance": id.get("assurance").cloned().unwrap_or(serde_json::Value::Null),
+            "endorsed": id.get("endorsed").cloned().unwrap_or(serde_json::Value::Null),
+        }));
+    }
+    let payload = serde_json::json!({
+        "kind": "furcate-receipt-keys-v1",
+        "issued_at": now,
+        "not_after": now + ttl,
+        "nodes": nodes,
+    });
+    use ed25519_dalek::Signer as _;
+    let sig = key.sign(&receipt_keys_message(&payload));
+    Ok(serde_json::json!({
+        "payload": payload,
+        "operator": ed25519_id(&key.verifying_key()),
+        "signature": hex::encode(sig.to_bytes()),
+    }))
+}
+
+/// Check a list against the operator key the verifier already holds, and its term.
+fn verify_receipt_keys(file: &serde_json::Value, operator: &str, now: u64) -> Result<usize> {
+    if file.get("operator").and_then(|v| v.as_str()) != Some(operator) {
+        bail!("the list is signed by {}, not {operator}", file.get("operator").and_then(|v| v.as_str()).unwrap_or("(none)"));
+    }
+    let payload = file.get("payload").context("no payload")?;
+    let sig = file.get("signature").and_then(|v| v.as_str()).context("no signature")?;
+    CellKey::parse(operator)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+        .verify_hex(&receipt_keys_message(payload), sig)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let not_after = payload.get("not_after").and_then(|v| v.as_u64()).context("no not_after")?;
+    if now > not_after {
+        bail!("the list expired at {not_after}");
+    }
+    Ok(payload.get("nodes").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0))
+}
+
 pub fn run(args: &[&str]) -> Result<()> {
     let (verb, rest) = args.split_first().context(USAGE)?;
     let now = now_s();
     match *verb {
+        "receipt-keys" => {
+            let f = flags(rest, &["key", "endpoint", "ttl", "out"])?;
+            let endpoints: Vec<&str> = need(&f, "endpoint")?.split(',').filter(|e| !e.is_empty()).collect();
+            let ttl = parse_ttl(need(&f, "ttl")?)?;
+            let out = f.get("out").map(String::as_str).unwrap_or("receipt-keys.json");
+            let key = sealed_operator_key(&operator_dir(&f)?)?;
+            let list = receipt_keys(&endpoints, &key, ttl, now)?;
+            drop(key);
+            std::fs::write(out, serde_json::to_string_pretty(&list)? + "\n")?;
+            println!("{out}: {} nodes, signed by {}, until {}", endpoints.len(), list["operator"].as_str().unwrap_or(""), now + ttl);
+            Ok(())
+        }
+        "receipt-keys-verify" => {
+            let f = flags(rest, &["file", "operator"])?;
+            let file: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(need(&f, "file")?)?)?;
+            let n = verify_receipt_keys(&file, &key_id(need(&f, "operator")?)?, now)?;
+            println!("good: {n} nodes, signed by {}", need(&f, "operator")?);
+            Ok(())
+        }
         "controller-link" => {
             let f = flags(rest, &["key", "site", "controller", "endpoint", "scale", "ttl", "out", "name", "operator-pub"])?;
             if f.contains_key("scale") {
@@ -672,7 +764,29 @@ const USAGE: &str = "usage:
   furcatectl cell revoke --link <digest|key> --reason <text> [--file cells.json] [--ledger addr]
   furcatectl cell show [--scope site|cell:<path>] [--cells file] [--anchor file]
   furcatectl cell standing --node <addr:port> [--key <sealed dir>]
+  furcatectl cell receipt-keys --endpoint <addr:port>[,<addr:port>...] --ttl <dur> [--out receipt-keys.json] [--key <sealed dir>]
+  furcatectl cell receipt-keys-verify --file <receipt-keys.json> --operator <ed25519:hex>
   the operator key is the sealed directory in --key or FURCATE_OPERATOR_KEY";
+
+#[cfg(test)]
+mod receipt_keys_tests {
+    use super::*;
+
+    #[test]
+    fn a_signed_list_verifies_and_a_changed_one_does_not() {
+        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let op = ed25519_id(&key.verifying_key());
+        let payload = serde_json::json!({ "kind": "furcate-receipt-keys-v1", "issued_at": 10, "not_after": 100,
+            "nodes": [{ "node_id": "n1", "endpoint": "a:1", "key_id": "ed25519:00", "held_by": "node key" }] });
+        use ed25519_dalek::Signer as _;
+        let mut file = serde_json::json!({ "payload": payload, "operator": op,
+            "signature": hex::encode(key.sign(&receipt_keys_message(&payload)).to_bytes()) });
+        assert_eq!(verify_receipt_keys(&file, &op, 50).unwrap(), 1);
+        assert!(verify_receipt_keys(&file, &op, 101).is_err());
+        file["payload"]["nodes"][0]["key_id"] = serde_json::json!("ed25519:11");
+        assert!(verify_receipt_keys(&file, &op, 50).is_err());
+    }
+}
 
 #[cfg(test)]
 mod tests {

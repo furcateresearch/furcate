@@ -168,6 +168,7 @@ mod tests {
             chain_head: "head".into(),
             level: VerificationLevel::Bound,
             signature: None,
+            signer: None,
         }
     }
 

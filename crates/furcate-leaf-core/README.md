@@ -4,11 +4,12 @@ The core of the leaf firmware: the logic a microcontroller runs to attach to a p
 
 ## Role in Furcate
 
-Used by `furcate-leaf` (the host-side simulator) and by the leaf firmware, which is built from a separate tree. The parent side of the protocol is in `furcate-sense`.
+Supported leaf boards are listed in `docs/leaf-devices/`. Used by `furcate-leaf` (the host-side simulator) and by the leaf firmware, which is built from a separate tree. The parent side of the protocol is in `furcate-sense`.
 
 ## Public API
 
 - `LeafState`: sequence counter and payload construction (`next_seq`, `payload`).
+- `LeafState::bound_payload`: the signed payload that also binds the hash of the model active when a reading was taken.
 - `Sample`, `Batch` and `MAX_BATCH`: bounded batching that drops the oldest sample when full.
 
 ## Build and test

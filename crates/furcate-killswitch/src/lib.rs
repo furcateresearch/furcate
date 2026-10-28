@@ -377,6 +377,11 @@ impl KillSwitch {
                     order.action.as_str()
                 )))
             }
+            Action::Login => {
+                return Err(KillError::NotAKillOrder(
+                    "`login` certifies an SSH key, not what a machine does".into(),
+                ))
+            }
             Action::SetCustody => {
                 return Err(KillError::NotAKillOrder(
                     "`set_custody` changes the site's custody policy, not what a machine does"
@@ -393,6 +398,9 @@ impl KillSwitch {
             }
             Target::Custody { .. } => {
                 return Err(KillError::NotAKillOrder("the target is a custody change".into()))
+            }
+            Target::Login { .. } => {
+                return Err(KillError::NotAKillOrder("the target is a login".into()))
             }
         };
         if mode.needs_out_of_band() && !self.out_of_band_available {

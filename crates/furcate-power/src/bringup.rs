@@ -128,6 +128,34 @@ impl BringUp {
         order
     }
 
+    /// The order to stop the units, dependents before what they depend on:
+    /// the reverse of the order they would start in with every gate open.
+    /// Gates other than another unit being healthy are taken as open, because
+    /// shutting down is not waiting for anything to be ready.
+    pub fn halt_order(&self) -> Vec<String> {
+        let mut order: Vec<String> = Vec::new();
+        loop {
+            let next: Vec<String> = self
+                .units
+                .iter()
+                .filter(|u| !order.contains(&u.name))
+                .filter(|u| {
+                    u.gates.iter().all(|g| match g {
+                        Gate::UnitHealthy(n) => order.contains(n),
+                        _ => true,
+                    })
+                })
+                .map(|u| u.name.clone())
+                .collect();
+            if next.is_empty() {
+                break;
+            }
+            order.extend(next);
+        }
+        order.reverse();
+        order
+    }
+
     /// Units still waiting, with the gates they are waiting on.
     pub fn blocked(&self) -> Vec<(String, Vec<Gate>)> {
         self.units
@@ -239,5 +267,18 @@ mod tests {
         b.settle(0);
         assert_eq!(b.settle(0), Vec::<String>::new());
         assert_eq!(b.started().len(), 3);
+    }
+
+    #[test]
+    fn units_halt_in_the_reverse_of_the_order_they_start() {
+        let b = BringUp::new(
+            vec![
+                Unit { name: "reporting".into(), gates: vec![Gate::UnitHealthy("api".into())], timeout: 1 },
+                Unit { name: "api".into(), gates: vec![Gate::UnitHealthy("root".into())], timeout: 1 },
+                Unit { name: "root".into(), gates: vec![], timeout: 1 },
+            ],
+            0,
+        );
+        assert_eq!(b.halt_order(), vec!["reporting", "api", "root"]);
     }
 }

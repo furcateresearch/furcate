@@ -1,0 +1,39 @@
+[Unit]
+Description=Furcate model router (every local model, loopback only)
+Documentation=https://github.com/furcateresearch/furcate
+# Started by the gateway (Requires=), never on its own. Inert until
+# `furcatectl model gateway` has written /etc/furcate/model-gateway.env, which
+# is where the device, context size, threads and offload are stated: the CPU is
+# an operator's choice, never a default, so a node that has not chosen runs
+# nothing. The credential is minted by the same command.
+ConditionPathExists=/etc/furcate/model-gateway.env
+ConditionPathExists=/var/lib/furcate/models/gateway.token
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/furcate/model-gateway.env
+Environment=LD_LIBRARY_PATH=/usr/lib/furcate/runtimes/llama
+# Router mode. The runtime starts a child per model on demand, so the binary
+# must be able to execute itself, which is why this unit is not locked down as
+# hard as a single-model one. Loopback only, whatever the gateway binds.
+ExecStart=/usr/lib/furcate/runtimes/llama/llama-server --models-dir /var/lib/furcate/models --models-max ${FURCATE_MODEL_MAX} \
+ --host 127.0.0.1 --port 8751 --ctx-size ${FURCATE_MODEL_CONTEXT} --threads ${FURCATE_MODEL_THREADS} \
+ --n-gpu-layers ${FURCATE_MODEL_GPU_LAYERS} --reasoning ${FURCATE_MODEL_REASONING} --jinja --api-key-file /var/lib/furcate/models/gateway.token
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=600
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# Root, because the loopback credential is root:root 0600 and the router reads
+# it; nothing else about it needs privilege.
+NoNewPrivileges=true
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/var/lib/furcate/models
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+DeviceAllow=/dev/dri rw
+DeviceAllow=char-nvidia rw
+SupplementaryGroups=video render

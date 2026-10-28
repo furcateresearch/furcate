@@ -114,6 +114,25 @@ impl Anchors {
     /// Every anchor must parse. A file with one bad entry is a file somebody
     /// edited by hand and got wrong, and silently trusting the rest of it is
     /// how a set ends up smaller than the operator believes.
+    /// The key an anchor id names, for a verifier of another signed thing.
+    pub fn key(&self, key_id: &str) -> Option<&CellKey> {
+        self.keys.get(key_id)
+    }
+
+    /// Read the anchors file at `path`. Absent is an unlocked overlay;
+    /// present and unreadable or malformed is an error, never "unlocked".
+    pub fn read(path: &str) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::new()),
+            Err(e) => Err(format!("{path} cannot be read ({e}); refusing to fall back to unlocked")),
+            Ok(text) => {
+                let v: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| format!("{path} is not valid JSON ({e})"))?;
+                Self::from_json(&v).map_err(|e| e.to_string())
+            }
+        }
+    }
+
     pub fn from_json(v: &serde_json::Value) -> Result<Self, Refusal> {
         let list: Vec<Anchor> = serde_json::from_value(v.clone())
             .map_err(|e| Refusal::MalformedAnchor(e.to_string()))?;

@@ -14,5 +14,9 @@ serde.workspace = true
 serde_json.workspace = true
 ed25519-dalek.workspace = true
 furcate-identity = { path = "../furcate-identity" }
+furcate-policy = { path = "../furcate-policy" }
 furcate-topology = { path = "../furcate-topology" }
 furcate-ledger = { path = "../furcate-ledger" }
+
+[dev-dependencies]
+p256.workspace = true

@@ -21,6 +21,8 @@ uint8_t fl_models_rollback(fl_wbuf_t *r);
 uint8_t fl_models_infer(const uint8_t *tlv, size_t n, fl_wbuf_t *r);
 void fl_models_info(fl_wbuf_t *w);
 bool fl_models_ok(void);
+// SHA-256 of the active model's artifact; 32 zero bytes (and false) when none is active.
+bool fl_models_active_sha(uint8_t out[32]);
 
 #ifdef __cplusplus
 }

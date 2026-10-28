@@ -431,15 +431,21 @@ where
 /// A gossiped hint replaces the coordinator's for the same node only when it
 /// carries a later lease, which is the case this exists for: a node that
 /// rebooted with a new key while the coordinator was down, or before the
-/// coordinator caught up. Gossip without a lease adds nothing; the caller
-/// has already refused it.
+/// coordinator caught up. The same lease from gossip also replaces it when the
+/// gossiped hint was made later: the node moved to another underlay address
+/// and told its peers before the coordinator heard. Gossip without a lease
+/// adds nothing; the caller has already refused it.
 pub fn merge(coordinator: &[Hint], gossip: &[Hint]) -> Vec<Hint> {
     let mut out: Vec<Hint> = coordinator.to_vec();
     for g in gossip {
         let Some(gl) = &g.lease else { continue };
         match out.iter_mut().find(|h| h.node_id == g.node_id) {
             Some(h) => {
-                if h.lease.as_ref().is_none_or(|l| l.not_after < gl.not_after) {
+                let same_lease = h.public_key == g.public_key
+                    && h.lease.as_ref().is_some_and(|l| l.not_after == gl.not_after);
+                if h.lease.as_ref().is_none_or(|l| l.not_after < gl.not_after)
+                    || (same_lease && g.seen_at > h.seen_at)
+                {
                     *h = g.clone();
                 }
             }
@@ -514,6 +520,21 @@ mod tests {
         // An older lease does not roll a key back.
         let m = merge(&[leased("pi", "new", NOW + 3600)], &[leased("pi", "old", NOW + 60)]);
         assert_eq!(m[0].public_key, "new");
+    }
+
+    #[test]
+    fn a_later_hint_of_the_same_lease_moves_the_endpoint() {
+        let mut moved = leased("pi", "k", NOW + 3600);
+        moved.endpoints = vec!["192.0.2.61:51820".into()];
+        moved.seen_at = NOW + 900;
+        let mut old = leased("pi", "k", NOW + 3600);
+        old.endpoints = vec!["192.168.1.102:51820".into()];
+        old.seen_at = NOW;
+        let m = merge(&[old.clone()], &[moved.clone()]);
+        assert_eq!(m[0].endpoints, vec!["192.0.2.61:51820".to_string()]);
+        // An earlier statement of the same lease does not move it back.
+        let m = merge(&[moved], &[old]);
+        assert_eq!(m[0].endpoints, vec!["192.0.2.61:51820".to_string()]);
     }
 
     #[test]

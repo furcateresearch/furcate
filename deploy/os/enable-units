@@ -1,0 +1,47 @@
+#!/bin/sh
+# Enable the units the Furcate extensions declare enabled.
+#
+# An extension carries no /etc, so what a package would enable at install has to
+# be done on the machine, after the merge. Each extension ships a preset file
+# numbered 05-furcate*.preset; this enables every unit those files name, and
+# does it again at every merge, so a base whose own presets disable one of them
+# (its 10-furcate-os.preset disables the overlay) cannot leave it off.
+#
+# Runs from furcate-extension-enable.service at boot, and again when
+# `furcate-os extension install` re-queues multi-user.target after a live merge.
+#
+# A masked unit is the operator's word and is left alone. A unit the preset
+# names that does not exist is an error, not a skip: it means an extension
+# shipped a preset for a unit it does not carry. Exit status is nonzero if any
+# unit could not be brought to enabled, so the service shows failed.
+#
+# FURCATE_PRESET_DIR and FURCATE_SYSTEMCTL exist for the tests.
+set -u
+PRESETS=${FURCATE_PRESET_DIR:-/usr/lib/systemd/system-preset}
+SYSTEMCTL=${FURCATE_SYSTEMCTL:-systemctl}
+log() { echo "furcate-enable-units: $*" >&2; }
+
+units=$(for f in "$PRESETS"/05-furcate*.preset; do
+    [ -f "$f" ] && awk '$1 == "enable" { print $2 }' "$f"
+done | sort -u)
+[ -n "$units" ] || { log "no 05-furcate*.preset in $PRESETS; nothing declared"; exit 0; }
+
+bad=0
+for u in $units; do
+    state=$($SYSTEMCTL is-enabled "$u" 2>/dev/null)
+    case "$state" in
+        enabled|enabled-runtime|static|indirect|alias|generated) continue ;;
+        masked|masked-runtime) log "$u is masked: left as the operator set it"; continue ;;
+        disabled) ;;
+        *) log "$u is declared enabled but this host has no such unit ($state)"; bad=1; continue ;;
+    esac
+    if ! $SYSTEMCTL preset "$u" >/dev/null 2>&1; then
+        log "systemctl preset $u failed"; bad=1; continue
+    fi
+    now=$($SYSTEMCTL is-enabled "$u" 2>/dev/null)
+    case "$now" in
+        enabled|enabled-runtime) log "enabled $u"; $SYSTEMCTL --no-block start "$u" >/dev/null 2>&1 || log "could not queue $u" ;;
+        *) log "$u is still $now after preset: a preset file earlier than 05-furcate disables it"; bad=1 ;;
+    esac
+done
+exit $bad

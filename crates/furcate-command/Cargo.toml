@@ -1,0 +1,19 @@
+[package]
+name = "furcate-command"
+version.workspace = true
+edition.workspace = true
+description = "Site-side gate for commands from a simulation platform: verify, decide, receipt. Shadow mode only."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hex.workspace = true
+serde.workspace = true
+sha2.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+ed25519-dalek.workspace = true
+furcate-ledger = { path = "../furcate-ledger" }
+
+[[bin]]
+name = "furcate-history-verify"
+path = "src/bin/history_verify.rs"

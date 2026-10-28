@@ -17,7 +17,9 @@
 # base's when the image reuses an earlier extension: os/build.sh image says so),
 # and every in-guest check passes (os/tests/qemu-checks: health layer, journal
 # upload, power monitor, signing broker, tampered extensions without a
-# checksum, board userspace, and a watchdog reset after a forced hang). The
+# checksum, board userspace, what an extension ships taking effect in the
+# cold boot that merges it and after a live install (os/tests/
+# qemu-test-extension), and a watchdog reset after a forced hang). The
 # checks run from the test's own copy of the disk (copied onto boot-a and
 # started by systemd.run); the image under test is not changed. qemu gets an
 # emulated watchdog (i6300esb) and, on the kernel command line, panic=0, so
@@ -47,6 +49,9 @@ for f in vmlinuz initrd.img cmdline.txt; do
 done
 here=$(cd "$(dirname "$0")" && pwd)
 mcopy -o -i "$work/disk.raw@@$off" "$here/qemu-checks" ::fqchecks.sh
+# A second, test-signed extension that ships a udev rule, a sysusers group and
+# units, to check that they take effect in the cold boot that merges them.
+sh "$here/qemu-test-extension" "$work/disk.raw" "$work" "$want"
 cmdline=$(sed -e 's/console=[^ ]*//g' -e 's/panic=[0-9]*/panic=0/' "$work/cmdline.txt" | tr -s ' ')
 run="/bin/sh -c 'mkdir -p /run/fqt && mount -o ro /dev/disk/by-partlabel/boot-a /run/fqt && cp /run/fqt/fqchecks.sh /run/fqchecks.sh; umount /run/fqt; systemd-run --no-block --unit=furcate-qemu-checks /bin/sh /run/fqchecks.sh'"
 cmdline="console=ttyAMA0 $cmdline furcate.selftest systemd.run=\"$run\" systemd.run_success_action=none systemd.run_failure_action=none"
@@ -121,7 +126,7 @@ check "reached a login prompt" "login:"
 check "self-test ran" "FURCATE-SELFTEST-END"
 check "furcate extension merged" "merged furcate: FURCATE_VERSION=$want ARCHITECTURE=arm64"
 check "selector chose $want" "  furcate $want"
-check "version check ok" "extension check: ok furcate=$want"
+check "version check ok" "extension check: ok.* furcate=$want"
 check "/usr from dm-verity" "usr         /dev/mapper/usr"
 check "dm-verity verified" "dm-verity: verified"
 check "state partition grown" "furcate-firstboot: state partition"

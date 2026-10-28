@@ -971,6 +971,35 @@ impl Health {
     }
 }
 
+/// How a machine's power supply is holding up, from the board's own report.
+///
+/// Worst last, so the larger of two is the more serious. Only ever built from
+/// a fresh measurement: a missing or stale report is `None` where this is
+/// held, never `Ok`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupplyState {
+    /// Measured: no undervoltage, no throttling, nothing shed.
+    Ok,
+    /// The CPU is throttled or frequency-capped, from heat or supply.
+    Throttled,
+    /// The supply is below what the board needs right now.
+    Undervoltage,
+    /// The board is shedding load to stay up.
+    Shedding,
+}
+
+impl SupplyState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SupplyState::Ok => "ok",
+            SupplyState::Throttled => "throttled",
+            SupplyState::Undervoltage => "undervoltage",
+            SupplyState::Shedding => "shedding load",
+        }
+    }
+}
+
 /// What one machine said about itself. Every field is what was measured;
 /// absent means not measured, never zero.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -979,6 +1008,9 @@ pub struct MachineReading {
     pub cores: Option<u32>,
     pub power_w: Option<f64>,
     pub workloads: Option<u32>,
+    /// Its supply, from a fresh board report; `None` is not measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supply: Option<SupplyState>,
 }
 
 /// What one leaf reported through its head.
@@ -995,7 +1027,14 @@ pub struct LeafReading {
 /// Readings by member key or name.
 #[derive(Clone, Debug, Default)]
 pub struct Readings {
+    /// By the id the source knows a machine by: its node id, from the site
+    /// view. A cell record names a machine by the key it signs links with, or
+    /// by name; `aliases` joins the two.
     pub machines: BTreeMap<String, MachineReading>,
+    /// The id a machine is read under, by the cell key or name it answers to.
+    /// Said by the machine in its own reading, and dropped for a key or name
+    /// two machines both claim: a reading must never land on the wrong cell.
+    pub aliases: BTreeMap<String, String>,
     pub leaves: BTreeMap<String, LeafReading>,
     /// Sensors from the cell's registry, matched to leaves by host.
     pub sensors: Vec<Sensor>,
@@ -1005,8 +1044,11 @@ pub struct Readings {
 }
 
 impl Readings {
-    fn machine(&self, m: &Member) -> Option<&MachineReading> {
-        self.machines.get(&m.holder).or_else(|| self.machines.get(&m.name))
+    /// What this member said about itself: under its key or name directly, or
+    /// under the node id that key or name is known to belong to.
+    pub fn machine(&self, m: &Member) -> Option<&MachineReading> {
+        let by = |id: &str| self.machines.get(id).or_else(|| self.machines.get(self.aliases.get(id)?));
+        by(&m.holder).or_else(|| if m.name.is_empty() { None } else { by(&m.name) })
     }
 
     fn leaf(&self, m: &Member) -> Option<&LeafReading> {
@@ -1041,6 +1083,10 @@ pub struct RollUp {
     pub sub_cells: u32,
     /// Summed over the machines that report power; `None` if none do.
     pub power_w: Option<f64>,
+    /// The head's supply, when it measures one. A head that is undervolted,
+    /// throttled or shedding load makes the cell degraded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_supply: Option<SupplyState>,
     pub at: u64,
 }
 
@@ -1057,8 +1103,12 @@ impl RollUp {
             let each: Vec<String> = self.leaf_classes.iter().rev().map(|(c, n)| format!("{n} {c}")).collect();
             format!(" ({})", each.join(", "))
         };
+        let supply = match self.head_supply {
+            Some(s) => format!(", head supply {}", s.as_str()),
+            None => String::new(),
+        };
         format!(
-            "{}: {}, {}/{} machines up, {}/{} leaves reporting{classes}, {} sub-cells, {power}",
+            "{}: {}, {}/{} machines up, {}/{} leaves reporting{classes}, {} sub-cells, {power}{supply}",
             self.cell,
             self.health.as_str(),
             self.machines_up,
@@ -1083,10 +1133,14 @@ pub fn roll_up(cell: &Cell, r: &Readings, now: u64) -> RollUp {
         leaf_classes: BTreeMap::new(),
         sub_cells: 0,
         power_w: None,
+        head_supply: None,
         at: now,
     };
     let mut measured = false;
     let mut head_down = false;
+    if let Some(x) = r.machine(&cell.head) {
+        out.head_supply = x.supply;
+    }
     for m in std::iter::once(&cell.head).chain(cell.edge_ai.iter()) {
         out.machines += 1;
         if let Some(x) = r.machine(m) {
@@ -1136,7 +1190,11 @@ pub fn roll_up(cell: &Cell, r: &Readings, now: u64) -> RollUp {
         Health::Down
     } else if !measured {
         Health::Unknown
-    } else if out.machines_up == out.machines && out.leaves_reporting == out.leaves && sub_worst.is_none() {
+    } else if out.machines_up == out.machines
+        && out.leaves_reporting == out.leaves
+        && sub_worst.is_none()
+        && matches!(out.head_supply, None | Some(SupplyState::Ok))
+    {
         Health::Ok
     } else {
         Health::Degraded
@@ -1627,12 +1685,38 @@ mod tests {
     }
 
     #[test]
+    fn a_head_on_a_failing_supply_degrades_its_cell_and_an_unmeasured_one_does_not_pass() {
+        let s = site();
+        let t = CellTree::derive("home", &Root::Operator(id(&s.op)), &s.links, NOW);
+        let mitte = t.find("berlin/mitte").unwrap();
+        let with = |supply| {
+            let mut r = Readings::default();
+            r.machines.insert(
+                "pi-mitte".into(),
+                MachineReading { up: true, cores: Some(4), power_w: None, workloads: Some(1), supply },
+            );
+            roll_up(mitte, &r, NOW)
+        };
+        let ok = with(Some(SupplyState::Ok));
+        assert_eq!(ok.health, Health::Ok, "{}", ok.line());
+        assert_eq!(ok.head_supply, Some(SupplyState::Ok));
+        let low = with(Some(SupplyState::Undervoltage));
+        assert_eq!(low.health, Health::Degraded);
+        assert!(low.line().ends_with("head supply undervoltage"), "{}", low.line());
+        // Not measured stays not measured: no supply state is invented.
+        let unmeasured = with(None);
+        assert_eq!(unmeasured.head_supply, None);
+        assert!(!unmeasured.line().contains("supply"));
+        assert!(SupplyState::Shedding > SupplyState::Undervoltage && SupplyState::Throttled > SupplyState::Ok);
+    }
+
+    #[test]
     fn the_upward_payload_is_roll_ups_only() {
         let s = site();
         let t = CellTree::derive("home", &Root::Operator(id(&s.op)), &s.links, NOW);
         let mut r = Readings::default();
-        r.machines.insert("pi-berlin".into(), MachineReading { up: true, cores: Some(4), power_w: Some(5.0), workloads: Some(2) });
-        r.machines.insert("jetson-1".into(), MachineReading { up: true, cores: Some(8), power_w: Some(15.0), workloads: Some(1) });
+        r.machines.insert("pi-berlin".into(), MachineReading { up: true, cores: Some(4), power_w: Some(5.0), workloads: Some(2), supply: None });
+        r.machines.insert("jetson-1".into(), MachineReading { up: true, cores: Some(8), power_w: Some(15.0), workloads: Some(1), supply: None });
         r.leaves.insert("esp-1".into(), LeafReading { last_seen: Some(NOW - 5), battery_pct: Some(80.0), ..Default::default() });
         let roll = roll_up(t.find("berlin").unwrap(), &r, NOW);
         assert_eq!(roll.machines, 3);
@@ -1670,7 +1754,7 @@ mod tests {
     fn a_report_from_below_is_taken_only_from_the_cells_own_head() {
         let s = site();
         let t = CellTree::derive("home", &Root::Operator(id(&s.op)), &s.links, NOW);
-        let roll = |cell: &str| RollUp { cell: cell.into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 0, leaves_reporting: 0, leaf_classes: BTreeMap::new(), sub_cells: 0, power_w: None, at: NOW };
+        let roll = |cell: &str| RollUp { cell: cell.into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 0, leaves_reporting: 0, leaf_classes: BTreeMap::new(), sub_cells: 0, power_w: None, head_supply: None, at: NOW };
         let up = Upward { from: "berlin".into(), seq: 7, roll_ups: vec![roll("berlin"), roll("berlin/mitte")] };
         let berlin = key(3);
         let sealed = up.seal(&id(&berlin), |m| Ok(berlin.sign(m).to_bytes().to_vec())).unwrap();
@@ -1733,7 +1817,7 @@ mod tests {
         assert_eq!(cell.head.holder, lyon_id);
         assert!(t.refused.is_empty(), "{:?}", t.refused);
 
-        let roll = RollUp { cell: "lyon".into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 1, leaves_reporting: 1, leaf_classes: BTreeMap::new(), sub_cells: 0, power_w: None, at: NOW };
+        let roll = RollUp { cell: "lyon".into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 1, leaves_reporting: 1, leaf_classes: BTreeMap::new(), sub_cells: 0, power_w: None, head_supply: None, at: NOW };
         let up = Upward { from: "lyon".into(), seq: 1, roll_ups: vec![roll] };
         for sign in [&raw as &dyn Fn(&[u8]) -> Result<Vec<u8>, String>, &der] {
             let sealed = up.seal(&lyon_id, sign).unwrap();
@@ -1811,7 +1895,7 @@ mod tests {
             interval_s: 10,
         }]);
         let mut wire = Wire { up: true, got: vec![] };
-        let roll = |at| RollUp { cell: "berlin".into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 0, leaves_reporting: 0, leaf_classes: BTreeMap::new(), sub_cells: 1, power_w: None, at };
+        let roll = |at| RollUp { cell: "berlin".into(), scale: Scale::City, health: Health::Ok, machines: 1, machines_up: 1, leaves: 0, leaves_reporting: 0, leaf_classes: BTreeMap::new(), sub_cells: 1, power_w: None, head_supply: None, at };
         local.report(vec![roll(NOW)], &mut wire, NOW);
         assert!(matches!(local.standing(NOW), Standing::Connected { .. }));
 

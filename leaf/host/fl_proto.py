@@ -33,6 +33,8 @@ MODEL_OFFER, MODEL_CHUNK, MODEL_COMMIT, MODEL_ROLLBACK = 0x30, 0x31, 0x32, 0x33
 INFER, INFER_RESULT = 0x40, 0x41
 OTA_OFFER, OTA_CHUNK, OTA_COMMIT = 0x50, 0x51, 0x52
 REVOKE, CONFIG, SINK, BYE = 0x60, 0x61, 0x70, 0x7F
+GATEWAY_ASK = 0x71
+SENSE_REQ, SENSE = 0x72, 0x73
 
 # tags
 T_VERSION, T_DEV_PUB, T_EPH, T_NONCE, T_EVIDENCE = 1, 2, 3, 4, 5
@@ -40,6 +42,9 @@ T_NODE_PUB, T_GRANT, T_GRANT_SIG, T_NODE_SIG, T_DEV_SIG = 6, 7, 8, 9, 10
 T_REASON, T_OK, T_COUNTER, T_BOX = 11, 12, 13, 14
 T_SIGNED, T_OFFSET, T_DATA, T_INPUT, T_SCORES, T_LATENCY_US, T_LABEL, T_DETAIL = 20, 21, 22, 23, 24, 25, 26, 27
 T_ROLE_NEEDED, T_QPARAMS, T_BODY, T_SIG = 28, 29, 30, 31
+T_METHOD, T_TARGET, T_STATUS, T_CREDENTIAL = 32, 33, 34, 35
+# sensor replies (fl_sensors.c)
+T_READING, T_GENERATION, T_MODEL_SHA, T_SIGNER_ID, T_CHAIN, T_UNIT, T_SENSOR = 80, 81, 82, 83, 85, 86, 90
 
 # manifest tags
 M = dict(KIND=1, ID=2, VERSION=3, SIZE=4, SHA256=5, RUNTIME=6, RUNTIME_MIN=7, TARGET=8, ARENA_KB=9,
@@ -192,6 +197,69 @@ class _Listen:
         self.k.sendall(b)
 
 
+class _Conn:
+    """One accepted leaf connection, read and written like the other streams."""
+
+    def __init__(self, k, peer):
+        import socket
+        k.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        k.settimeout(0.05)
+        self.k, self.peer, self.closed = k, peer, False
+
+    def read(self, n: int) -> bytes:
+        import socket
+        if self.closed:
+            return b""
+        try:
+            d = self.k.recv(n)
+        except socket.timeout:
+            return b""
+        except OSError:
+            d = b""
+        if d == b"":
+            self.close()
+        return d
+
+    def write(self, b: bytes):
+        if self.closed:
+            raise ConnectionError("the leaf is not connected")
+        try:
+            self.k.sendall(b)
+        except OSError as e:
+            self.close()
+            raise ConnectionError(str(e)) from None
+
+    def close(self):
+        self.closed = True
+        try:
+            self.k.close()
+        except OSError:
+            pass
+
+
+class _Hub:
+    """A listening address that keeps every leaf that dials in, one connection
+    each. Which leaf a connection is only becomes known from its HELLO."""
+
+    def __init__(self, url: str):
+        import socket
+        host, port = url[len("listen://"):].rsplit(":", 1)
+        self.srv = socket.create_server((host, int(port)))
+        self.srv.setblocking(False)
+        self.accepts = 0
+
+    def poll(self, wait: float = 0.0) -> list:
+        import select
+        out = []
+        while True:
+            r, _, _ = select.select([self.srv], [], [], wait if not out else 0)
+            if not r:
+                return out
+            k, peer = self.srv.accept()
+            self.accepts += 1
+            out.append(_Conn(k, peer))
+
+
 class Serial:
     def __init__(self, port: str, baud: int = 115200, log=None):
         if port.startswith("tcp://"):
@@ -205,6 +273,13 @@ class Serial:
         self.log = log or (lambda line: None)
         self.lines: list[str] = []
         self.sent: list[bytes] = []  # raw frames as sent, for replay tests
+
+    @classmethod
+    def over(cls, stream, log=None) -> "Serial":
+        """A framed link over an already open stream (a _Conn)."""
+        o = cls.__new__(cls)
+        o.s, o.buf, o.log, o.lines, o.sent = stream, b"", log or (lambda line: None), [], []
+        return o
 
     def reset(self, hold_s: float = 0.2):
         """Pulse EN (RTS) with GPIO0 high (DTR), as the dev board's auto-reset wires them."""
@@ -256,9 +331,13 @@ class Session:
         return hashlib.sha256(self.leaf_pub).digest()
 
     @classmethod
-    def open(cls, link: Serial, node_key: str, grant: bytes, grant_sig: bytes, expect_leaf: bytes | None = None,
-             wait: float = 30.0) -> "Session":
-        """Waits for the leaf's HELLO (the leaf always initiates), then authenticates."""
+    def open(cls, link: Serial, node_key: str, grant, grant_sig: bytes | None = None,
+             expect_leaf: bytes | None = None, wait: float = 30.0) -> "Session":
+        """Waits for the leaf's HELLO (the leaf always initiates), then authenticates.
+
+        `grant` is the grant bytes with `grant_sig`, or a function taking the leaf's public
+        key and returning (grant, grant_sig), or raising Refused for a leaf it does not
+        enrol; it runs before anything is sent to the leaf."""
         # The leaf accepts an AUTH only within a few seconds of the HELLO it
         # answers, and every HELLO carries a fresh ephemeral key and nonce.
         # So: everything that does not depend on the HELLO is done first, any
@@ -285,6 +364,8 @@ class Session:
         if expect_leaf is not None and (len(expect_leaf) < 16 or
                                         hashlib.sha256(leaf_pub).digest()[:len(expect_leaf)] != expect_leaf):
             raise Refused("leaf identity does not match the enrolled one")
+        if callable(grant):
+            grant, grant_sig = grant(leaf_pub)
         t0 = time.time()
         th = hashlib.sha256(b"FL1 transcript" + hello + node_pub + eph_pub + grant).digest()
         node_sig = se_sign(node_key, b"FL1 node auth " + th)  # enclave hashes, then signs

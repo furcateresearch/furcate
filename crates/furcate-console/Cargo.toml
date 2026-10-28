@@ -13,6 +13,13 @@ path = "src/main.rs"
 [dependencies]
 serde_json.workspace = true
 libc.workspace = true
+# The browser terminal (`furcate-console web`): the order desk is reached with
+# the same HTTP client every node uses; the rest is hashing and randomness.
+furcate-api = { path = "../furcate-api" }
+sha2.workspace = true
+hex.workspace = true
+getrandom.workspace = true
+data-encoding.workspace = true
 
 # An edition adds to the console through `furcate_console::extension`, from a
 # crate that depends on this one. Nothing here names it.

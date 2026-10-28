@@ -88,6 +88,10 @@ Then the request goes to the model router on the head's loopback and the answer 
 | 502 | the model router did not answer |
 | 503 | too many requests at once |
 
+### Response framing
+
+An answer may use `Transfer-Encoding: chunked`: chat completions stream, and the router sends them chunk by chunk. A client MUST decode chunked answers: a hexadecimal size line, that many bytes of data, CRLF, repeated, ending with a zero-size chunk and optional trailers. A leaf should cap the total size it accepts and reject malformed framing rather than pass chunk markers through as text. Answers that are not streamed carry `Content-Length` instead.
+
 A refusal body is `{"error":{"message":"...","type":"authentication_error","code":401}}`. The message says what to fix; a bad signature always reads the same, whichever part did not match.
 
 ## What the leaf needs

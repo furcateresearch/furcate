@@ -248,6 +248,16 @@ extern "C" esp_err_t fl_models_init(void) {
     if (s_arena_kb > ARENA_MAX_KB) s_arena_kb = ARENA_MAX_KB;
     if (s_arena_kb >= ARENA_MIN_KB)
         s_arena = (uint8_t *)heap_caps_aligned_alloc(16, s_arena_kb * 1024, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#if CONFIG_SPIRAM
+    // Internal RAM left after the radio stacks is too small: the arena goes to
+    // external RAM, which is slower for inference and plentiful. Stated in the
+    // log, never silent.
+    if (!s_arena) {
+        s_arena_kb = ARENA_MAX_KB;
+        s_arena = (uint8_t *)heap_caps_aligned_alloc(16, s_arena_kb * 1024, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_arena) ESP_LOGW(TAG, "tensor arena in external RAM: only %u KB internal block free", (unsigned)largest);
+    }
+#endif
     if (!s_arena) {
         ESP_LOGE(TAG, "cannot allocate a tensor arena (largest internal block %u KB)", (unsigned)largest);
         s_arena_kb = 0;
@@ -478,7 +488,16 @@ extern "C" uint8_t fl_models_infer(const uint8_t *tlv, size_t n, fl_wbuf_t *r) {
     return FL_MSG_INFER_RESULT;
 }
 
-extern "C" void fl_models_info(fl_wbuf_t *w) {
+extern "C" bool fl_models_active_sha(uint8_t out[32]) {
+    if (s_tab.active < 0 || s_tab.active > 1) {
+        memset(out, 0, 32);
+        return false;
+    }
+    memcpy(out, s_tab.slot[s_tab.active].sha, 32);
+    return true;
+}
+
+void fl_models_info(fl_wbuf_t *w) {
     for (int s = 0; s < 2; s++) {
         const slot_meta_t &m = s_tab.slot[s];
         uint8_t row[48];

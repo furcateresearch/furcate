@@ -1,0 +1,5 @@
+# The model-server extension's service, enabled as the Furcate extension's are
+# (see 05-furcate.preset). The router behind it is started by it. The gateway
+# starts only on a node that has a model and /etc/furcate/model-gateway.env,
+# both written by `furcatectl model gateway`.
+enable furcate-model-gateway.service

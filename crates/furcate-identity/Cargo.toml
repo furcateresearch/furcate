@@ -22,3 +22,6 @@ tss-esapi = { version = "7.7", optional = true }
 default = []
 # Native TSS 2.0 backend. Requires libtss2-dev at build time.
 tss = ["dep:tss-esapi"]
+
+[dev-dependencies]
+p256.workspace = true

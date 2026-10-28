@@ -219,6 +219,118 @@ pub fn hold(m: &mut furcate_membership::Membership, h: &Hint, now: u64) -> bool 
         .changed()
 }
 
+/// What holding an announced hint did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Held {
+    /// A lease not held before: a new key.
+    Key,
+    /// The same lease, from a new underlay address.
+    Moved,
+    /// The same lease, the same addresses, a later statement.
+    Same,
+    /// Nothing held: not leased, expired, or older than what is held.
+    Nothing,
+}
+
+/// Hold a hint that arrived in a verified, replay-checked announcement.
+///
+/// Gossip carries a lease and nothing that orders two statements of it, so a
+/// gossiped hint with the lease already held changes nothing. An announcement
+/// is signed over its hint and send time and taken only in increasing order of
+/// that time, so the hint inside it is the origin's own, current statement:
+/// the same lease with a later `seen_at` replaces the held body, which is how
+/// a node that changed underlay address tells its peers where it is now
+/// without a newer lease.
+pub fn hold_announced(m: &mut furcate_membership::Membership, h: &Hint, now: u64) -> Held {
+    if hold(m, h, now) {
+        return Held::Key;
+    }
+    let Some(b) = &h.lease else { return Held::Nothing };
+    let Some(held) = m.rumours().get(&h.node_id).and_then(|r| serde_json::from_value::<Hint>(r.body.clone()).ok()) else {
+        return Held::Nothing;
+    };
+    let same_lease = held.public_key == h.public_key && held.lease.as_ref().is_some_and(|l| l.not_after == b.not_after);
+    if !same_lease || h.seen_at <= held.seen_at {
+        return Held::Nothing;
+    }
+    let Ok(body) = serde_json::to_value(h) else { return Held::Nothing };
+    let moved = held.endpoints != h.endpoints || held.observed != h.observed;
+    let r = furcate_membership::Rumour { origin: h.node_id.clone(), version: b.not_after, expires: b.not_after, body };
+    match m.rumours_mut().replace_same_version(r, now) {
+        true if moved => Held::Moved,
+        true => Held::Same,
+        false => Held::Nothing,
+    }
+}
+
+/// The generation of the last request that this node's WireGuard peers be
+/// re-applied, written into the plan. See [`request_refresh`].
+static REFRESH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Ask the privileged half to apply every peer again, now.
+///
+/// WireGuard keeps, per peer, the local address it last sent from; after this
+/// node's own underlay address changed that cached source is one the node no
+/// longer has, and packets to the peer keep leaving from it. Setting the
+/// peer's endpoint clears it and the next keepalive handshakes from the
+/// address the kernel picks now. The helper applies the plan when its body
+/// changes, so a `refresh=` line carrying the time of the request is enough;
+/// it is written into the plan file as it stands, and into every plan this
+/// process renders after.
+pub fn request_refresh(now: u64) {
+    REFRESH.store(now, std::sync::atomic::Ordering::SeqCst);
+    refresh_plan_file(&plan_path(), now);
+}
+
+/// Put `refresh=<now>` into the plan at `path`, replacing an earlier one.
+fn refresh_plan_file(path: &str, now: u64) {
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    if text.is_empty() {
+        return;
+    }
+    let mut out: String = text.lines().filter(|l| !l.starts_with("refresh=")).map(|l| format!("{l}\n")).collect();
+    out.push_str(&format!("refresh={now}\n"));
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+/// The machine key an anchor admitted for `node`, read from the leased hint
+/// held for it.
+///
+/// This is how a node whose trust store was written once, at install —
+/// a device-tier board, typically — comes to recognise a server enrolled
+/// after it: the server's lease is bound by its hardware key, and an anchor's
+/// authorization admits that key for that node at that tier. Both are checked
+/// again here, at the moment of use, not only when the lease arrived. Only on
+/// a locked overlay: without anchors nothing but the trust store vouches for a
+/// machine. Ed25519 only, because that is what a membership ping is signed
+/// with.
+pub fn admitted_key(
+    m: &furcate_membership::Membership,
+    anchors: &furcate_net::lock::Anchors,
+    node: &str,
+    now: u64,
+) -> Option<ed25519_dalek::VerifyingKey> {
+    if !anchors.state().is_locked() {
+        return None;
+    }
+    let h: Hint = m
+        .rumours()
+        .current(now)
+        .into_iter()
+        .find(|r| r.origin == node)
+        .and_then(|r| serde_json::from_value(r.body.clone()).ok())?;
+    if h.node_id != node {
+        return None;
+    }
+    furcate_net::lease::verify_hint(anchors, &h, now, lease_ceiling()).ok()?;
+    let hexkey = h.lease.as_ref()?.node_key.strip_prefix("ed25519:")?.to_string();
+    let bytes: [u8; 32] = hex::decode(hexkey).ok()?.try_into().ok()?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()
+}
+
 /// What this node repeats to the next member it talks to.
 pub fn gossip_out(m: &furcate_membership::Membership, now: u64) -> serde_json::Value {
     serde_json::Value::Array(m.rumours().current(now).into_iter().map(|r| r.body.clone()).collect())
@@ -302,6 +414,10 @@ pub fn render_plan(iface: &str, address: &str, port: u16, current: &wg::Interfac
             p.endpoint.as_deref().unwrap_or("-"),
             p.keepalive_secs
         ));
+    }
+    let refresh = REFRESH.load(std::sync::atomic::Ordering::SeqCst);
+    if refresh > 0 {
+        s.push_str(&format!("refresh={refresh}\n"));
     }
     s
 }
@@ -502,17 +618,7 @@ pub const ANCHORS_PATH: &str = "/etc/furcate/overlay-anchors.json";
 /// as absent: silently downgrading to unlocked because a parse failed is how a
 /// site ends up believing in a check that stopped running.
 pub fn anchors() -> Result<furcate_net::lock::Anchors, String> {
-    match std::fs::read_to_string(ANCHORS_PATH) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Ok(furcate_net::lock::Anchors::new())
-        }
-        Err(e) => Err(format!("{ANCHORS_PATH} cannot be read ({e}); refusing to fall back to unlocked")),
-        Ok(text) => {
-            let v: serde_json::Value = serde_json::from_str(&text)
-                .map_err(|e| format!("{ANCHORS_PATH} is not valid JSON ({e})"))?;
-            furcate_net::lock::Anchors::from_json(&v).map_err(|e| e.to_string())
-        }
-    }
+    furcate_net::lock::Anchors::read(ANCHORS_PATH)
 }
 
 /// Where this machine keeps the authorization an operator issued it.
@@ -850,6 +956,38 @@ pub fn announce_port() -> Result<Option<u16>, String> {
     }
 }
 
+/// The longest wait between announcements to a peer that does not handshake,
+/// from `FURCATE_OVERLAY_ANNOUNCE_MAX` (seconds), else one minute. A value
+/// that is not a number is reported and the default used: this only paces a
+/// retry, and refusing to announce at all would be the worse failure.
+pub fn announce_max_interval() -> u64 {
+    match std::env::var("FURCATE_OVERLAY_ANNOUNCE_MAX") {
+        Err(_) => furcate_net::announce::DEFAULT_MAX_INTERVAL,
+        Ok(v) => v.trim().parse::<u64>().unwrap_or_else(|_| {
+            eprintln!(
+                "furcated: WARNING FURCATE_OVERLAY_ANNOUNCE_MAX is `{v}`, not a number of seconds; using {}",
+                furcate_net::announce::DEFAULT_MAX_INTERVAL
+            );
+            furcate_net::announce::DEFAULT_MAX_INTERVAL
+        }),
+    }
+}
+
+/// How often this node looks for a change of its own underlay address, from
+/// `FURCATE_OVERLAY_LINK_POLL` (seconds, 1 to 60), else 5.
+pub fn link_poll_interval() -> u64 {
+    match std::env::var("FURCATE_OVERLAY_LINK_POLL") {
+        Err(_) => 5,
+        Ok(v) => match v.trim().parse::<u64>() {
+            Ok(n) => n.clamp(1, 60),
+            Err(_) => {
+                eprintln!("furcated: WARNING FURCATE_OVERLAY_LINK_POLL is `{v}`, not a number of seconds; using 5");
+                5
+            }
+        },
+    }
+}
+
 /// Where to announce this node's key: the host of each peer this node holds
 /// that has not handshaken recently, from the kernel's live endpoints and the
 /// held peer set (which came from the coordinator's plan or a peer's lease).
@@ -941,7 +1079,7 @@ mod tests {
             .guarded("POST", "/workloads/restart", ran("restart"))
             .carrying_order("POST", "/orders", ran("order"))
             .carrying_proof("POST", "/cells/rollup", ran("rollup"))
-            .route("POST", "/health/signal", ran("reading"));
+            .reporting("POST", "/health/signal", ran("reading"));
 
         let now = 1_000;
         let call = |who: &str, key: &ed25519_dalek::SigningKey, path: &str| Request {
@@ -1520,6 +1658,102 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A leased node's wired cable comes out and it carries on over Wi-Fi: the
+    /// same lease, another underlay address. The signed announcement from the
+    /// new address updates the peer's WireGuard endpoint with no newer lease,
+    /// while the same datagram sent again stays refused.
+    #[test]
+    fn a_node_that_moved_underlay_address_is_followed_without_a_new_lease() {
+        use furcate_identity::Ed25519Signer;
+        use std::sync::Arc;
+
+        const WG: &str = "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=";
+        let now = 1_786_838_400u64;
+        let operator = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let mut anchors = furcate_net::lock::Anchors::new();
+        anchors
+            .trust(&furcate_net::lock::Anchor {
+                key_id: "op".into(),
+                public_key: hex::encode(operator.verifying_key().to_bytes()),
+            })
+            .expect("an anchor");
+        let node = Ed25519Signer(Arc::new(ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])));
+        let b = furcate_net::lease::bind(
+            &node,
+            &furcate_net::lease::Terms { node_id: "edge-1", wg_pub: WG, tier: "platform", not_after: now + 3_600, quote_digest: None },
+        )
+        .expect("bound");
+        let auth = furcate_net::lock::authorize(
+            "op",
+            &operator,
+            &furcate_net::lock::Claim { node_id: "edge-1", public_key: &b.node_key, tier: "platform", not_after: now + 86_400 },
+        );
+        let at = |endpoint: &str, seen: u64| Hint {
+            node_id: "edge-1".into(),
+            public_key: WG.into(),
+            endpoints: vec![endpoint.into()],
+            overlay_addr: "10.90.0.9/32".into(),
+            tier: Tier::Platform,
+            seen_at: seen,
+            lease: Some(b.clone()),
+            authorization: Some(auth.clone()),
+            name: None,
+            observed: vec![],
+        };
+        let wired = at("192.168.1.102:51820", now);
+        let wifi = at("192.0.2.61:51820", now + 900);
+
+        let mut m = furcate_membership::Membership::new("node-b", 10);
+        let mut replay = furcate_net::announce::Replay::new();
+        let none = |_: &str| None;
+        let ceiling = lease_ceiling();
+
+        let first = furcate_net::announce::seal(&node, &wired, now).unwrap();
+        let h = furcate_net::announce::open(&first, "node-b", &anchors, &none, &mut replay, now, ceiling).unwrap();
+        assert_eq!(hold_announced(&mut m, &h, now), Held::Key);
+
+        // The same datagram again, from anywhere: a replay, refused.
+        assert!(matches!(
+            furcate_net::announce::open(&first, "node-b", &anchors, &none, &mut replay, now, ceiling),
+            Err(furcate_net::announce::Refusal::Replay { .. })
+        ));
+
+        // The new address, signed later, same lease: taken, and the endpoint moves.
+        let second = furcate_net::announce::seal(&node, &wifi, now + 900).unwrap();
+        let h = furcate_net::announce::open(&second, "node-b", &anchors, &none, &mut replay, now + 900, ceiling).unwrap();
+        assert_eq!(hold_announced(&mut m, &h, now + 900), Held::Moved);
+        // And that one resent is refused too.
+        assert!(matches!(
+            furcate_net::announce::open(&second, "node-b", &anchors, &none, &mut replay, now + 900, ceiling),
+            Err(furcate_net::announce::Refusal::Replay { .. })
+        ));
+
+        // The coordinator still says the old address; the peer set follows the announcement.
+        let hints = furcate_net::overlay::merge(&[wired.clone()], &gossip_hints(&m, "node-b", now + 900));
+        let dir = std::env::temp_dir().join(format!("furcate-moved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plan = dir.join("wg-plan").display().to_string();
+        let admit = |h: &Hint| furcate_net::lease::verify_hint(&anchors, h, now + 900, lease_ceiling()).map(|_| ());
+        let r = reconcile_at(&plan, &hints, "10.90.0.1/16", now + 900, admit);
+        assert_eq!(r.peers[0].endpoint.as_deref(), Some("192.0.2.61:51820"));
+        let written = std::fs::read_to_string(&plan).unwrap();
+        assert!(written.contains("192.0.2.61:51820") && !written.contains("192.168.1.102"), "{written}");
+
+        // An older statement of the same lease does not move it back.
+        let mut stale = wired.clone();
+        stale.seen_at = now + 10;
+        assert_eq!(hold_announced(&mut m, &stale, now + 900), Held::Nothing);
+
+        // The privileged half is told to apply every peer again.
+        refresh_plan_file(&plan, now + 901);
+        refresh_plan_file(&plan, now + 902);
+        let written = std::fs::read_to_string(&plan).unwrap();
+        assert_eq!(written.matches("refresh=").count(), 1);
+        assert!(written.ends_with(&format!("refresh={}\n", now + 902)), "{written}");
+        assert!(written.contains("192.0.2.61:51820"), "the peers stay in the plan");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn announce_targets_take_held_peers_when_the_kernel_has_none() {
         let held = vec![Peer {
@@ -1544,5 +1778,49 @@ mod tests {
         // The key was replaced after that handshake: the peer may hold the old one.
         let state = serde_json::json!({ "handshakes": { "k2": 990 }, "key_born_at": 995 });
         assert_eq!(announce_targets_from(Some(&state), &held, 51821, 1_000).len(), 1);
+    }
+
+    /// A device-tier node's trust store names only the machines it was
+    /// installed with. A server enrolled later is recognised through the
+    /// anchor that admitted its hardware key, carried on its lease — and only
+    /// that key, only while the authorization holds.
+    #[test]
+    fn a_machine_the_trust_store_never_named_is_recognised_by_its_anchor_admitted_lease() {
+        let now = 1_000_000u64;
+        let operator = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let mut anchors = furcate_net::lock::Anchors::new();
+        anchors
+            .trust(&furcate_net::lock::Anchor {
+                key_id: "op".into(),
+                public_key: hex::encode(operator.verifying_key().to_bytes()),
+            })
+            .unwrap();
+        let server = node_signer(4);
+        let mut h = leased(&server, "node-b", WG_A, now + 3_600);
+        let admit_until = now + 86_400;
+        h.authorization = Some(furcate_net::lock::authorize(
+            "op",
+            &operator,
+            &furcate_net::lock::Claim {
+                node_id: "node-b",
+                public_key: &h.lease.as_ref().unwrap().node_key,
+                tier: "platform",
+                not_after: admit_until,
+            },
+        ));
+        let mut pi = furcate_membership::Membership::new("pi", 3);
+        assert!(admitted_key(&pi, &anchors, "node-b", now).is_none(), "nothing held yet");
+        assert!(hold(&mut pi, &h, now));
+        let k = admitted_key(&pi, &anchors, "node-b", now).expect("admitted by the anchor");
+        assert_eq!(k, server.0.verifying_key());
+        // Not for another node id, not on an overlay with no anchors, and not
+        // once the operator's authorization has lapsed.
+        assert!(admitted_key(&pi, &anchors, "node-c", now).is_none());
+        assert!(admitted_key(&pi, &furcate_net::lock::Anchors::new(), "node-b", now).is_none());
+        assert!(admitted_key(&pi, &anchors, "node-b", admit_until + 1).is_none());
+        // A lease nobody admitted vouches for nothing.
+        let mut stranger = furcate_membership::Membership::new("pi", 3);
+        assert!(hold(&mut stranger, &leased(&node_signer(9), "node-b", WG_B, now + 3_600), now));
+        assert!(admitted_key(&stranger, &anchors, "node-b", now).is_none());
     }
 }

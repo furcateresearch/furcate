@@ -136,6 +136,16 @@ nonce={nonce}
 ")
 }
 
+/// Render the request to power this node off at the bottom of the UPS ladder.
+///
+/// It carries no target and no argument: the privileged half powers off the
+/// machine it runs on, and only if the operator's own root-owned file says
+/// `mode=enforce`. A compromised agent can therefore ask for nothing the
+/// operator has not already armed on this node.
+pub fn render_poweroff(nonce: &str) -> String {
+    format!("action=poweroff\nreason=ups-halt\nnonce={nonce}\n")
+}
+
 /// Whether an id may cross the privilege boundary as an argument.
 ///
 /// Checked here *and* in the actuator. A defence that exists only on the
@@ -175,6 +185,35 @@ pub fn write_shed(kind: &str, id: &str, nonce: &str) -> std::io::Result<()> {
     }
     let tmp = format!("{path}.tmp");
     std::fs::write(&tmp, render_shed(kind, id, nonce))?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Render a graceful stop of one unit on the operator's stop list. The unit is
+/// the only argument: the timeout, the grace window and any safe-stop command
+/// are read by the privileged half from its own root-owned list.
+pub fn render_stop_unit(id: &str, nonce: &str) -> String {
+    format!("action=stop_unit\nid={id}\nreason=ups-halt\nnonce={nonce}\n")
+}
+
+/// Write any intent body atomically.
+pub fn write_body(body: &str) -> std::io::Result<()> {
+    let path = intent_path();
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Ask the privileged half to power this node off (see [`render_poweroff`]).
+pub fn write_poweroff(nonce: &str) -> std::io::Result<()> {
+    let path = intent_path();
+    if let Some(dir) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, render_poweroff(nonce))?;
     std::fs::rename(&tmp, &path)
 }
 
@@ -246,6 +285,12 @@ pub fn confirm_in(path: &str, nonce: &str) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
     use furcate_power::actuator::Governor;
+
+    #[test]
+    fn a_poweroff_request_names_nothing_but_its_reason() {
+        let r = render_poweroff("n1");
+        assert_eq!(r, "action=poweroff\nreason=ups-halt\nnonce=n1\n");
+    }
 
     #[test]
     fn every_reversible_rung_has_a_lever_and_halt_does_not() {

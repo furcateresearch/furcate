@@ -32,15 +32,20 @@ trap 'rm -rf "$work"' EXIT
 "$here/resolve" "$here/packages" "$baselist" "$work/pkgs" "$arch"
 raw="$work/pkgs/tree"
 tree="$work/tree"
-mkdir -p "$tree/usr"
+mkdir -p "$tree/usr" "$raw/usr"
 
 # 2. Only /usr reaches the image. Unmerged paths move under /usr; /etc and
 # /var from the packages are dropped (listed, for the record): the board's
 # configuration ships under /usr in this extension's own tree.
+# A base built from the same commit already carries every package hw-rpi5
+# would add, so resolve may choose none and leave $raw with nothing but the
+# usr/ this script just created: the globs below must tolerate that instead
+# of iterating over their own unexpanded pattern.
 for d in bin sbin lib; do
     [ -d "$raw/$d" ] && { mkdir -p "$raw/usr/$d"; cp -a "$raw/$d/." "$raw/usr/$d/"; rm -rf "${raw:?}/$d"; }
 done
 for d in "$raw"/*; do
+    [ -e "$d" ] || continue
     [ "$(basename "$d")" = usr ] && continue
     find "$d" -type f | sed "s|^$raw||" >> "$work/dropped"
 done

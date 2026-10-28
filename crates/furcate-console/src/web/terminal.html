@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<title>Furcate terminal</title>
+<!--
+  A shell on this machine, opened with a passkey.
+
+  The page asks this machine to propose a login order for the user named here
+  on this machine, checks the order the site's desk returns hashes to exactly
+  what the passkey is asked to sign, and gets the assertion with user
+  verification required. Nothing is stored. There is no password field: the
+  passkey is the only way in.
+
+  The terminal renderer is xterm.js, fetched with a pinned version and a
+  Subresource Integrity hash, so the browser refuses any other bytes.
+-->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.css"
+      integrity="sha384-8Xk9wy/gzEDUKrXtrmCFa2bBuK3BpjpDuL/p0SeKQX19Khl/M+lHOgD/CyYf7efP" crossorigin="anonymous">
+<style>
+  :root { color-scheme: light dark; --fg:#111; --bg:#fff; --mut:#666; --line:#ddd; --acc:#8a5a2b; --bad:#a11; --ok:#160; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#e8e8e8; --bg:#0c0c0c; --mut:#999; --line:#2a2a2a; --acc:#d1a05f; --bad:#f77; --ok:#7c7; } }
+  * { box-sizing:border-box }
+  html, body { height:100% }
+  body { margin:0; font:16px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; color:var(--fg); background:var(--bg);
+         display:flex; flex-direction:column }
+  header { padding:1rem; border-bottom:1px solid var(--line) }
+  h1 { font-size:1.15rem; font-weight:500; margin:0 0 .5rem }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center }
+  input { font:inherit; padding:.45rem .6rem; border:1px solid var(--line); border-radius:6px; background:transparent; color:inherit; min-width:10rem }
+  button { font:inherit; padding:.45rem .9rem; border:0; border-radius:6px; background:var(--acc); color:#fff; cursor:pointer }
+  button:disabled { opacity:.5; cursor:default }
+  pre { white-space:pre-wrap; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; margin:.75rem 0 0; color:var(--mut) }
+  #status { margin:.5rem 0 0; min-height:1.5em }
+  .bad { color:var(--bad) } .ok { color:var(--ok) }
+  #term { flex:1; min-height:0; padding:.25rem; background:#000 }
+</style>
+
+<header>
+  <h1>Terminal on <span id="host"></span></h1>
+  <div class="row">
+    <label for="user">User</label>
+    <input id="user" autocomplete="username" autocapitalize="off" spellcheck="false">
+    <button id="open">Open with passkey</button>
+  </div>
+  <p id="status" class="mut"></p>
+  <pre id="order"></pre>
+</header>
+<div id="term"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.js"
+        integrity="sha384-M169f14mRZOXm3hD/v2Ti0ThIT/RnAQagXA9nlE15yHAtrW19gdePJh/HaTzUOe/" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"
+        integrity="sha384-iF+jqbuti4XlB64clWgFWYEscb+UnSRv3VgVikGYZu+otNFnSHr7y7NcKfBnGizn" crossorigin="anonymous"></script>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+$("host").textContent = location.hostname;
+
+const say = (text, cls) => { $("status").textContent = text; $("status").className = cls || ""; };
+
+const b64u = {
+  enc(buf) {
+    let s = "";
+    for (const x of new Uint8Array(buf)) s += String.fromCharCode(x);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  },
+  dec(text) {
+    const s = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+    return Uint8Array.from(s, (c) => c.charCodeAt(0));
+  },
+};
+const hex = (buf) => Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, "0")).join("");
+
+// The same bytes furcate_authn::order::Order::canonical produces.
+function canonical(o) {
+  const t = o.target || {};
+  const one = (name, v) => {
+    if (/[\r\n]/.test(String(v))) throw new Error(`${name} contains a line break`);
+    return String(v);
+  };
+  if (t.kind !== "login") throw new Error("this is not a login order");
+  const dur = o.bounds.duration_s == null ? "none" : String(o.bounds.duration_s);
+  return "furcate-order/1\n" +
+    `site=${one("site", o.site)}\n` +
+    `action=${o.action}\n` +
+    `target=${t.kind}\n` +
+    `target.id=${one("target.id", `${t.user}@${t.node}`)}\n` +
+    `target.key_sha256=${t.key_sha256}\n` +
+    `target.rp_id=\n` +
+    `bounds.max_nodes=${o.bounds.max_nodes}\n` +
+    `bounds.duration_s=${dur}\n` +
+    `counter=${o.counter}\n` +
+    `issued_at=${o.issued_at}\n` +
+    `expires_at=${o.expires_at}\n` +
+    `reason=${one("reason", o.reason)}\n`;
+}
+
+// The RP ID must be this page's host or a parent of it.
+const onRp = (rpId) => location.hostname === rpId || location.hostname.endsWith("." + rpId);
+function usableRp(c) {
+  const ids = (c.rp_ids && c.rp_ids.length ? c.rp_ids : [c.rp_id]).filter(onRp);
+  if (!ids.length) {
+    throw new Error(`no passkey on the site's roster was made for ${location.hostname} or a domain above it; ` +
+      `open this terminal on one of: ${(c.rp_ids || [c.rp_id]).join(", ")}`);
+  }
+  return ids.sort((a, b) => b.length - a.length)[0];
+}
+
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const v = await r.json().catch(() => ({}));
+  return { status: r.status, v };
+}
+
+async function checked(c, user) {
+  const order = c.proposal && c.proposal.order;
+  if (!order) throw new Error("the desk did not return an order");
+  const t = order.target;
+  if (order.action !== "login" || t.kind !== "login" || t.user !== user) throw new Error("the order is not this login");
+  const text = canonical(order);
+  if (text !== c.proposal.canonical) throw new Error("the order shown and the bytes to sign differ");
+  const digest = hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  if (digest !== c.order_hash) throw new Error("the order does not hash to the order being approved");
+  const bytes = b64u.dec(c.challenge);
+  if (bytes.length !== 56 || hex(bytes.slice(0, 32)) !== digest || hex(bytes.slice(32, 48)) !== c.nonce) {
+    throw new Error("the challenge is not this order and this nonce");
+  }
+  $("order").textContent =
+    `log in as ${t.user} on ${t.node} for ${order.bounds.duration_s} s\n` +
+    `site       ${order.site}\n` +
+    `order      ${digest}\n` +
+    `open until ${new Date(order.expires_at * 1000).toISOString()}`;
+  return order;
+}
+
+function terminal(ticket) {
+  const term = new Terminal({ cursorBlink: true, fontSize: 14, scrollback: 5000 });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($("term"));
+  fit.fit();
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?ticket=${ticket}`);
+  ws.binaryType = "arraybuffer";
+  const size = () => { fit.fit(); if (ws.readyState === 1) ws.send(JSON.stringify({ cols: term.cols, rows: term.rows })); };
+  ws.onopen = () => { size(); term.focus(); say("Connected. Every command is recorded in this machine's ledger.", "ok"); };
+  ws.onmessage = (e) => term.write(new Uint8Array(e.data));
+  ws.onclose = () => { term.write("\r\n[session ended]\r\n"); say("Session ended.", ""); };
+  const enc = new TextEncoder();
+  term.onData((d) => { if (ws.readyState === 1) ws.send(enc.encode(d)); });
+  window.addEventListener("resize", size);
+}
+
+$("open").onclick = async () => {
+  const user = $("user").value.trim();
+  if (!user) return say("Name the user to log in as.", "bad");
+  $("open").disabled = true;
+  try {
+    if (!window.isSecureContext || !window.PublicKeyCredential) {
+      throw new Error("passkeys need this page over HTTPS on the site's domain");
+    }
+    say("Asking the site to propose the login...");
+    const s = await post("/start", { user });
+    if (s.status !== 200) throw new Error(s.v.error || `the login was not proposed (${s.status})`);
+    const c = s.v;
+    await checked(c, user);
+    say("Approve with your passkey.");
+    const cred = await navigator.credentials.get({
+      publicKey: { rpId: usableRp(c), challenge: b64u.dec(c.challenge), userVerification: "required", timeout: 120000 },
+    });
+    const assertion = {
+      credential_id: b64u.enc(cred.rawId),
+      authenticator_data: b64u.enc(cred.response.authenticatorData),
+      client_data_json: b64u.enc(cred.response.clientDataJSON),
+      signature: b64u.enc(cred.response.signature),
+    };
+    const a = await post("/approve", { order_hash: c.order_hash, nonce: c.nonce, assertion });
+    if (a.status === 202) throw new Error("approved by you; the site needs more approvals before this opens");
+    if (a.status !== 200) throw new Error(a.v.error || `the desk refused (${a.status})`);
+    say("Approved.", "ok");
+    terminal(a.v.ticket);
+  } catch (e) {
+    say(e.message || String(e), "bad");
+    $("open").disabled = false;
+  }
+};
+</script>
+</html>

@@ -7,15 +7,19 @@ endif()
 
 # One identity interface (fl_identity.h), one backend per chip family:
 #   esp32 (classic, no key engine): key derived from the SRAM fingerprint
+#   esp32s3: key derived from the silicon identifiers, or from the eFuse HMAC key when one is burned
 #   esp32c5 / esp32p4: key held by the Key Manager / ECDSA peripheral
 if(IDF_TARGET STREQUAL "esp32")
     set(identity_srcs "fl_identity_fingerprint.c" "fl_puf.c")
+elseif(IDF_TARGET STREQUAL "esp32s3")
+    set(identity_srcs "fl_identity_s3.c" "fl_derive.c" "fl_hmac_select.c")
 else()
     set(identity_srcs "fl_identity_hwkey.c")
 endif()
 
-idf_component_register(SRCS "fl_wire.c" "fl_crypto.c" "fl_trust.c" "fl_link.c" "fl_ota.c" "fl_net.c" ${identity_srcs}
+idf_component_register(SRCS "fl_wire.c" "fl_crypto.c" "fl_trust.c" "fl_link.c" "fl_ota.c" "fl_net.c" "fl_request.c" "fl_http.c" "fl_gateway.c"
+                            ${identity_srcs}
                        INCLUDE_DIRS "include" "../../provision"
                        REQUIRES mbedtls nvs_flash esp_driver_uart efuse app_update esp_timer
                                 esp_partition bootloader_support micro-ecc esp_app_format
-                                esp_wifi esp_netif esp_event lwip heap)
+                                esp_wifi esp_netif esp_event lwip heap esp_hw_support esp_driver_usb_serial_jtag)

@@ -1,0 +1,22 @@
+[package]
+name = "furcate-test-fido"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A software FIDO authenticator for OpenSSH, for tests only."
+publish = false
+
+# Loaded by ssh and ssh-keygen as a SecurityKeyProvider in tests. It keeps the
+# private key in the key handle, which is exactly what a real authenticator
+# never does: nothing outside a test may load it.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc.workspace = true
+p256.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+furcate-authn = { path = "../furcate-authn" }

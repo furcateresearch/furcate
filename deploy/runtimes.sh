@@ -39,7 +39,7 @@
 # computed when they were uploaded (the `digest` field of the release API).
 set -eu
 
-NODE_VER=24.21.0
+NODE_VER=24.22.1
 UV_VER=0.12.23
 
 # ggml-org/llama.cpp. Serves an OpenAI-compatible API including tool calling,
@@ -89,7 +89,7 @@ case "$arch" in
   x86_64|amd64|x86-64)
     arch=x86_64
     NODE_ARCH=x64
-    NODE_SHA=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+    NODE_SHA=6c172a9ab6718f7b801fb5a7bd486af2ee5e32758086a04b84fcce2aa77095e6
     UV_TRIPLE=x86_64-unknown-linux-gnu
     UV_SHA=9167d72b3319674b6303c4cbe071854bba13ebdf3d76b1a7cbdc175471fb66d6
     LLAMA_FLAVOUR=vulkan-x64
@@ -98,7 +98,7 @@ case "$arch" in
   aarch64|arm64)
     arch=aarch64
     NODE_ARCH=arm64
-    NODE_SHA=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
+    NODE_SHA=dbabf7a1cbf947e6059ffad2c27b80041db97dea1e553b62afdee7f13fca336e
     UV_TRIPLE=aarch64-unknown-linux-gnu
     UV_SHA=6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f
     LLAMA_FLAVOUR=vulkan-arm64

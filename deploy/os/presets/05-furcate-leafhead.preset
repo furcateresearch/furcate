@@ -1,0 +1,4 @@
+# The leaf-head extension's service, enabled as the Furcate extension's are
+# (see 05-furcate.preset). The unit starts only on a node that has written
+# /etc/furcate/leaf-head.env.
+enable furcate-leaf-head.service

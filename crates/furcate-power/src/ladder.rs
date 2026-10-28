@@ -54,6 +54,88 @@ impl Rung {
     }
 }
 
+
+/// Thresholds for a supply that reports charge but not runtime.
+///
+/// The Green Cell publishes no runtime and its low-battery flag is unproven,
+/// so the ladder descends on the charge left and on how long the site has been
+/// on battery, whichever is worse. All of it is configuration: the figures
+/// below are starting points for a small supply, not facts about any one.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Triggers {
+    /// Seconds on battery to absorb before acting at all.
+    pub dwell_secs: u64,
+    /// Capture at or below this charge, or after this long on battery.
+    pub capture_charge_pct: f64,
+    pub capture_after_secs: u64,
+    /// Quiesce at or below this charge, or after this long on battery.
+    pub quiesce_charge_pct: f64,
+    pub quiesce_after_secs: u64,
+    /// Halt at or below this charge, or after this long on battery. The charge
+    /// line is the supply's own `battery.charge.low`.
+    pub halt_charge_pct: f64,
+    pub halt_after_secs: u64,
+    /// Whether the driver's `LB` flag halts by itself. Off until it is proven
+    /// on the supply in use; the flag is still reported either way.
+    pub trust_lb: bool,
+    /// An outage is confirmed only after this many consecutive on-battery
+    /// reads from upsd, spread over at least `confirm_secs`. One read, a parse
+    /// error or stale data never starts the ladder.
+    pub confirm_reads: u32,
+    pub confirm_secs: u64,
+    /// Contact with upsd lost while the last confirmed state was on battery
+    /// has to last this long before the ladder keeps counting time without it.
+    /// Lost contact while on line never acts at all.
+    pub commbad_secs: u64,
+}
+
+impl Default for Triggers {
+    fn default() -> Self {
+        Self {
+            dwell_secs: 20,
+            capture_charge_pct: 80.0,
+            capture_after_secs: 180,
+            quiesce_charge_pct: 65.0,
+            quiesce_after_secs: 420,
+            halt_charge_pct: 50.0,
+            halt_after_secs: 900,
+            trust_lb: false,
+            confirm_reads: 3,
+            confirm_secs: 20,
+            commbad_secs: 60,
+        }
+    }
+}
+
+impl Triggers {
+    pub fn validate(&self) -> Result<(), String> {
+        let pct = [self.capture_charge_pct, self.quiesce_charge_pct, self.halt_charge_pct];
+        if pct.iter().any(|p| !p.is_finite() || *p < 0.0 || *p > 100.0) {
+            return Err("triggers: charge lines must be between 0 and 100".into());
+        }
+        if !(pct[0] >= pct[1] && pct[1] >= pct[2]) {
+            return Err("triggers: capture, quiesce and halt charge lines must descend".into());
+        }
+        if !(self.capture_after_secs <= self.quiesce_after_secs && self.quiesce_after_secs <= self.halt_after_secs) {
+            return Err("triggers: capture, quiesce and halt times must not decrease".into());
+        }
+        if self.confirm_reads < 2 || self.confirm_secs < 5 {
+            return Err("triggers: an outage needs at least 2 reads over at least 5s to be confirmed".into());
+        }
+        Ok(())
+    }
+}
+
+/// What the supply said, reduced to what the ladder needs.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UpsObservation {
+    /// `None` when the supply's state is unknown: the ladder holds.
+    pub state: Option<PowerState>,
+    pub charge_pct: Option<f64>,
+    pub runtime_left: Option<u64>,
+}
+
 /// Ladder configuration and current position.
 pub struct Ladder {
     /// Seconds on battery to absorb before acting at all. Without this a
@@ -125,6 +207,60 @@ impl Ladder {
         self.rung
     }
 
+    /// Feed the ladder what a charge-reporting supply said.
+    ///
+    /// Unknown state holds the rung: neither descending nor climbing on a
+    /// status nobody could read. On battery the rung is the worst of the
+    /// dwell, the runtime estimate (when there is one), the charge lines and
+    /// the time spent on battery. Only the supply can take the ladder to
+    /// `Halt`, through the charge and time lines or a trusted `LB`.
+    pub fn observe_ups(&mut self, obs: UpsObservation, low_flag: bool, t: &Triggers, now: u64) -> Rung {
+        let Some(state) = obs.state else {
+            return self.rung;
+        };
+        match state {
+            PowerState::OnLine => self.observe(PowerState::OnLine, now, None),
+            PowerState::LowBattery => self.observe(PowerState::LowBattery, now, obs.runtime_left),
+            PowerState::OnBattery => {
+                if low_flag && t.trust_lb {
+                    return self.observe(PowerState::LowBattery, now, obs.runtime_left);
+                }
+                let since = *self.on_battery_since.get_or_insert(now);
+                let elapsed = now.saturating_sub(since);
+                if elapsed < t.dwell_secs {
+                    return self.rung;
+                }
+                self.observe(PowerState::OnBattery, now, obs.runtime_left);
+                let charge = obs.charge_pct;
+                let mut target = Rung::Shed;
+                if charge.is_some_and(|c| c <= t.capture_charge_pct) || elapsed >= t.capture_after_secs {
+                    target = Rung::Capture;
+                }
+                if charge.is_some_and(|c| c <= t.quiesce_charge_pct) || elapsed >= t.quiesce_after_secs {
+                    target = Rung::Quiesce;
+                }
+                if charge.is_some_and(|c| c <= t.halt_charge_pct) || elapsed >= t.halt_after_secs {
+                    target = Rung::Halt;
+                }
+                self.rung = self.rung.max(target);
+                self.rung
+            }
+        }
+    }
+
+    /// Withdraw a halt that has not been carried out.
+    ///
+    /// `observe` latches `Halt` so that flapping power cannot resurrect or
+    /// repeat it. The shutdown plan, which alone knows whether anything has
+    /// actually stopped, calls this when mains returned before this node's
+    /// turn. Refused if power is not on line as far as the ladder knows.
+    pub fn stand_down(&mut self) -> Rung {
+        if self.rung == Rung::Halt && self.on_battery_since.is_none() {
+            self.rung = Rung::Nominal;
+        }
+        self.rung
+    }
+
     /// Descend because of something other than the supply.
     ///
     /// Heat is the second cause, and it descends the same ladder: both are a
@@ -158,6 +294,90 @@ impl Ladder {
             Rung::Quiesce => &["quiesce databases", "drain workloads", "unmount cleanly"],
             Rung::Halt => &["halt leaf domains", "halt workers", "halt controller last"],
         }
+    }
+}
+
+#[cfg(test)]
+mod ups_tests {
+    use super::*;
+
+    fn ob(charge: Option<f64>) -> UpsObservation {
+        UpsObservation { state: Some(PowerState::OnBattery), charge_pct: charge, runtime_left: None }
+    }
+    fn ol() -> UpsObservation {
+        UpsObservation { state: Some(PowerState::OnLine), charge_pct: Some(100.0), runtime_left: None }
+    }
+
+    #[test]
+    fn a_simulated_drain_descends_by_charge_and_ends_at_halt() {
+        let t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        assert_eq!(l.observe_ups(ob(Some(99.0)), false, &t, 0), Rung::Nominal, "dwell");
+        assert_eq!(l.observe_ups(ob(Some(98.0)), false, &t, 30), Rung::Shed);
+        assert_eq!(l.observe_ups(ob(Some(78.0)), false, &t, 60), Rung::Capture);
+        assert_eq!(l.observe_ups(ob(Some(64.0)), false, &t, 90), Rung::Quiesce);
+        assert_eq!(l.observe_ups(ob(Some(50.0)), false, &t, 120), Rung::Halt);
+    }
+
+    #[test]
+    fn with_no_charge_the_time_on_battery_still_descends() {
+        let t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        l.observe_ups(ob(None), false, &t, 0);
+        assert_eq!(l.observe_ups(ob(None), false, &t, 25), Rung::Shed);
+        assert_eq!(l.observe_ups(ob(None), false, &t, 200), Rung::Capture);
+        assert_eq!(l.observe_ups(ob(None), false, &t, 500), Rung::Quiesce);
+        assert_eq!(l.observe_ups(ob(None), false, &t, 901), Rung::Halt);
+    }
+
+    #[test]
+    fn an_untrusted_low_battery_flag_does_not_halt_but_a_trusted_one_does() {
+        let mut t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        l.observe_ups(ob(Some(90.0)), true, &t, 0);
+        assert_eq!(l.observe_ups(ob(Some(90.0)), true, &t, 30), Rung::Shed);
+        t.trust_lb = true;
+        assert_eq!(l.observe_ups(ob(Some(90.0)), true, &t, 31), Rung::Halt);
+    }
+
+    #[test]
+    fn mains_returning_undoes_a_partial_descent() {
+        let t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        l.observe_ups(ob(Some(90.0)), false, &t, 0);
+        l.observe_ups(ob(Some(70.0)), false, &t, 40);
+        assert_eq!(l.rung(), Rung::Capture);
+        assert_eq!(l.observe_ups(ol(), false, &t, 50), Rung::Nominal);
+    }
+
+    #[test]
+    fn a_pending_halt_is_withdrawn_when_mains_returns_and_not_before() {
+        let t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        l.observe_ups(ob(Some(90.0)), false, &t, 0);
+        l.observe_ups(ob(Some(40.0)), false, &t, 40);
+        assert_eq!(l.rung(), Rung::Halt);
+        assert_eq!(l.stand_down(), Rung::Halt, "still on battery");
+        assert_eq!(l.observe_ups(ol(), false, &t, 50), Rung::Halt, "latched by observe");
+        assert_eq!(l.stand_down(), Rung::Nominal);
+    }
+
+    #[test]
+    fn an_unknown_state_holds_the_rung() {
+        let t = Triggers::default();
+        let mut l = Ladder::default_for_small_ups();
+        l.observe_ups(ob(Some(90.0)), false, &t, 0);
+        l.observe_ups(ob(Some(90.0)), false, &t, 40);
+        let unknown = UpsObservation { state: None, charge_pct: None, runtime_left: None };
+        assert_eq!(l.observe_ups(unknown, false, &t, 50), Rung::Shed);
+    }
+
+    #[test]
+    fn bad_thresholds_are_refused() {
+        let mut t = Triggers::default();
+        t.halt_charge_pct = 90.0;
+        assert!(t.validate().is_err());
+        assert!(Triggers::default().validate().is_ok());
     }
 }
 

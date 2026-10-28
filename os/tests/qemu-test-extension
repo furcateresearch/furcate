@@ -1,0 +1,102 @@
+#!/bin/sh
+# A test extension for os/tests/qemu-boot, signed with a throwaway key, and
+# planted on the test's own copy of the disk. It ships what the board's
+# extensions ship and what a cold boot must make take effect after the merge:
+#
+#   a udev rule (KERNEL=="loop-control": group furcate-qtest, 0660, plus
+#     an ENV property so the boot check below has something reliable to
+#     read -- GROUP/MODE on a node already present at coldplug is not), with
+#     its group from sysusers.d, as the signing device rule in hw-rpi5;
+#   a unit wanted through a multi-user.target.wants link inside the
+#     extension (furcate-qtest-ext.service), as iwd in hw-rpi5;
+#   a unit enabled through a link in /etc on the state partition
+#     (furcate-qtest-etc.service), as furcated and furcate-wg.
+#
+#   os/tests/qemu-test-extension <disk.raw> <work-dir> <seeded-furcate-version>
+#
+# The disk's store gets furcate-qtest 1.0.0-qtest1, /etc/verity.d gets the
+# throwaway certificate (the test disk only; systemd checks extension
+# signatures in userspace against /etc/verity.d and /usr/lib/verity.d), and
+# boot-a gets /qtest/{v2,v1b} for the live-install checks in qemu-checks:
+#   v2   1.0.0-qtest2: v1 plus a rule for /dev/zero (property FURCATE_QTEST=2)
+#        and a unit wanted inside the extension (furcate-qtest-live.service);
+#   v1b  1.0.0-qtest1 again, a different image (one more file): refused.
+# Needs openssl, systemd-repart (254 or later), mkfs.erofs, debugfs, mtools.
+set -eu
+usage="usage: qemu-test-extension <disk.raw> <work-dir> <seeded-furcate-version>"
+disk=${1:?$usage}; w=${2:?$usage}/qtest; fver=${3:?$usage}
+mkdir -p "$w"
+off() { sfdisk -J "$disk" | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["partitiontable"]
+print([p for p in t["partitions"] if p.get("name") == sys.argv[1]][0]["start"] * t.get("sectorsize", 512))' "$1"; }
+state="$disk?offset=$(off state)"
+boota="$disk@@$(off boot-a)"
+dbg() { debugfs -w -R "$1" "$state" >/dev/null 2>&1; }
+
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$w/key.pem" -out "$w/cert.crt" \
+    -days 2 -subj "/CN=furcate-qemu-test-extension" >/dev/null 2>&1
+# The ABI the base declares, as the seeded furcate extension requires it.
+abi=$(debugfs -R "cat /var/lib/furcate/extensions/furcate/$fver/furcate.release" "$state" 2>/dev/null \
+    | sed -n 's/^FURCATE_REQUIRES_ABI=//p' | tr -d '"' | tail -1)
+[ -n "$abi" ] || { echo "qemu-test-extension: no FURCATE_REQUIRES_ABI in the seeded furcate $fver on the disk" >&2; exit 1; }
+
+build() { # build NAME-DIR VERSION [extra]: tree, image, release
+    t="$w/$1/tree"; v=$2
+    mkdir -p "$t/usr/lib/extension-release.d" "$t/usr/lib/udev/rules.d" "$t/usr/lib/sysusers.d" \
+        "$t/usr/lib/systemd/system/multi-user.target.wants"
+    printf 'ID=_any\nARCHITECTURE=arm64\nEXTENSION_RELOAD_MANAGER=1\nFURCATE_REQUIRES_ABI=%s\nFURCATE_VERSION=%s\n' "$abi" "$v" \
+        > "$t/usr/lib/extension-release.d/extension-release.furcate-qtest"
+    echo 'KERNEL=="loop-control", GROUP="furcate-qtest", MODE="0660", ENV{FURCATE_QTEST_BOOT}="1"' > "$t/usr/lib/udev/rules.d/60-furcate-qtest.rules"
+    echo 'g furcate-qtest -' > "$t/usr/lib/sysusers.d/furcate-qtest.conf"
+    for u in ext etc; do
+        printf '[Unit]\nDescription=Furcate qemu test unit (%s)\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n\n[Install]\nWantedBy=multi-user.target\n' "$u" \
+            > "$t/usr/lib/systemd/system/furcate-qtest-$u.service"
+    done
+    ln -sf ../furcate-qtest-ext.service "$t/usr/lib/systemd/system/multi-user.target.wants/furcate-qtest-ext.service"
+    case "${3:-}" in
+        live)
+            echo 'KERNEL=="zero", ENV{FURCATE_QTEST}="2"' > "$t/usr/lib/udev/rules.d/61-furcate-qtest-live.rules"
+            printf '[Unit]\nDescription=Furcate qemu test unit (live)\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nExecStart=/bin/true\n' \
+                > "$t/usr/lib/systemd/system/furcate-qtest-live.service"
+            ln -sf ../furcate-qtest-live.service "$t/usr/lib/systemd/system/multi-user.target.wants/furcate-qtest-live.service" ;;
+        other) echo other > "$t/usr/lib/furcate-qtest-other" ;;
+    esac
+    d="$w/$1/defs"; mkdir -p "$d"
+    printf '[Partition]\nType=root\nFormat=erofs\nCopyFiles=/usr:/usr\nVerity=data\nVerityMatchKey=root\nMinimize=best\n' > "$d/10-root.conf"
+    printf '[Partition]\nType=root-verity\nVerity=hash\nVerityMatchKey=root\nMinimize=best\n' > "$d/20-root-verity.conf"
+    printf '[Partition]\nType=root-verity-sig\nVerity=signature\nVerityMatchKey=root\n' > "$d/30-root-verity-sig.conf"
+    mkdir -p "$w/$1/out"
+    systemd-repart --empty=create --size=auto --dry-run=no --offline=yes --architecture=arm64 \
+        --definitions="$d" --copy-source="$t" --private-key="$w/key.pem" --certificate="$w/cert.crt" \
+        "$w/$1/out/furcate-qtest.raw" >/dev/null
+    cp "$t/usr/lib/extension-release.d/extension-release.furcate-qtest" "$w/$1/out/furcate-qtest.release"
+}
+build v1 1.0.0-qtest1
+build v2 1.0.0-qtest2 live
+build v1b 1.0.0-qtest1 other
+cmp -s "$w/v1/out/furcate-qtest.raw" "$w/v1b/out/furcate-qtest.raw" && { echo "qemu-test-extension: v1b is not a different image" >&2; exit 1; }
+
+# The state partition: the store, the certificate, the /etc enablement.
+s=/var/lib/furcate/extensions/furcate-qtest/1.0.0-qtest1
+dbg "mkdir /var/lib/furcate/extensions/furcate-qtest"
+dbg "mkdir $s"
+dbg "write $w/v1/out/furcate-qtest.raw $s/furcate-qtest.raw"
+dbg "write $w/v1/out/furcate-qtest.release $s/furcate-qtest.release"
+dbg "mkdir /etc/verity.d"
+dbg "write $w/cert.crt /etc/verity.d/furcate-qemu-test.crt"
+dbg "mkdir /etc/systemd/system/multi-user.target.wants"
+dbg "symlink /etc/systemd/system/multi-user.target.wants/furcate-qtest-etc.service /usr/lib/systemd/system/furcate-qtest-etc.service"
+for p in /var/lib/furcate/extensions/furcate-qtest $s $s/furcate-qtest.raw $s/furcate-qtest.release \
+         /etc/verity.d /etc/verity.d/furcate-qemu-test.crt /etc/systemd/system/multi-user.target.wants/furcate-qtest-etc.service; do
+    dbg "set_inode_field $p uid 0"; dbg "set_inode_field $p gid 0"
+done
+for p in $s/furcate-qtest.raw $s/furcate-qtest.release /etc/verity.d/furcate-qemu-test.crt; do dbg "set_inode_field $p mode 0100644"; done
+for p in /var/lib/furcate/extensions/furcate-qtest $s /etc/verity.d; do dbg "set_inode_field $p mode 040755"; done
+debugfs -R "stat $s/furcate-qtest.raw" "$state" 2>/dev/null | grep -q "Size: $(stat -c %s "$w/v1/out/furcate-qtest.raw")" \
+    || { echo "qemu-test-extension: the image did not land on the state partition" >&2; exit 1; }
+
+# boot-a: the live-install images.
+mmd -i "$boota" ::qtest ::qtest/v2 ::qtest/v1b 2>/dev/null || true
+for v in v2 v1b; do mcopy -o -i "$boota" "$w/$v/out/furcate-qtest.raw" "$w/$v/out/furcate-qtest.release" "::qtest/$v/"; done
+echo "qemu-test-extension: furcate-qtest 1.0.0-qtest1 planted (ABI $abi); v2 and v1b on boot-a"

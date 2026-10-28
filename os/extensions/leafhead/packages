@@ -1,0 +1,5 @@
+# The leaf head's Python dependency, from the Ubuntu archive of the base's own
+# release, built for the base's own Python. Only what the base lacks is carried
+# (hw-rpi5/resolve decides against the base's file list); nothing here is a pip
+# wheel. Its use ends when the base package set carries it.
+python3-cryptography

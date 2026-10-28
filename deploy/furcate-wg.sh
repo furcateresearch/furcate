@@ -45,6 +45,12 @@
 #   port=<n>
 #   peer=<pubkey> <allowed-ip> [endpoint] [keepalive]
 #   remove=<pubkey>
+#   refresh=<epoch seconds>
+#
+# `refresh` carries no value of its own. It makes the plan body differ, so
+# every peer is applied again: setting a peer's endpoint clears the local
+# source address WireGuard cached for it, which the agent needs after its own
+# underlay address changed.
 #
 # Anything else is ignored rather than guessed at.
 set -eu
@@ -109,6 +115,48 @@ emit() {
 }
 
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+# One sentence when the overlay's state changes, never at every pass: the
+# report above is for the agent, this is for a person (`furcate-os log`, the
+# console panel, the controller receiving this journal). Journal fields
+# FURCATE_EVENT, FURCATE_COMPONENT, FURCATE_SEVERITY, FURCATE_HINT, through
+# logger --journald; plain stderr where that is missing. FURCATE_EVENT_LOG
+# names a file to append the fields to instead (tests).
+EV_LAST=""
+overlay_event() { # overlay_event STATE EVENT SEVERITY MESSAGE HINT
+  [ "$1" = "$EV_LAST" ] && return 0
+  EV_LAST=$1
+  case "$3" in error) pri=3 ;; warning) pri=4 ;; *) pri=5 ;; esac
+  msg="furcate-wg: $4"
+  [ -n "$5" ] && msg="$msg -- $5"
+  fields="MESSAGE=$msg
+PRIORITY=$pri
+SYSLOG_IDENTIFIER=furcate-wg
+FURCATE_EVENT=$2
+FURCATE_COMPONENT=furcate-wg
+FURCATE_SEVERITY=$3
+FURCATE_HINT=$5"
+  if [ -n "${FURCATE_EVENT_LOG:-}" ]; then
+    printf '%s\n\n' "$fields" >> "$FURCATE_EVENT_LOG"
+  elif ! { command -v logger >/dev/null 2>&1 && printf '%s\n' "$fields" | logger --journald 2>/dev/null; }; then
+    echo "$msg" >&2
+  fi
+  return 0
+}
+
+# down WHY: the overlay is down for this reason, said once. A pass that
+# reported it down says nothing more, so a failure retried every pass is one
+# event and not two that alternate.
+PASS_DOWN=0
+down() {
+  PASS_DOWN=1
+  case "$1" in
+    isolated*) overlay_event "down $1" overlay-isolated notice "the overlay is down: $1" "an operator's release order brings it back" ;;
+    "wireguard-tools not installed") overlay_event "down $1" overlay-down error "the overlay is down: $1" "install wireguard-tools" ;;
+    "no plan"*|"plan is empty") overlay_event "down $1" overlay-waiting notice "the overlay is not up yet: $1" "the node agent writes the plan once it has joined its controller; see 'furcatectl cell standing' or the agent line of the console panel" ;;
+    *) overlay_event "down $1" overlay-down error "the overlay is down: $1" "see 'journalctl -u furcate-wg -b'" ;;
+  esac
+}
 
 have_wg() { command -v wg >/dev/null 2>&1; }
 
@@ -231,11 +279,23 @@ report() {
   if [ "$EPHEMERAL" = 1 ] && [ -n "$KEY_BORN" ]; then
     lease=",\"ephemeral\":true,\"key_born_at\":$KEY_BORN,\"lease\":$LEASE"
   fi
+  if [ "$PASS_DOWN" = 1 ]; then
+    :
+  elif [ "$peers" -gt 0 ] && [ "$latest" -gt 0 ] && [ $(( $(date +%s) - latest )) -lt 180 ]; then
+    overlay_event "up $iface" overlay-up notice "the overlay is up on $iface with $peers peer(s)" ""
+  elif [ "$peers" -gt 0 ]; then
+    overlay_event "stale $iface" overlay-no-handshake warning \
+      "the overlay on $iface has $peers peer(s) and no handshake in the last 3 minutes" \
+      "check that the controller is reachable over the underlay (UDP $(wg show "$iface" listen-port 2>/dev/null || echo 51820)) and holds this node's current key"
+  else
+    overlay_event "nopeers $iface" overlay-no-peers warning "the overlay on $iface has no peers" "the node agent adds peers once its controller admits it"
+  fi
   emit "{\"ok\":true,\"iface\":\"$iface\",\"public_key\":\"$pub\",\"peers\":$peers,\"latest_handshake\":$latest,\"handshakes\":{$hs},\"endpoints\":{$eps}$lease,\"at_ms\":$(now_ms)}"
 }
 
 last=""
 while true; do
+  PASS_DOWN=0
   # Reported every pass whatever happens, including when there is nothing to do.
   # A helper that goes silent when idle is indistinguishable from one that has
   # died, and the agent above it cannot tell "no plan yet" from "this stopped
@@ -244,15 +304,19 @@ while true; do
   if [ -e "$ISOLATED" ]; then
     # Isolated by order: the overlay stays down until a release order, and
     # the plan is not applied, since applying it brings the interface up.
+    down "isolated by order; the overlay stays down until released"
     emit "{\"ok\":false,\"why\":\"isolated by order; the overlay stays down until released\",\"at_ms\":$(now_ms)}"
     last=""
   elif ! have_wg; then
+    down "wireguard-tools not installed"
     emit "{\"ok\":false,\"why\":\"wireguard-tools not installed\",\"at_ms\":$(now_ms)}"
   elif [ ! -r "$PLAN" ]; then
+    down "no plan at $PLAN"
     emit "{\"ok\":false,\"why\":\"no plan at $PLAN\",\"at_ms\":$(now_ms)}"
   else
     body=$(cat "$PLAN" 2>/dev/null || echo "")
     if [ -z "$body" ]; then
+      down "plan is empty"
       emit "{\"ok\":false,\"why\":\"plan is empty\",\"at_ms\":$(now_ms)}"
     else
       iface=$(printf '%s\n' "$body" | sed -n 's/^iface=//p' | head -1)
@@ -274,6 +338,7 @@ while true; do
         if apply "$iface" "$address" "$port"; then
           last="$body"
         else
+          down "applying the plan to $iface failed"
           emit "{\"ok\":false,\"why\":\"apply failed\",\"iface\":\"$iface\",\"at_ms\":$(now_ms)}"
         fi
       fi

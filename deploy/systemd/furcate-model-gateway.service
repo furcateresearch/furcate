@@ -1,0 +1,46 @@
+[Unit]
+Description=Furcate model gateway (signed requests from the cell)
+Documentation=https://github.com/furcateresearch/furcate
+# Enabled by the model-server extension's preset, and inert until the node has a
+# model: `furcatectl model gateway` refuses with no weights, so the file below
+# (written by it, and removed by `furcatectl model stop gateway`) exists only on
+# a node that has pulled one and chosen how to serve it. To keep the gateway off
+# on a host, mask it.
+ConditionPathExists=/etc/furcate/model-gateway.env
+ConditionPathExists=/var/lib/furcate/models/gateway.token
+# The door admits a request signed by the operator or by a leaf of the cell this
+# node heads, so it reads the node's cell files and is ordered after the node
+# agent and the overlay it answers on.
+Requires=furcate-model-router.service
+Wants=furcated.service furcate-wg.service network-online.target
+After=furcate-model-router.service furcated.service furcate-wg.service network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/furcate/model-gateway.env
+Environment=FURCATE_CONFIG_DIR=/etc/furcate
+Environment=FURCATE_STATE_DIR=/var/lib/furcate
+Environment=FURCATE_MODELS_DIR=/var/lib/furcate/models
+# The bind address is the operator's, in the file above; 0.0.0.0 on a node whose
+# firewall (furcate-firewall) limits 8750 to the overlay and the LAN
+# interfaces it names. Every request is signed or refused with 401, so an
+# interface the firewall opens still holds no open model.
+ExecStart=/usr/bin/furcatectl model front --bind ${FURCATE_MODEL_BIND} --port 8750 --upstream-port 8751
+Restart=on-failure
+RestartSec=2
+
+# Root, because the router's loopback credential (/var/lib/furcate/models/gateway.token)
+# is root:root 0600 and the door presents it upstream.
+NoNewPrivileges=true
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -9,6 +9,10 @@ if(NOT DEFINED ENV{FL_FW_VERSION})
 endif()
 set(PROJECT_VER "$ENV{FL_FW_VERSION}")
 
+# The ESP32-S3 target needs the ESP-IDF Bluetooth component (components/bt,
+# with its controller library and NimBLE host submodules) for the sensing
+# module link. The minimal install in docs/MINIMAL-SETUP.md omits it: add it
+# to that tree before building the S3 target.
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # Build only what main needs: Wi-Fi station and lwip for the outbound link, no listeners.
 set(COMPONENTS main)

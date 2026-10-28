@@ -355,7 +355,11 @@ mod tests {
         // Relative to this crate, so it works from the workspace root or from
         // the crate directory. Absent in a package built without the deploy
         // directory, in which case there is nothing to check.
-        let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../deploy/furcate-actuator.sh");
+        // Found by walking up from the crate, so it works at either tree depth.
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .map(|a| a.join("deploy/furcate-actuator.sh"))
+            .find(|p| p.is_file())?;
         std::fs::read_to_string(p).ok()
     }
 

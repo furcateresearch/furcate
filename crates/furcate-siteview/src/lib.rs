@@ -289,10 +289,11 @@ impl SiteView {
         for r in self.readings.values() {
             let Some(h) = r.health.as_ref() else { continue };
             let Some(id) = h.get("node_id").and_then(|v| v.as_str()) else { continue };
+            let fresh = freshness(Some(r), now) == "fresh";
             out.insert(
                 id.to_string(),
                 furcate_topology::cell::MachineReading {
-                    up: freshness(Some(r), now) == "fresh",
+                    up: fresh,
                     cores: h
                         .get("capability")
                         .and_then(|c| c.get("cpu_cores"))
@@ -305,10 +306,40 @@ impl SiteView {
                         .and_then(|w| w.get("workloads"))
                         .and_then(|w| w.as_array())
                         .map(|a| a.len() as u32),
+                    // Only from a fresh reading: a supply last seen healthy
+                    // two minutes ago is not known to be healthy now.
+                    supply: if fresh { supply_state(h) } else { None },
                 },
             );
         }
         out
+    }
+
+    /// The node id each machine answers to under the other names a cell record
+    /// uses for it: the key it signs cell links with and its name, both as it
+    /// reports them in its own `/healthz`. A key or name two machines claim
+    /// is left out rather than given to either.
+    pub fn machine_aliases(&self) -> BTreeMap<String, String> {
+        let mut out: BTreeMap<String, Option<String>> = BTreeMap::new();
+        for r in self.readings.values() {
+            let Some(h) = r.health.as_ref() else { continue };
+            let Some(id) = h.get("node_id").and_then(|v| v.as_str()) else { continue };
+            for field in ["cell_key", "name"] {
+                let Some(alias) = h.get(field).and_then(|v| v.as_str()).filter(|a| !a.is_empty() && *a != id) else {
+                    continue;
+                };
+                match out.get(alias) {
+                    Some(Some(other)) if other != id => {
+                        out.insert(alias.to_string(), None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        out.insert(alias.to_string(), Some(id.to_string()));
+                    }
+                }
+            }
+        }
+        out.into_iter().filter_map(|(a, id)| id.map(|id| (a, id))).collect()
     }
 
     /// What the read-only page states, from the same readings.
@@ -332,6 +363,10 @@ impl SiteView {
                         .and_then(|w| w.as_array())
                         .map(Vec::len),
                     custody: reading.and_then(|r| r.custody.as_ref()).map(custody_cell),
+                    supply: reading
+                        .filter(|r| freshness(Some(r), now_s()) == "fresh")
+                        .and_then(|r| r.health.as_ref())
+                        .and_then(supply_cell),
                     // No node here is a controller: the view holds no
                     // authority, so the page must not name one.
                     controller: false,
@@ -348,6 +383,33 @@ impl SiteView {
             ledger_entries: 0,
         }
     }
+}
+
+/// A node's supply state from its `/healthz`, when it measured one.
+pub fn supply_state(health: &serde_json::Value) -> Option<furcate_topology::cell::SupplyState> {
+    let supply = health.get("supply")?;
+    if supply.get("measured").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    serde_json::from_value(supply.get("state")?.clone()).ok()
+}
+
+/// One line for the page: the supply's state and the figures behind it, or
+/// nothing when the node measured none.
+fn supply_cell(health: &serde_json::Value) -> Option<String> {
+    let state = supply_state(health)?;
+    let status = &health["supply"]["status"];
+    let mut line = state.as_str().to_string();
+    if let Some(v) = status.get("ext5v_v").and_then(|v| v.as_f64()) {
+        line.push_str(&format!(", 5V rail {v:.2} V"));
+    }
+    if let Some(c) = status.get("soc_temp_c").and_then(|v| v.as_f64()) {
+        line.push_str(&format!(", SoC {c:.0} °C"));
+    }
+    if status.get("undervoltage_since_boot").and_then(|v| v.as_bool()) == Some(true) {
+        line.push_str(", undervolted since boot");
+    }
+    Some(line)
 }
 
 /// One line for the page: whether the node holds custody and at what class,
@@ -456,6 +518,44 @@ mod tests {
         let cell = row.custody.as_deref().unwrap();
         assert!(cell.starts_with("none (elected, tee)") && cell.contains("tpm_less"), "{cell}");
         assert!(web::dashboard(&v.overview()).contains("custody"));
+    }
+
+    #[test]
+    fn a_supply_is_carried_only_when_measured_and_fresh() {
+        use furcate_topology::cell::SupplyState;
+        let mut v = SiteView::new(Some("10.0.0.1:7616".into()), Vec::<String>::new());
+        let mut r = reading(1_000, true, "furcate:node:pi");
+        r.health = Some(json!({
+            "node_id": "furcate:node:pi",
+            "supply": {"measured": true, "state": "undervoltage", "age_secs": 3,
+                       "status": {"ts": 997, "ext5v_v": 4.71, "soc_temp_c": 61.0}},
+        }));
+        v.readings.insert("10.0.0.1:7616".into(), r.clone());
+        assert_eq!(supply_state(r.health.as_ref().unwrap()), Some(SupplyState::Undervoltage));
+        assert_eq!(supply_cell(r.health.as_ref().unwrap()).unwrap(), "undervoltage, 5V rail 4.71 V, SoC 61 °C");
+        let m = v.machine_readings(1_010);
+        assert_eq!(m["furcate:node:pi"].supply, Some(SupplyState::Undervoltage));
+        // A stale reading says nothing about the supply now.
+        let m = v.machine_readings(1_001 + STALE_SECS);
+        assert_eq!(m["furcate:node:pi"].supply, None);
+        // Not measured is not healthy.
+        let unmeasured = json!({"supply": {"measured": false, "why": "no report"}});
+        assert_eq!(supply_state(&unmeasured), None);
+        assert_eq!(supply_state(&json!({"node_id": "x"})), None);
+    }
+
+    #[test]
+    fn a_key_or_name_two_machines_claim_belongs_to_neither() {
+        let mut v = SiteView::new(Some("10.0.0.1:7616".into()), Vec::<String>::new());
+        for (ep, id, key, name) in [("10.0.0.1:7616", "furcate:node:a", "p256:aa", "a"), ("10.0.0.2:7616", "furcate:node:b", "p256:bb", "a")] {
+            let mut r = reading(100, true, id);
+            r.health = Some(json!({"node_id": id, "cell_key": key, "name": name}));
+            v.readings.insert(ep.into(), r);
+        }
+        let a = v.machine_aliases();
+        assert_eq!(a["p256:aa"], "furcate:node:a");
+        assert_eq!(a["p256:bb"], "furcate:node:b");
+        assert!(!a.contains_key("a"));
     }
 
     #[test]

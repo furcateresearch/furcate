@@ -16,6 +16,12 @@
 #                                               (the inference runtime)
 #   os/build.sh <board> model-seal <signature.b64>
 #                                               seal it (sign <out>/model/roothash first)
+#   os/build.sh <board> leafhead-extension <base-usr-list> <leaf-firmware-checkout>
+#                                               stage the leaf-head extension (the head
+#                                               service and Python's cryptography); the
+#                                               head's code is built from that checkout
+#   os/build.sh <board> leafhead-seal <signature.b64>
+#                                               seal it (sign <out>/leafhead/roothash first)
 #   os/build.sh <board> image                   assemble the disk image with mkosi
 #     ... sign <out>/<image>.sha256 with os/release/sign-on, then:
 #   os/build.sh <board> finish <signature.b64>  attach and check the image signature
@@ -112,6 +118,16 @@ model-extension)
     ;;
 model-seal)
     "$here/extensions/modelserver/build" seal "$out/model" "${1:?signature file}"
+    ;;
+leafhead-extension)
+    list=${1:?usage: os/build.sh <board> leafhead-extension <base-usr-list> <leaf-firmware-checkout>}
+    leaf=${2:?usage: os/build.sh <board> leafhead-extension <base-usr-list> <leaf-firmware-checkout>}
+    preflight $tools_extension dpkg-deb comm readelf git
+    capped "$here/extensions/leafhead/build" stage "$list" "$out/leafhead" "$version" "$arch" "$leaf"
+    echo "next: sign $out/leafhead/roothash, then os/build.sh $board leafhead-seal <signature.b64>"
+    ;;
+leafhead-seal)
+    "$here/extensions/leafhead/build" seal "$out/leafhead" "${1:?signature file}"
     ;;
 image)
     preflight $tools_image

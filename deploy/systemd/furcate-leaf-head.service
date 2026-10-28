@@ -1,0 +1,86 @@
+[Unit]
+Description=Furcate leaf head: the FL1 link to an ESP32 leaf over Wi-Fi
+Documentation=https://github.com/furcateresearch/furcate
+# Enabled by the leaf-head extension's preset, and inert until the node has a
+# configuration: without /etc/furcate/leaf-head.env the unit is skipped, not
+# failed. To keep it off on a host, mask it.
+ConditionPathExists=/etc/furcate/leaf-head.env
+# The node signature comes from the firmware cryptography broker, so the
+# broker's socket is wanted first.
+Wants=furcate-fwcrypto-broker.socket
+After=network.target furcate-fwcrypto-broker.socket
+
+[Service]
+Type=simple
+# The configuration is required, not optional: a head that starts with no
+# configuration would run with the wrong grant or none. The template is
+# /usr/share/furcate/leaf-head.env.example.
+EnvironmentFile=/etc/furcate/leaf-head.env
+# The entry is the leaf firmware repository's gateway program in head mode,
+# packaged by that repository's own host/gateway/build.sh at the commit pinned
+# in os/extensions/leafhead/head-commit. It signs through the firmware
+# cryptography broker (/run/furcate-os/fwcrypto.sock, key 1); there is no
+# fallback signer. Link, grant and leaf come from the environment file.
+ExecStart=/usr/bin/python3 /usr/lib/furcate-leaf-head/fl-gateway.pyz --link ${FL_LINK} --signer broker: --grant ${FL_GRANT} --leaf ${FL_LEAF} head --control /run/furcate-leaf-head/control.sock --every 30
+Restart=on-failure
+RestartSec=5
+
+# Runs as the account the firmware signing broker serves. The broker
+# (/run/furcate-os/fwcrypto.sock) answers root and exactly one other uid,
+# `furcate`, by SO_PEERCRED; a different account is refused ("peer not
+# allowed"). So the head shares that uid with furcated: its signing authority
+# is furcated's, and the sandbox below is what limits it. A per-key policy in
+# the broker, or a uid of its own for the head, is the improvement for the
+# base's owner after 16 October. The same account is the operator's login, so
+# the control socket needs no group of its own.
+User=furcate
+Group=furcate
+# The broker's socket is root:furcate-fwcrypto 0660, so reaching it takes the
+# group as well as the uid, as furcated does through the board extension's
+# drop-in. The group is made by that extension; without it this unit does not
+# start, which is right, since the head could not sign.
+SupplementaryGroups=furcate-fwcrypto
+StateDirectory=furcate-leaf-head
+# The head creates its control socket 0660 here; a local client running as the
+# same account reaches it.
+RuntimeDirectory=furcate-leaf-head
+RuntimeDirectoryMode=0750
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/furcate-leaf-head
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# TCP 7781 on the wired and wireless interfaces only: the cgroup drops every
+# packet on any other interface (the overlay, loopback), whatever address the
+# program binds.
+RestrictNetworkInterfaces=end0 wlan0
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SocketBindDeny=any
+SocketBindAllow=tcp:7781
+
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target

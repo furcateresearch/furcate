@@ -36,6 +36,7 @@ pub struct NodeOrders {
     agent: Arc<Mutex<super::Agent>>,
     kill: Mutex<KillSwitch>,
     custody: Option<Arc<super::keycustody::KeyCustody>>,
+    ssh_logins: Option<Arc<super::sshlogin::LoginKeys>>,
     counter_path: Option<PathBuf>,
     actuator: Arc<dyn Actuator>,
     /// The out-of-band path, or why there is none.
@@ -78,6 +79,7 @@ impl NodeOrders {
             agent,
             kill: Mutex::new(kill),
             custody: None,
+            ssh_logins: None,
             counter_path,
             actuator,
             out_of_band,
@@ -87,6 +89,13 @@ impl NodeOrders {
     /// Carry out `set_custody` orders against this node's key custody.
     pub fn with_custody(mut self, custody: Arc<super::keycustody::KeyCustody>) -> Self {
         self.custody = Some(custody);
+        self
+    }
+
+    /// Take `login` orders: this node holds the site's SSH CA, and the keys
+    /// waiting for approval are kept in `keys`.
+    pub fn with_ssh_logins(mut self, keys: Arc<super::sshlogin::LoginKeys>) -> Self {
+        self.ssh_logins = Some(keys);
         self
     }
 
@@ -125,6 +134,15 @@ impl Executor for NodeOrders {
             Target::Node { id } if *id == self.node_id => Ok(()),
             Target::Node { id } => Err(format!("this is {}, not {id}", self.node_id)),
             Target::Cluster | Target::Credential { .. } | Target::Custody { .. } => Ok(()),
+            // A login is carried out by the node holding the site's SSH CA,
+            // whichever machine it opens.
+            Target::Login { .. } => match &self.ssh_logins {
+                Some(_) if super::sshlogin::holds_ca() => Ok(()),
+                _ => Err(format!(
+                    "{} does not hold the site's SSH certificate authority",
+                    self.node_id
+                )),
+            },
             Target::Domain { id } => Err(format!(
                 "{} does not hold the site's domain tree, so it cannot tell whether it is \
                  under `{id}`; name the node, or the cluster",
@@ -140,6 +158,13 @@ impl Executor for NodeOrders {
         super::cells::order_in_scope(order, approval.approvers(), super::now_s())?;
         if order.action == Action::SetCustody {
             return self.set_custody(order, approval).map(Execution::Actuated);
+        }
+        if order.action == Action::Login {
+            let Some(keys) = &self.ssh_logins else {
+                return Err(format!("{} takes no login orders", self.node_id));
+            };
+            return super::sshlogin::issue(order, approval, keys, &super::sshlogin::furcate_ssh_signer)
+                .map(Execution::Actuated);
         }
         let now = super::now_s();
         let (steps, counter) = {
@@ -207,7 +232,9 @@ impl Executor for NodeOrders {
             {
                 OpKind::Power
             }
-            Some(a) if a == Action::CryptoErase.as_str() => OpKind::KeyUse,
+            Some(a) if a == Action::CryptoErase.as_str() || a == Action::Login.as_str() => {
+                OpKind::KeyUse
+            }
             Some(a)
                 if a == Action::Admit.as_str()
                     || a == Action::Revoke.as_str()

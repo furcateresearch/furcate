@@ -9,6 +9,7 @@ pub mod fingerprint;
 pub mod firmware_tpm;
 pub mod host;
 pub mod optee;
+pub mod rpi_fw_broker;
 pub mod rpi_fw_crypto;
 pub mod select;
 pub mod tpm2_tools;
@@ -23,10 +24,11 @@ pub mod tss_native;
 
 pub use fingerprint::{Characteristic, Continuity, Fingerprint, FingerprintRot, SealedKey};
 pub use host::SoftIdentity;
+pub use rpi_fw_broker::RpiFwBroker;
 pub use rpi_fw_crypto::RpiFwCrypto;
 pub use select::{
     emulated_tpm_allowed, endorsement, open_backend, select, Endorsement, NoHardwareRoot, Policy, Selection,
-    ALLOW_EMULATED_TPM,
+    ALLOW_EMULATED_TPM, FWCRYPTO_DIRECT,
 };
 pub use tpm2_tools::{Tpm2Tools, TpmVendor};
 

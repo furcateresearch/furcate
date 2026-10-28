@@ -1,0 +1,65 @@
+[Unit]
+Description=Furcate small processing node: verifies, logs and escalates what the micro processing nodes below it send
+Documentation=https://github.com/furcateresearch/furcate
+# Inert until the node has a configuration: without /etc/furcate/small-node.env
+# the unit is skipped, not failed. Nothing enables it; the operator does, after
+# writing the file (deploy/small-node/README.md).
+ConditionPathExists=/etc/furcate/small-node.env
+# The node signs with the board's firmware-held key through the signing
+# broker, so the broker's socket is wanted first. There is no fallback signer:
+# without the broker the program exits.
+Wants=furcate-fwcrypto-broker.socket
+After=furcate-fwcrypto-broker.socket
+
+[Service]
+Type=simple
+# SMALL_ARGS carries the directory, model, forward target and policy flags.
+EnvironmentFile=/etc/furcate/small-node.env
+ExecStart=/opt/tools/furcate-small serve --backend rpi-fw-crypto --state-dir /var/lib/furcate-small-node --listen unix:/run/furcate-small-node/ingest.sock $SMALL_ARGS
+Restart=on-failure
+RestartSec=5
+
+# The broker answers root and the `furcate` account, by peer credentials, and
+# its socket needs the group as well, exactly as the leaf head and furcated do.
+User=furcate
+Group=furcate
+SupplementaryGroups=furcate-fwcrypto
+StateDirectory=furcate-small-node
+StateDirectoryMode=0700
+RuntimeDirectory=furcate-small-node
+RuntimeDirectoryMode=0750
+WorkingDirectory=/var/lib/furcate-small-node
+UMask=0077
+
+# No network: frames arrive and escalations leave on a unix socket or a file.
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+MemoryMax=256M
+TasksMax=64
+StandardInput=null
+
+[Install]
+WantedBy=multi-user.target

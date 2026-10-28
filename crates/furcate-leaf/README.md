@@ -10,6 +10,8 @@ A development tool. Nothing in the shipped tree depends on it.
 
 - Binary `furcate-leaf`, no arguments. It attaches a simulated device to a parent, publishes a series of readings, and prints which were accepted or refused.
 
+- Binary `furcate-small`, the small processing node: `serve`, `replay` and `identity`. See `crates/open/furcate-sense/docs/small-processing-node.md` and `deploy/small-node/README.md`.
+
 ## Build and test
 
 From the repository root:

@@ -1,0 +1,72 @@
+{
+  "about": "physical-command golden vector; public test seeds, never real keys",
+  "command_canonical": "{\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"body\":{\"quantity\":\"temperature\",\"unit\":\"celsius\",\"value\":21.5},\"command_id\":\"cmd-00000001\",\"command_seq\":1,\"envelope\":{\"max\":28,\"max_rate_per_s\":3,\"min\":15},\"expires_at_ms\":1800000060000,\"format\":\"physical-command\",\"issued_at_ms\":1799999999000,\"kind\":\"setpoint\",\"mode\":\"shadow\",\"model_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"nonce\":\"0000000000000000000000abcdef0001\",\"not_before_ms\":1799999999000,\"policy_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"signature\":\"1c72a8be8c3c20b4bab697ed755fde99ade139850c61faf6558d61db57c50d5543f7478f741bebbd6d20d407b0f085e7dbcf66b9574ad23d3b639244c0fafb01\",\"signer\":\"ed25519:927308f53d6765503d2b64c103ab5aa47206ab39502cfe8f98442fdb543100b7\",\"site_id\":\"site-test-01\",\"target\":{\"actuator_id\":\"valve-1\",\"scope\":\"line-2\"},\"tenant\":\"tenant-a\",\"twin_cert\":{\"fidelity_score\":0.93,\"format\":\"twin-band-certificate\",\"ranges\":[{\"max\":30,\"min\":10,\"quantity\":\"temperature\",\"unit\":\"celsius\"}],\"signature\":\"7ca34392a8c8c008a66562b2dce531e0f25d8b5720abcb09863642b04e6d7d6d543848b3915ea191372fb822de672c158b0de5873c5d4b88dc1705c9af71780d\",\"signer\":\"ed25519:927308f53d6765503d2b64c103ab5aa47206ab39502cfe8f98442fdb543100b7\",\"tenant\":\"tenant-a\",\"twin_id\":\"twin-plant-7\",\"v\":1,\"valid_from_ms\":1799913600000,\"valid_until_ms\":1800003600000,\"version\":3},\"v\":1}",
+  "command_sha256": "ec39a0d001397a59882791f0c4b570d84bc9e3948915730f6261e5750797b6e6",
+  "command_unsigned": {
+    "birth_record_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "body": {
+      "quantity": "temperature",
+      "unit": "celsius",
+      "value": 21.5
+    },
+    "command_id": "cmd-00000001",
+    "command_seq": 1,
+    "envelope": {
+      "max": 28,
+      "max_rate_per_s": 3,
+      "min": 15
+    },
+    "expires_at_ms": 1800000060000,
+    "format": "physical-command",
+    "issued_at_ms": 1799999999000,
+    "kind": "setpoint",
+    "mode": "shadow",
+    "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "nonce": "0000000000000000000000abcdef0001",
+    "not_before_ms": 1799999999000,
+    "policy_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "signature": "",
+    "signer": "",
+    "site_id": "site-test-01",
+    "target": {
+      "actuator_id": "valve-1",
+      "scope": "line-2"
+    },
+    "tenant": "tenant-a",
+    "twin_cert": {
+      "fidelity_score": 0.93,
+      "format": "twin-band-certificate",
+      "ranges": [
+        {
+          "max": 30,
+          "min": 10,
+          "quantity": "temperature",
+          "unit": "celsius"
+        }
+      ],
+      "signature": "",
+      "signer": "",
+      "tenant": "tenant-a",
+      "twin_id": "twin-plant-7",
+      "v": 1,
+      "valid_from_ms": 1799913600000,
+      "valid_until_ms": 1800003600000,
+      "version": 3
+    },
+    "v": 1
+  },
+  "domains": {
+    "command": "lw-physical/command/v1",
+    "receipt": "furcate/physical-receipt/v1",
+    "twin_cert": "lw-physical/twin-cert/v1"
+  },
+  "keys": {
+    "lw_key_id": "ed25519:927308f53d6765503d2b64c103ab5aa47206ab39502cfe8f98442fdb543100b7",
+    "lw_seed_byte": 76,
+    "site_key_id": "ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0",
+    "site_seed_byte": 83
+  },
+  "now_ms": 1800000000000,
+  "receipt_canonical": "{\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"command_id\":\"cmd-00000001\",\"command_sha256\":\"ec39a0d001397a59882791f0c4b570d84bc9e3948915730f6261e5750797b6e6\",\"decided_at_ms\":1800000000000,\"decision\":\"shadowed\",\"envelope_applied\":{\"max\":26,\"min\":15},\"error_code\":null,\"format\":\"physical-receipt\",\"ledger\":{\"entry_hash\":\"db4bd21ba23706d7c9046c685be2561472d79974c108420c12eb0cd27e6f9f3e\",\"seq\":1},\"mode\":\"shadow\",\"model_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"policy_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"receipt_seq\":1,\"signature\":\"4f9dd196fbf7defc9d36fa07cb525f8a663bc8272c57a3dc6bea9ba6ecde638570e681e511cd213a8e7a5ee444909e435d8197f1bd2128e0595017aa4ae7e60e\",\"site_id\":\"site-test-01\",\"site_key\":\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",\"tenant\":\"tenant-a\",\"v\":1}",
+  "receipt_replay_canonical": "{\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"command_id\":\"cmd-00000001\",\"command_sha256\":\"ec39a0d001397a59882791f0c4b570d84bc9e3948915730f6261e5750797b6e6\",\"decided_at_ms\":1800000000000,\"decision\":\"denied\",\"envelope_applied\":null,\"error_code\":\"replayed_sequence\",\"format\":\"physical-receipt\",\"ledger\":{\"entry_hash\":\"6efd6fe7b61f5ac26d185391f1a1a0d479c97f73407a66a33a74f31c4a6872d2\",\"seq\":2},\"mode\":\"shadow\",\"model_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"policy_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"receipt_seq\":2,\"signature\":\"bcb2b5db924a53949f34891b47e99b042ce2da8b4567665073653263127b37b262be5fa710a4d269a959edf24b6b35976ae9dd5f91e8e9961fc78df12516ae0d\",\"site_id\":\"site-test-01\",\"site_key\":\"ed25519:f80cccdce4ae1c07ae208a2adf99a310ae4207e0306fa0236110b06827bbb8d0\",\"tenant\":\"tenant-a\",\"v\":1}"
+}

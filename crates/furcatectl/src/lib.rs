@@ -7,15 +7,18 @@
 mod cell;
 mod deploy;
 pub mod extension;
+mod firewall;
 mod keycustody;
 mod gateway;
 mod act;
 mod chat;
 mod login;
 mod model;
+mod model_fetch;
 mod model_front;
 mod npu;
 mod site;
+mod sshtrust;
 
 use anyhow::{bail, Context, Result};
 use furcate_attest::policy::classify_coverage;
@@ -26,6 +29,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = "\
 furcatectl — operator CLI for Furcate
+
+FIREWALL
+    furcatectl firewall render [CONFIG]
+                                      Print the input firewall rendered from
+                                      /etc/furcate/firewall.json
+    furcatectl firewall apply [CONFIG [--confirm-secs N]]
+                                      Load it atomically with a rollback armed;
+                                      kept only if the overlay handshakes within
+                                      N seconds (default 180)
+    furcatectl firewall status        Whether it is loaded and confirmed
 
 IDENTITY
     furcatectl identity show          Show this node's hardware identity
@@ -65,6 +78,13 @@ OPERATOR
     furcatectl session close ID
     furcatectl session verify ID [ANCHOR]
                                       Record what was done while holding authority
+    furcatectl ssh trust --ca-from HOST:PORT[,..] --ca-sha256 HEX [--name NAME]
+                                      Accept the site's passkey SSH logins here: pin
+                                      the CA, sshd drop-in, start the session recorder
+    furcatectl ssh-session --order H --by CREDS --principal USER@NODE
+                                      A passkey certificate's force-command: records
+                                      the session, then runs the shell or command
+    furcatectl ssh-session serve      The session recorder (furcate-ssh-recorder)
     furcatectl site administrator
     furcatectl fleet [ADDR]           Every node, what it runs, and how old that is
     furcatectl act KEY PROPOSAL_ID [--yes]
@@ -356,6 +376,15 @@ fn run() -> Result<()> {
             print!("{USAGE}{}", extension::get().usage());
             Ok(())
         }
+        ["firewall", "render"] => firewall::render(None),
+        ["firewall", "render", config] => firewall::render(Some(config)),
+        ["firewall", "status"] => firewall::status(),
+        ["firewall", "apply"] => firewall::apply(None, firewall::DEFAULT_CONFIRM_SECS),
+        ["firewall", "apply", config] => firewall::apply(Some(config), firewall::DEFAULT_CONFIRM_SECS),
+        ["firewall", "apply", config, "--confirm-secs", n] => firewall::apply(
+            Some(config),
+            n.parse().map_err(|_| anyhow::anyhow!("--confirm-secs takes a number of seconds"))?,
+        ),
         ["identity", "show"] => identity_show(),
         ["identity", "quote"] => identity_quote(None),
         ["identity", "quote", nonce] => identity_quote(Some(nonce)),
@@ -423,6 +452,15 @@ fn run() -> Result<()> {
         ["chat"] => chat::converse(&site_addr()),
         ["act", key, id] => act::act(key, &site_addr(), id, false),
         ["act", key, id, "--yes"] => act::act(key, &site_addr(), id, true),
+        ["ssh-session", "serve"] => furcate_session::ssh::serve(furcate_session::ssh::Config::standard())
+            .map_err(|e| anyhow::anyhow!(e)),
+        ["ssh-session", "web", rest @ ..] => {
+            std::process::exit(furcate_session::ssh::client_web(rest, &furcate_session::ssh::Config::standard()))
+        }
+        ["ssh-session", rest @ ..] => {
+            std::process::exit(furcate_session::ssh::client(rest, &furcate_session::ssh::Config::standard()))
+        }
+        ["ssh", "trust", rest @ ..] => sshtrust::trust(rest),
         ["login"] => login::login(&site_addr()),
         ["login", site] => login::login(site),
         ["name", "list"] => handle_list(),
@@ -464,6 +502,13 @@ fn run() -> Result<()> {
             overlay_authorize(key, node, pubkey, tier, hours)
         }
         ["overlay", "anchor", key] => overlay_anchor(key),
+        ["overlay", "policy", "sign", key, file] => overlay_policy_sign(key, file, None),
+        ["overlay", "policy", "sign", key, file, version] => overlay_policy_sign(key, file, Some(version)),
+        ["overlay", "policy", "publish", key, site, file] => overlay_policy_publish(key, site, file, None),
+        ["overlay", "policy", "publish", key, site, file, version] => {
+            overlay_policy_publish(key, site, file, Some(version))
+        }
+        ["overlay", "policy", "show"] => overlay_policy_show(),
         // `verify` first: both arms are four elements, so the general one
         // matches everything and would make this unreachable.
         // deploy and edge are open: placing a build on machines the operator
@@ -3448,6 +3493,73 @@ fn overlay_authorize(
         "authorized {node} on tier {tier} until {not_after}. It stops being a peer after that \
          unless it is authorized again."
     );
+    Ok(())
+}
+
+/// Sign a site overlay policy with an anchor's key.
+///
+/// The version defaults to the time of signing, so each document signed later
+/// is above every one before it without anyone keeping count.
+fn overlay_policy_doc(
+    key_path: &str,
+    file: &str,
+    version: Option<&str>,
+) -> Result<furcate_net::sitepolicy::SignedPolicy> {
+    let text = std::fs::read_to_string(file).with_context(|| format!("reading {file}"))?;
+    let version: u64 = match version {
+        Some(v) => v.parse().map_err(|_| anyhow::anyhow!("the version must be a whole number"))?,
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    };
+    let signing = operator_signing_key(key_path)?;
+    furcate_net::sitepolicy::sign(&anchor_id(&signing), &signing, version, &text)
+        .map_err(|e| anyhow::anyhow!("not signed: {e}"))
+}
+
+fn overlay_policy_sign(key_path: &str, file: &str, version: Option<&str>) -> Result<()> {
+    let doc = overlay_policy_doc(key_path, file, version)?;
+    println!("{}", serde_json::to_string_pretty(&doc).expect("a signed policy serialises"));
+    Ok(())
+}
+
+/// Sign a site overlay policy and hand it to the controller, which serves it
+/// to every node. Each node checks the signature against its own anchors.
+fn overlay_policy_publish(key_path: &str, site: &str, file: &str, version: Option<&str>) -> Result<()> {
+    let doc = overlay_policy_doc(key_path, file, version)?;
+    let body = serde_json::to_value(&doc).expect("a signed policy serialises");
+    let reply = signed_post(key_path, site, "/overlay/policy", &body)?;
+    report(
+        reply,
+        &format!(
+            "published overlay policy v{} signed by {}; nodes take it on their next overlay pass",
+            doc.version, doc.key_id
+        ),
+    )
+}
+
+/// What this machine holds: the signed site policy, checked against its
+/// anchors, or the local file it falls back to.
+fn overlay_policy_show() -> Result<()> {
+    let signed = furcate_paths::state("overlay-policy.signed.json").display().to_string();
+    match furcate_net::sitepolicy::read(&signed).map_err(|e| anyhow::anyhow!(e))? {
+        None => println!("no signed site policy held ({signed}); this node reads its local overlay-policy.yaml"),
+        Some(doc) => {
+            let anchors = furcate_net::lock::Anchors::read("/etc/furcate/overlay-anchors.json")
+                .map_err(|e| anyhow::anyhow!(e))?;
+            match furcate_net::sitepolicy::verify(&anchors, &doc) {
+                Ok(set) => println!(
+                    "site overlay policy v{} signed by {}: verifies, {} rules",
+                    doc.version,
+                    doc.key_id,
+                    set.policies.len()
+                ),
+                Err(e) => anyhow::bail!("site overlay policy v{} held, and it is refused: {e}", doc.version),
+            }
+            print!("{}", doc.policy);
+        }
+    }
     Ok(())
 }
 

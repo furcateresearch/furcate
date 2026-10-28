@@ -22,6 +22,7 @@ What stays across every update: `/etc` (configuration) and `/var` (data, the ext
 | `extensions/furcate/` | the Furcate extension (node agent, CLI, console) |
 | `extensions/hw-rpi5/` | the Pi 5 hardware tools: Wi-Fi (`iwd`), Bluetooth, audio, I2C/GPIO tools, the signing broker for the board's one-time-programmable key |
 | `extensions/modelserver/` | the local model server |
+| `extensions/leafhead/` | the head service for a leaf's Wi-Fi link, with Python's `cryptography` from the Ubuntu archive |
 | `extensions/sysext-image/` | shared tooling to build and seal an extension image |
 | `rootfs/` | files placed in the base, including the `furcate-os` command |
 | `release/` | release tooling: checksums, signatures, the public release certificate |

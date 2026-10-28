@@ -12,7 +12,8 @@
 # publishes only the public half.
 Description=Furcate overlay interface manager
 Documentation=https://github.com/furcateresearch/furcate
-After=network-online.target
+# After the extension merge where it ships in one (users, the wg tool).
+After=network-online.target systemd-sysext.service
 Wants=network-online.target
 
 [Service]

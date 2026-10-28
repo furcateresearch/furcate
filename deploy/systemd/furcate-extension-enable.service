@@ -1,0 +1,17 @@
+[Unit]
+Description=Furcate: enable the units the extensions declare enabled
+Documentation=https://github.com/furcateresearch/furcate
+# After the merge, which is what brings the units and their preset files into
+# /usr. Shipped in the extension's multi-user.target.wants, so it is queued by
+# the boot and by `furcate-os extension install`'s post-merge alike.
+After=systemd-sysext.service local-fs.target
+ConditionPathExists=/usr/libexec/furcate/enable-units
+
+[Service]
+Type=oneshot
+# Not RemainAfterExit: starting multi-user.target after a live merge must run it
+# again.
+ExecStart=/usr/libexec/furcate/enable-units
+
+[Install]
+WantedBy=multi-user.target

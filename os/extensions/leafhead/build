@@ -1,0 +1,168 @@
+#!/bin/sh
+# Build the `leafhead` system extension: the head service for an ESP32 leaf's
+# FL1 link over Wi-Fi, for a base that does not carry Python's `cryptography`.
+#
+#   os/extensions/leafhead/build stage <base-usr-list> <out-dir> <version> <arch> <leaf-firmware-checkout>
+#   os/extensions/leafhead/build seal  <out-dir> <signature.b64>
+#
+# stage: the tree is
+#   - the Ubuntu archive's own python3-cryptography (and what it needs that the
+#     base lacks), for the base's release and Python, under
+#     /usr/lib/python3/dist-packages. No pip wheel. Resolved against
+#     <base-usr-list> by hw-rpi5/resolve (shared, not copied), checked against
+#     the archive's SHA256. A file the base already has is a refusal here, not
+#     a silent drop: nothing in the base is shadowed.
+#   - the `leafhead` rows of deploy/release/manifest (the unit, which ships
+#     disabled, its account, its configuration template);
+#   - the head's code, taken from <leaf-firmware-checkout> (a clean checkout
+#     of the leaf firmware repository), from the files its OPEN-MANIFEST
+#     publishes (os/extensions/leafhead/head-source), never copied into this
+#     repository.
+# <base-usr-list> is every path under /usr in the target base, one per line
+# (`find /usr` on the device or on the image tree). Run as root.
+# Then sign <out-dir>/roothash with os/release/sign-on and seal.
+#
+# After 16 October the package moves into the base package set; delete this
+# extension then.
+set -eu
+export LC_ALL=C
+here=$(cd "$(dirname "$0")" && pwd)
+repo=$(cd "$here/../../.." && pwd)
+name=leafhead
+cmd=${1:?usage: build stage|seal ...}
+shift
+case "$cmd" in
+    seal) exec "$here/../sysext-image" seal "${1:?out-dir}" "$name" "${2:?signature.b64}" ;;
+    stage) ;;
+    *) echo "usage: build stage|seal ..." >&2; exit 2 ;;
+esac
+baselist=${1:?base-usr-list}; out=${2:?out-dir}; version=${3:?version}; arch=${4:?arch}; leaf=${5:?leaf-firmware-checkout}
+case "$arch" in arm64) ;; *) echo "leafhead is arm64 only" >&2; exit 2 ;; esac
+[ -s "$baselist" ] || { echo "$baselist is empty or missing" >&2; exit 1; }
+command -v readelf >/dev/null || { echo "missing readelf (binutils)" >&2; exit 1; }
+[ -f "$leaf/OPEN-MANIFEST" ] || { echo "$leaf has no OPEN-MANIFEST: not a leaf firmware checkout" >&2; exit 1; }
+
+work=$(mktemp -d "/var/tmp/furcate-$name.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+tree="$work/tree"
+mkdir -p "$tree/usr" "$work/bins"
+
+# 1. The archive's packages, resolved against the base.
+"$here/../hw-rpi5/resolve" "$here/packages" "$baselist" "$work/pkgs" "$arch"
+raw="$work/pkgs/tree"
+for d in bin sbin lib; do
+    [ -d "$raw/$d" ] && { mkdir -p "$raw/usr/$d"; cp -a "$raw/$d/." "$raw/usr/$d/"; rm -rf "${raw:?}/$d"; }
+done
+# Only the Python packages and their licences reach the image. Anything else a
+# package carried (/etc, /var, programs) is refused, not dropped: this
+# extension is meant to hold libraries for one program, and a surprise there is
+# a change of package that someone should look at.
+(cd "$raw" && find . \( -type f -o -type l \) | sed 's|^\./||' | sort) > "$work/carried"
+if [ -s "$work/carried" ]; then
+    stray=$(grep -Ev '^usr/(lib/python3/dist-packages/|share/doc/[^/]+/(copyright|changelog\.Debian\.gz|README[^/]*)$|share/python3/dist/)' "$work/carried" || true)
+    [ -z "$stray" ] || { printf 'refusing: the packages carry files outside dist-packages:\n%s\n' "$stray" >&2; exit 1; }
+    cp -a "$raw/usr/." "$tree/usr/"
+else
+    echo "refusing: nothing to carry; the base already has the head's dependencies (delete this extension)" >&2
+    exit 1
+fi
+
+# 2. Never shadow the base.
+(cd "$tree" && find usr \( -type f -o -type l \) | sed 's|^|/|') | sort > "$work/ours"
+sort -u "$baselist" > "$work/base"
+comm -12 "$work/ours" "$work/base" > "$work/shadow"
+if [ -s "$work/shadow" ]; then
+    echo "refusing: these files would overwrite the base's own:" >&2
+    cat "$work/shadow" >&2
+    exit 1
+fi
+
+# 3. Every library a carried module loads must be in the base or in this tree,
+# and the module must be for the Python the base has.
+pytag=$(grep -oE '^/usr/lib/python3\.[0-9]+/' "$work/base" | sort -u | head -2)
+[ "$(printf '%s\n' "$pytag" | grep -c .)" = 1 ] || { echo "cannot tell the base's Python from its file list: $pytag" >&2; exit 1; }
+pyver=$(printf '%s' "$pytag" | sed 's|^/usr/lib/python||; s|/$||; s|\.||')
+have() { # have <soname>
+    [ -n "$(find "$tree/usr" -name "$1" -print -quit)" ] && return 0
+    grep -Fxq "/usr/lib/aarch64-linux-gnu/$1" "$work/base" || grep -Fxq "/usr/lib/$1" "$work/base"
+}
+missing=0
+for f in $(find "$tree/usr/lib/python3/dist-packages" -name '*.so*' -type f); do
+    case "$(basename "$f")" in
+        *cpython-[0-9]*) case "$(basename "$f")" in *cpython-$pyver-*) ;; *)
+            echo "MISSING: $(basename "$f") is not for the base's Python 3.${pyver#3}" >&2; missing=1 ;; esac ;;
+    esac
+    for so in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+        have "$so" && continue
+        echo "MISSING: $(basename "$f") needs $so, which neither the base nor this extension carries" >&2
+        missing=1
+    done
+done
+[ "$missing" = 0 ] || { echo "refusing: the head could not start on this base" >&2; exit 1; }
+
+# 4. The release's own rows: the unit, its account, its configuration template.
+sh "$repo/deploy/release/install" leafhead open "$work/bins" "$tree"
+
+# 5. The head's code, from the leaf firmware checkout's published files.
+python3 -I - "$leaf" "$here/head-source" <<'PY'
+import re, subprocess, sys
+root, listing = sys.argv[1:3]
+rules = []
+for line in open(f"{root}/OPEN-MANIFEST", encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    kind, _, pat = line.partition(" ")
+    if kind in ("include", "exclude"):
+        rules.append((kind, pat.strip()))
+def rx(p):
+    out, i = "", 0
+    while i < len(p):
+        if p.startswith("**/", i): out += "(?:.*/)?"; i += 3
+        elif p.startswith("**", i): out += ".*"; i += 2
+        elif p[i] == "*": out += "[^/]*"; i += 1
+        else: out += re.escape(p[i]); i += 1
+    return re.compile("^" + ("(?:.*/)?" if "/" not in p else "") + out + "$")
+def published(path):
+    ok = False
+    for kind, pat in rules:
+        if rx(pat).match(path):
+            if kind == "exclude": return False
+            ok = True
+    return ok
+paths = [l.split()[0] for l in open(listing, encoding="utf-8") if l.strip() and not l.startswith("#")]
+bad = [p for p in paths if not published(p)]
+if bad:
+    sys.exit("refusing: not published by the checkout's OPEN-MANIFEST: " + " ".join(bad))
+status = subprocess.run(["git", "-C", root, "status", "--porcelain", "--"] + paths,
+                        capture_output=True, text=True, check=True).stdout
+if status.strip():
+    sys.exit("refusing: the checkout has uncommitted changes in the head's files:\n" + status)
+PY
+leafrev=$(git -C "$leaf" rev-parse HEAD)
+want=$(grep -v '^#' "$here/head-commit" | head -1)
+[ "$leafrev" = "$want" ] || { echo "refusing: the checkout is at $leafrev, the head is pinned to $want (os/extensions/leafhead/head-commit)" >&2; exit 1; }
+dest="$tree/usr/lib/furcate-leaf-head"
+install -d -m755 "$dest"
+sh "$leaf/host/gateway/build.sh" "$work/fl-gateway.pyz" >/dev/null
+install -m755 "$work/fl-gateway.pyz" "$dest/fl-gateway.pyz"
+install -d "$tree/usr/share/furcate-os"
+printf 'leaf-firmware %s\n' "$leafrev" > "$tree/usr/share/furcate-os/$name.source"
+cp "$here/head-source" "$tree/usr/share/furcate-os/$name.head-source"
+
+# 6. The release file.
+rel="$tree/usr/lib/extension-release.d/extension-release.$name"
+install -d "$(dirname "$rel")"
+cat > "$rel" <<EOT
+ID=_any
+ARCHITECTURE=$arch
+EXTENSION_RELOAD_MANAGER=1
+FURCATE_REQUIRES_ABI=1
+FURCATE_REQUIRES_BOARD=rpi5
+FURCATE_VERSION=$version
+EOT
+install -D -m644 "$work/pkgs/manifest" "$tree/usr/share/furcate-os/$name.packages"
+
+"$here/../sysext-image" image "$tree" "$name" "$out" "$version" "$arch"
+cp "$work/pkgs/manifest" "$out/$name.packages"
+echo "$name: $(wc -l < "$work/pkgs/manifest") packages ($(cut -d' ' -f1,2 "$work/pkgs/manifest" | tr '\n' ' ')), head from leaf-firmware $(printf %s "$leafrev" | cut -c1-7)"

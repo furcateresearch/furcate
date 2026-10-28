@@ -1,78 +1,115 @@
 //! Reading the uninterruptible supply.
 //!
-//! NUT is the framework, and its `genericups` driver exists precisely for
-//! supplies with no smart interface — contact-closure signalling giving three
-//! facts: on line, on battery, low battery. That is enough to drive the whole
-//! ladder, which matters because that is exactly what this site has.
+//! The supply is attached to one machine running NUT's `upsd`; every node asks
+//! it over the overlay with the NUT text protocol (see
+//! `furcate_power::supply::ups`). No NUT software is needed on a node.
 //!
-//! Absence of a supply is not an error. A machine with no UPS is a machine
-//! that will simply lose power without warning, and the correct behaviour is
-//! to report that honestly rather than to pretend it is on line.
+//! A machine with no `/etc/furcate/ups.json` has no supply configured and says
+//! so. A file that is wrong, or a daemon that does not answer, is reported as
+//! exactly that and never as "on line": the ladder holds its rung on a state it
+//! cannot read, and `power::loop` keeps counting time on battery if the last
+//! thing it heard was that mains had failed.
 
-use furcate_power::PowerState;
+use furcate_power::ladder::{PowerState, Triggers, UpsObservation};
+use furcate_power::supply::ups::{self as nut, Configured, Mains, UpsReading, UpsSource};
 
 /// What the supply is telling us, if anything.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Reading {
-    /// A supply is present and reporting.
-    Present {
-        state: PowerState,
-        /// Estimated runtime in seconds, where the supply provides it. A
-        /// contact-closure supply does not.
-        runtime_left: Option<u64>,
-        charge_pct: Option<u64>,
-    },
     /// No supply is configured on this machine.
     Absent,
+    /// The configuration is wrong; the reason.
+    Invalid(String),
+    /// A supply is configured and answered.
+    Measured(UpsReading),
+    /// A supply is configured and did not answer; the reason.
+    NotMeasured(String),
 }
 
 impl Reading {
+    /// Mains as far as a measured reading goes. Unknown flags are not a state.
     pub fn state(&self) -> Option<PowerState> {
         match self {
-            Reading::Present { state, .. } => Some(*state),
+            Reading::Measured(r) => match r.mains {
+                Mains::OnLine => Some(PowerState::OnLine),
+                Mains::OnBattery => Some(PowerState::OnBattery),
+                Mains::Unknown => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The reading as the debounce counts it. `None` for a machine with no
+    /// supply configured, which has nothing to count.
+    pub fn sample(&self) -> Option<furcate_power::confirm::Sample> {
+        use furcate_power::confirm::Sample;
+        match self {
             Reading::Absent => None,
+            Reading::Invalid(_) | Reading::NotMeasured(_) => Some(Sample::Failed),
+            Reading::Measured(r) => Some(match r.mains {
+                Mains::OnLine => Sample::OnLine,
+                Mains::OnBattery => Sample::OnBattery,
+                Mains::Unknown => Sample::Unknown,
+            }),
+        }
+    }
+
+    pub fn mains(&self) -> Option<Mains> {
+        match self {
+            Reading::Measured(r) => Some(r.mains),
+            _ => None,
+        }
+    }
+
+    /// The figures the ladder uses alongside the confirmed state.
+    pub fn observation(&self) -> UpsObservation {
+        match self {
+            Reading::Measured(r) => UpsObservation {
+                state: self.state(),
+                charge_pct: r.charge_pct.as_ref().map(|f| f.value),
+                runtime_left: r.runtime_secs.as_ref().map(|f| f.value),
+            },
+            _ => UpsObservation { state: None, charge_pct: None, runtime_left: None },
+        }
+    }
+
+    pub fn low_flag(&self) -> bool {
+        matches!(self, Reading::Measured(r) if r.low_battery_flag)
+    }
+
+    pub fn to_json(&self, now: u64) -> serde_json::Value {
+        match self {
+            Reading::Absent => serde_json::json!({"present": false}),
+            Reading::Invalid(why) => serde_json::json!({"present": true, "measured": false, "why": format!("configuration invalid: {why}")}),
+            Reading::NotMeasured(why) => UpsSource::NotMeasured(why.clone()).to_json(now),
+            Reading::Measured(r) => UpsSource::Measured(r.clone()).to_json(now),
         }
     }
 }
 
-/// Map NUT's status flags onto the ladder's three states.
-///
-/// Flags are checked worst-first: a supply reporting both `OB` and `LB` is
-/// low, and treating it as merely on-battery would skip the halt rung.
-pub fn parse_status(status: &str) -> PowerState {
-    let flags: Vec<&str> = status.split_whitespace().collect();
-    if flags.contains(&"LB") {
-        PowerState::LowBattery
-    } else if flags.contains(&"OB") {
-        PowerState::OnBattery
-    } else {
-        PowerState::OnLine
-    }
+/// One pass: the reading and the thresholds the ladder is to use with it.
+pub struct Pass {
+    pub reading: Reading,
+    pub triggers: Triggers,
 }
 
-fn field(text: &str, key: &str) -> Option<String> {
-    text.lines()
-        .find(|l| l.starts_with(key))
-        .and_then(|l| l.split_once(':'))
-        .map(|(_, v)| v.trim().to_string())
+pub fn read(now: u64) -> Pass {
+    read_with(std::path::Path::new(nut::CONFIG_PATH), now)
 }
 
-/// Query a UPS through `upsc`.
-pub fn read(ups: &str) -> Reading {
-    let Ok(out) = std::process::Command::new("upsc").arg(ups).output() else {
-        return Reading::Absent;
-    };
-    if !out.status.success() {
-        return Reading::Absent;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let Some(status) = field(&text, "ups.status") else {
-        return Reading::Absent;
-    };
-    Reading::Present {
-        state: parse_status(&status),
-        runtime_left: field(&text, "battery.runtime").and_then(|v| v.parse().ok()),
-        charge_pct: field(&text, "battery.charge").and_then(|v| v.parse().ok()),
+pub fn read_with(path: &std::path::Path, now: u64) -> Pass {
+    let none = |reading| Pass { reading, triggers: Triggers::default() };
+    match nut::load_config(path) {
+        Configured::None => none(Reading::Absent),
+        Configured::Invalid(why) => none(Reading::Invalid(why)),
+        Configured::Some(cfg) => {
+            let dir = std::env::var_os("CREDENTIALS_DIRECTORY").map(std::path::PathBuf::from);
+            let reading = match nut::fetch(&cfg, dir.as_deref(), now) {
+                UpsSource::Measured(r) => Reading::Measured(r),
+                UpsSource::NotMeasured(why) => Reading::NotMeasured(why),
+            };
+            Pass { reading, triggers: cfg.triggers }
+        }
     }
 }
 
@@ -81,44 +118,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn on_line_is_the_normal_case() {
-        assert_eq!(parse_status("OL"), PowerState::OnLine);
-        assert_eq!(parse_status("OL CHRG"), PowerState::OnLine);
+    fn no_configuration_is_no_supply_and_a_bad_one_is_not() {
+        let p = std::env::temp_dir().join(format!("furcated-ups-{}", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        assert_eq!(read_with(&p, 1).reading, Reading::Absent);
+        std::fs::write(&p, "nonsense").unwrap();
+        assert!(matches!(read_with(&p, 1).reading, Reading::Invalid(_)));
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]
-    fn on_battery_is_recognised() {
-        assert_eq!(parse_status("OB"), PowerState::OnBattery);
-        assert_eq!(parse_status("OB DISCHRG"), PowerState::OnBattery);
-    }
-
-    #[test]
-    fn low_battery_wins_over_on_battery() {
-        // Treating a supply reporting both as merely on-battery would skip
-        // the halt rung.
-        assert_eq!(parse_status("OB LB"), PowerState::LowBattery);
-        assert_eq!(parse_status("LB OB DISCHRG"), PowerState::LowBattery);
-    }
-
-    #[test]
-    fn an_unknown_status_is_treated_as_on_line() {
-        // Erring toward on-line avoids a spurious shutdown from a status
-        // string we do not recognise.
-        assert_eq!(parse_status("SOMETHING ELSE"), PowerState::OnLine);
-    }
-
-    #[test]
-    fn fields_are_parsed_from_upsc_output() {
-        let text = "battery.charge: 100\nbattery.runtime: 1440\nups.status: OL\n";
-        assert_eq!(field(text, "ups.status").as_deref(), Some("OL"));
-        assert_eq!(field(text, "battery.runtime").as_deref(), Some("1440"));
-    }
-
-    #[test]
-    fn a_missing_supply_reports_absent_rather_than_on_line() {
-        // A machine with no UPS will lose power without warning; saying it is
-        // on line would be a false statement about its resilience.
-        assert_eq!(read("definitely-not-a-ups"), Reading::Absent);
-        assert_eq!(Reading::Absent.state(), None);
+    fn an_unreachable_supply_is_not_on_line() {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let p = std::env::temp_dir().join(format!("furcated-ups-dead-{}", std::process::id()));
+        std::fs::write(&p, format!(r#"{{"source":{{"host":"127.0.0.1","port":{port},"ups":"u"}}}}"#)).unwrap();
+        let r = read_with(&p, 1).reading;
+        assert!(matches!(r, Reading::NotMeasured(_)));
+        assert_eq!(r.state(), None);
+        assert_eq!(r.observation().state, None, "an unreadable supply tells the ladder nothing");
+        assert_eq!(r.sample(), Some(furcate_power::confirm::Sample::Failed));
+        let _ = std::fs::remove_file(&p);
     }
 }

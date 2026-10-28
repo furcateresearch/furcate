@@ -35,6 +35,9 @@ enum {
     FL_MSG_REVOKE = 0x60,
     FL_MSG_CONFIG = 0x61,  // operator-signed site configuration (fl_net.h)
     FL_MSG_SINK = 0x70,    // throughput test: the leaf counts the bytes and answers
+    FL_MSG_GATEWAY_ASK = 0x71,  // signed request to the cell's model gateway (fl_gateway.h)
+    FL_MSG_SENSE_REQ = 0x72,  // ask for signed readings of the leaf's own sensors (fl_sensors.h)
+    FL_MSG_SENSE = 0x73,      // the readings
     FL_MSG_BYE = 0x7F,
 };
 
@@ -66,6 +69,11 @@ enum {
     // envelope
     T_BODY = 30,
     T_SIG = 31,
+    // gateway requests
+    T_METHOD = 32,
+    T_TARGET = 33,
+    T_STATUS = 34,
+    T_CREDENTIAL = 35,
 };
 
 typedef struct {

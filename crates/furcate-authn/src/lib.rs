@@ -55,6 +55,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod local;
 pub mod order;
+pub mod sshcert;
 pub mod token;
 pub mod trust;
 pub mod vouch;

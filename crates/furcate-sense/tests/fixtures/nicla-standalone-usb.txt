@@ -1,0 +1,14 @@
+range of accel: +/-8g
+range of gyro: +/-2000dps
+temperature: 0.000
+
+acceleration: XYZ values - X: 5807   Y: 1622   Z: 15767
+
+gyroscope: XYZ values - X: 7   Y: -4   Z: 2
+
+temperature: 28.290
+
+gas: 949.000
+
+rotation: Quaternion values - X: 0.048   Y: -0.176   Z: 0.003   W: 0.983   Accuracy: 3.142
+

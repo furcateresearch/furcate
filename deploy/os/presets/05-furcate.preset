@@ -1,0 +1,14 @@
+# Units the Furcate extension enables, whatever the base's own presets say.
+#
+# systemd takes the first match across every preset file in file-name order, so
+# this file, numbered below the base's 10-furcate-os.preset, decides these
+# units: a base that lists one as `disable` (the overlay is one) can no longer
+# turn it off by applying its presets. furcate-enable-units applies this file
+# at every merge, boot and live install alike.
+#
+# To keep one of them off on a host, mask it: a masked unit is left alone.
+enable furcated.service
+enable furcate-wg.service
+# Conditional on /etc/furcate/firewall.json, so enabled it does nothing on a node
+# that has not declared a firewall.
+enable furcate-firewall.service

@@ -18,6 +18,7 @@
 #             ext  the board extension only
 #             all  the packages, the stage and the board extension
 #             model  the model-server extension only
+#             leafhead  the leaf-head extension only
 #   edition   any  every edition, the same file in each
 #             each every edition, built once per edition: the full edition's
 #                  binary is built as bin/<name>-full and carries the mark
@@ -109,6 +110,13 @@ furcate-node  all  any   644  deploy/tmpfiles/furcate-state-keys.conf /usr/lib/t
 furcate-node  all  any   644  deploy/os/furcate-release.crt       /usr/share/furcate/furcate-release.crt
 furcate-node  pkg  any   644  deploy/modules-load-furcate.conf    /usr/lib/modules-load.d/furcate-wireguard.conf
 
+# -- what the board extension enables. An extension carries no /etc and no
+#    package scripts, so the units it enables are declared as preset files
+#    numbered below the base's own (05 before 10, first match wins) and applied
+#    at every merge by enable-units, run from furcate-extension-enable.service.
+furcate-node  ext  any   644  deploy/os/presets/05-furcate.preset          /usr/lib/systemd/system-preset/05-furcate.preset
+furcate-node  ext  any   755  deploy/os/enable-units                       /usr/libexec/furcate/enable-units
+
 # -- templates, not configuration: what an operator edits lives in /etc
 furcate-node  pkg  any   644  deploy/policy/overlay.yaml          /usr/share/furcate/overlay-policy.yaml
 
@@ -121,10 +129,17 @@ furcate-node  pkg  any   644  deploy/systemd/furcate-power-reader.service       
 furcate-node  pkg  any   644  deploy/systemd/furcate-platform-reader.service     /usr/lib/systemd/system/furcate-platform-reader.service
 furcate-node  pkg  any   644  deploy/systemd/furcate-accelerator-reader.service  /usr/lib/systemd/system/furcate-accelerator-reader.service
 furcate-node  all  any   644  deploy/systemd/furcate-wg.service                  /usr/lib/systemd/system/furcate-wg.service
+furcate-node  ext  any   644  deploy/systemd/furcate-extension-enable.service    /usr/lib/systemd/system/furcate-extension-enable.service
+furcate-node  ext  any   link ../furcate-extension-enable.service                /usr/lib/systemd/system/multi-user.target.wants/furcate-extension-enable.service
 furcate-node  all  any   644  deploy/systemd/furcate-names.service               /usr/lib/systemd/system/furcate-names.service
 furcate-node  all  any   644  deploy/systemd/furcate-names-link.service          /usr/lib/systemd/system/furcate-names-link.service
 furcate-node  all  any   644  deploy/systemd/furcate-overlay-reflect.service     /usr/lib/systemd/system/furcate-overlay-reflect.service
+furcate-node  all  any   644  deploy/systemd/furcate-firewall.service           /usr/lib/systemd/system/furcate-firewall.service
 furcate-node  pkg  any   644  deploy/systemd/furcate-wake-arm.service            /usr/lib/systemd/system/furcate-wake-arm.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-ssh-recorder.service        /usr/lib/systemd/system/furcate-ssh-recorder.service
+furcate-node  pkg  any   644  deploy/systemd/furcate-ssh-signer.socket          /usr/lib/systemd/system/furcate-ssh-signer.socket
+furcate-node  pkg  any   644  deploy/systemd/furcate-ssh-signer.service         /usr/lib/systemd/system/furcate-ssh-signer.service
+furcate-cli   pkg  any   644  deploy/systemd/furcate-console-web.service        /usr/lib/systemd/system/furcate-console-web.service
 furcate-node  pkg  any   644  deploy/systemd/furcate-edge.service                /usr/lib/systemd/system/furcate-edge.service
 furcate-node  pkg  any   644  deploy/systemd/furcate-quiet-hours-enforce.service /usr/lib/systemd/system/furcate-quiet-hours-enforce.service
 furcate-node  pkg  any   644  deploy/systemd/furcate-quiet-hours-enforce.timer   /usr/lib/systemd/system/furcate-quiet-hours-enforce.timer
@@ -134,5 +149,23 @@ furcate-cli   pkg  any   644  deploy/systemd/furcate-update.timer               
 # -- the model-server extension: the inference runtime alone, so a board that
 #    serves models takes it and one that does not never carries it. Built by
 #    os/build.sh <board> model-extension; `furcatectl model` (in the furcate
-#    extension) drives it.
+#    extension) drives it. The router and the gateway are its units, enabled by
+#    the preset row (applied at the merge by the Furcate extension's
+#    enable-units, as the leaf head's is) and inert until `furcatectl model
+#    gateway` has written /etc/furcate/model-gateway.env on a node with a model.
 furcate-node  model  any   755  runtime/llama                       /usr/lib/furcate/runtimes/llama/
+furcate-node  model  any   644  deploy/systemd/furcate-model-router.service   /usr/lib/systemd/system/furcate-model-router.service
+furcate-node  model  any   644  deploy/systemd/furcate-model-gateway.service  /usr/lib/systemd/system/furcate-model-gateway.service
+furcate-node  model  any   644  deploy/modelserver/model-gateway.env.example  /usr/share/furcate/model-gateway.env.example
+furcate-node  model  any   644  deploy/os/presets/05-furcate-modelserver.preset /usr/lib/systemd/system-preset/05-furcate-modelserver.preset
+
+# -- the leaf-head extension: the head service for an ESP32 leaf's FL1 link over
+#    Wi-Fi, with Python's `cryptography` from the Ubuntu archive for a base that
+#    lacks it. Built by os/build.sh <board> leafhead-extension; the head's code
+#    comes from the leaf firmware repository, not from this tree. No row links
+#    the unit into a .wants directory: the preset row enables it, and the
+#    Furcate extension's enable-units applies that at the merge. The unit starts
+#    only where /etc/furcate/leaf-head.env exists.
+furcate-node  leafhead  any  644  deploy/systemd/furcate-leaf-head.service      /usr/lib/systemd/system/furcate-leaf-head.service
+furcate-node  leafhead  any  644  deploy/leafhead/leaf-head.env.example         /usr/share/furcate/leaf-head.env.example
+furcate-node  leafhead  any  644  deploy/os/presets/05-furcate-leafhead.preset   /usr/lib/systemd/system-preset/05-furcate-leafhead.preset

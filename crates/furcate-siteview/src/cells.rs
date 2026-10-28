@@ -36,7 +36,7 @@ fn or_absent<T: serde::Serialize>(v: Option<T>) -> Value {
 }
 
 fn machine(m: &Member, r: &Readings) -> Value {
-    let x = r.machines.get(&m.holder).or_else(|| r.machines.get(&m.name));
+    let x = r.machine(m);
     json!({
         "name": m.name,
         "key": m.holder,
@@ -46,7 +46,38 @@ fn machine(m: &Member, r: &Readings) -> Value {
         "cores": or_absent(x.and_then(|x| x.cores)),
         "power_w": or_absent(x.and_then(|x| x.power_w)),
         "workloads": or_absent(x.and_then(|x| x.workloads)),
+        "supply": or_absent(x.and_then(|x| x.supply)),
     })
+}
+
+/// A cell's head, as this node reads it, with what the head said of itself
+/// filled in only where this node measured nothing.
+///
+/// The parent does not poll a head it only hears from, so its own reading of
+/// the head's supply is empty. The head's signed roll-up carries it, and a
+/// fresh one stands in for it, labelled as reported. A stale report, or one
+/// that names no supply, leaves it not measured.
+fn head(c: &Cell, r: &Readings, now: u64) -> Value {
+    let mut v = machine(&c.head, r);
+    let own = r.machine(&c.head).and_then(|x| x.supply);
+    let said = fresh_report(c, r, now).and_then(|(x, _)| x.head_supply);
+    v["supply_source"] = match (own, said) {
+        (Some(_), _) => json!("measured here"),
+        (None, Some(s)) => {
+            v["supply"] = json!(s);
+            json!("reported by its head")
+        }
+        (None, None) => json!(NOT_MEASURED),
+    };
+    v
+}
+
+/// The cell's last report from its own head, when recent enough to describe
+/// it now.
+fn fresh_report<'a>(c: &Cell, r: &'a Readings, now: u64) -> Option<(&'a furcate_topology::RollUp, u64)> {
+    let (x, at) = r.reported.get(&c.id)?;
+    let age = now.saturating_sub(*at);
+    (age <= crate::STALE_SECS).then_some((x, age))
 }
 
 fn leaf(m: &Member, r: &Readings) -> Value {
@@ -83,12 +114,22 @@ fn cell(c: &Cell, r: &Readings, now: u64) -> Value {
         "leaf_min_class": c.leaf_min_class,
         // What the cell's own head last said about it, which can know more
         // than this node measures from outside.
-        "reported": r.reported.get(&c.id).map(|(x, at)| json!({
-            "line": x.line(),
-            "health": x.health,
-            "as_of_secs_ago": now.saturating_sub(*at),
-        })),
-        "head": machine(&c.head, r),
+        "reported": r.reported.get(&c.id).map(|(x, at)| {
+            let fresh = fresh_report(c, r, now).is_some();
+            json!({
+                "line": x.line(),
+                "health": x.health,
+                "as_of_secs_ago": now.saturating_sub(*at),
+                "stale": !fresh,
+                "machines": x.machines,
+                "machines_up": x.machines_up,
+                "leaves": x.leaves,
+                "leaves_reporting": x.leaves_reporting,
+                "power_w": or_absent(x.power_w.filter(|_| fresh)),
+                "head_supply": or_absent(x.head_supply.filter(|_| fresh)),
+            })
+        }),
+        "head": head(c, r, now),
         "parent": c.parent,
         "edge_ai": c.edge_ai.iter().map(|m| machine(m, r)).collect::<Vec<_>>(),
         "leaves": c.leaves.iter().map(|m| leaf(m, r)).collect::<Vec<_>>(),
@@ -152,20 +193,28 @@ pub fn routes(router: Router, source: std::sync::Arc<Source>) -> Router {
 }
 
 fn machine_row(role: &str, m: &Member, r: &Readings) -> String {
-    let v = machine(m, r);
+    machine_row_of(role, m, machine(m, r))
+}
+
+fn machine_row_of(role: &str, m: &Member, v: Value) -> String {
     let cell = |k: &str| match &v[k] {
         Value::String(s) if s == NOT_MEASURED => format!("<span class=dim>{NOT_MEASURED}</span>"),
         Value::Null => format!("<span class=dim>{ABSENT}</span>"),
         x => esc(&x.to_string()),
     };
     format!(
-        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+        "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}{}</td></tr>",
         esc(role),
         esc(&m.name),
         cell("up"),
         cell("cores"),
         cell("power_w"),
-        cell("workloads")
+        cell("workloads"),
+        cell("supply"),
+        match v["supply_source"].as_str() {
+            Some("reported by its head") => " <span class=dim>(reported by its head)</span>",
+            _ => "",
+        }
     )
 }
 
@@ -200,8 +249,8 @@ fn cell_html(c: &Cell, r: &Readings, now: u64, s: &mut String) {
         esc(&roll.line()),
         esc(c.leaf_min_class.as_str())
     ));
-    s.push_str("<table><thead><tr><th>machine</th><th>name</th><th>up</th><th>cores</th><th>power W</th><th>workloads</th></tr></thead><tbody>");
-    s.push_str(&machine_row("head", &c.head, r));
+    s.push_str("<table><thead><tr><th>machine</th><th>name</th><th>up</th><th>cores</th><th>power W</th><th>workloads</th><th>supply</th></tr></thead><tbody>");
+    s.push_str(&machine_row_of("head", &c.head, head(c, r, now)));
     for m in &c.edge_ai {
         s.push_str(&machine_row("edge ai", m, r));
     }
@@ -230,7 +279,7 @@ pub fn page(tree: &CellTree, r: &Readings, now: u64) -> String {
         esc(&tree.site)
     ));
     if !tree.controllers.is_empty() {
-        s.push_str("<h2>core cluster</h2><table><thead><tr><th>machine</th><th>name</th><th>up</th><th>cores</th><th>power W</th><th>workloads</th></tr></thead><tbody>");
+        s.push_str("<h2>core cluster</h2><table><thead><tr><th>machine</th><th>name</th><th>up</th><th>cores</th><th>power W</th><th>workloads</th><th>supply</th></tr></thead><tbody>");
         for m in &tree.controllers {
             s.push_str(&machine_row("controller", m, r));
         }
@@ -264,7 +313,7 @@ mod tests {
     use ed25519_dalek::{Signer, SigningKey};
     use furcate_authn::{Class, Evidence, Principal};
     use furcate_identity::AssuranceClass;
-    use furcate_topology::cell::{ed25519_id, CellDelegation, MachineReading, Role, Root, Scale, Scope};
+    use furcate_topology::cell::{ed25519_id, CellDelegation, MachineReading, Role, Root, Scale, Scope, SupplyState};
     use std::sync::Arc;
 
     const NOW: u64 = 1_786_838_400;
@@ -312,7 +361,7 @@ mod tests {
             let mgr = link(3, Some(&a), "passkey:example.org:cred-shop".into(), Role::Manager, "cell:shop", "");
             let tree = CellTree::derive("home", &Root::Operator(id(1)), &[ctl, a, b, leaf, mgr], now);
             let mut r = Readings::default();
-            r.machines.insert("pi-shop".into(), MachineReading { up: true, cores: Some(4), power_w: None, workloads: Some(3) });
+            r.machines.insert("pi-shop".into(), MachineReading { up: true, cores: Some(4), power_w: None, workloads: Some(3), supply: None });
             Ok((tree, r))
         })
     }
@@ -379,6 +428,61 @@ mod tests {
         assert!(html.contains("<td>esp-shop</td><td>soft</td>"), "{html}");
         assert!(html.contains("leaf floor soft"), "{html}");
         assert_eq!(cells[0]["leaf_min_class"], "soft");
+    }
+
+    fn with_report(age: u64, supply: Option<SupplyState>) -> Arc<Source> {
+        let base = source();
+        Arc::new(move |now| {
+            let (tree, mut r) = base(now)?;
+            r.machines.clear();
+            let cell = tree.find("shop").expect("shop").clone();
+            let mut roll = roll_up(&cell, &r, now);
+            roll.head_supply = supply;
+            roll.power_w = Some(7.5);
+            r.reported.insert("shop".into(), (roll, now - age));
+            Ok((tree, r))
+        })
+    }
+
+    fn head_of(src: &Arc<Source>) -> Value {
+        let req = Request { method: "GET".into(), path: "/cells".into(), principal: Some(Principal::operator("op")), ..Default::default() };
+        let v = json(&answer(&req, &**src, NOW, false));
+        v["cells"].as_array().unwrap().iter().find(|c| c["id"] == "shop").unwrap().clone()
+    }
+
+    #[test]
+    fn a_fresh_report_from_the_head_gives_its_supply_and_says_where_it_came_from() {
+        let c = head_of(&with_report(10, Some(SupplyState::Ok)));
+        assert_eq!(c["head"]["supply"], "ok");
+        assert_eq!(c["head"]["supply_source"], "reported by its head");
+        assert_eq!(c["head"]["up"], Value::Null, "what this node did not measure stays unmeasured");
+        assert_eq!(c["reported"]["head_supply"], "ok");
+        assert_eq!(c["reported"]["power_w"], 7.5);
+        assert_eq!(c["reported"]["stale"], false);
+    }
+
+    #[test]
+    fn a_stale_or_empty_report_is_not_measured_never_invented() {
+        let stale = head_of(&with_report(crate::STALE_SECS + 1, Some(SupplyState::Ok)));
+        assert_eq!(stale["head"]["supply"], NOT_MEASURED);
+        assert_eq!(stale["reported"]["stale"], true);
+        assert_eq!(stale["reported"]["head_supply"], NOT_MEASURED);
+        let silent = head_of(&with_report(5, None));
+        assert_eq!(silent["head"]["supply"], NOT_MEASURED);
+        assert_eq!(silent["reported"]["head_supply"], NOT_MEASURED);
+    }
+
+    #[test]
+    fn this_nodes_own_reading_of_the_head_wins_over_the_report() {
+        let base = with_report(5, Some(SupplyState::Ok));
+        let src: Arc<Source> = Arc::new(move |now| {
+            let (t, mut r) = base(now)?;
+            r.machines.insert("pi-shop".into(), MachineReading { up: true, cores: Some(4), power_w: None, workloads: None, supply: Some(SupplyState::Undervoltage) });
+            Ok((t, r))
+        });
+        let c = head_of(&src);
+        assert_eq!(c["head"]["supply"], "undervoltage");
+        assert_eq!(c["head"]["supply_source"], "measured here");
     }
 
     #[test]

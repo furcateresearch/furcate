@@ -21,6 +21,7 @@
 //! it, because the link in question is carrying production traffic.
 
 pub mod announce;
+pub mod firewall;
 pub mod overlay;
 pub mod wg;
 pub mod link;
@@ -31,6 +32,7 @@ pub mod punch;
 pub mod quality;
 pub mod reach;
 pub mod roster;
+pub mod sitepolicy;
 
 pub use link::{diagnose, Counters, Delta, Fault, Link, LinkKind};
 pub use quality::{Advice, Load, Quality, Responsiveness, Sample};

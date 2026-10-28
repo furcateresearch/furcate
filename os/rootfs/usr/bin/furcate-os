@@ -233,23 +233,42 @@ extension_install() {
     # signed root hash, before anything is copied into the store.
     /usr/libexec/furcate-os/extension-verify "$raw" || { echo "refusing $raw: it does not match its root hash; nothing installed" >&2; exit 1; }
     dest="$STORE/$name/$ver"
-    [ -e "$dest" ] && { echo "$name $ver is already in the store" >&2; exit 1; }
+    # The same version again is a no-op when it is the same image (a staged
+    # extension already installed live before a base update); a different
+    # image under a version already in the store is refused.
+    had=""
+    if [ -e "$dest" ]; then
+        if cmp -s "$raw" "$dest/$name.raw" && cmp -s "$rel" "$dest/$name.release"; then
+            had=1
+        else
+            echo "$name $ver is already in the store with a different image; nothing installed" >&2; exit 1
+        fi
+    fi
     prev=$(awk -v n="$name" '$1 == n {print $2}' "$RUN/extensions.selected" 2>/dev/null)
-    mkdir -p "$dest"
-    cp "$raw" "$dest/$name.raw"
-    cp "$rel" "$dest/$name.release"
+    if [ -n "$had" ] && [ "$prev" = "$ver" ] && grep -q '^ok' "$RUN/extensions.status" 2>/dev/null; then
+        echo "$name $ver already installed (the same image is in the store and merged); check: $(cat "$RUN/extensions.status")"
+        return 0
+    fi
+    # Undo only what this call added: an image that was already in the store stays.
+    drop() { [ -n "$had" ] || rm -rf "$dest"; }
+    if [ -z "$had" ]; then
+        mkdir -p "$dest"
+        cp "$raw" "$dest/$name.raw"
+        cp "$rel" "$dest/$name.release"
+    fi
     /usr/libexec/furcate-os/extension-select
     if ! grep -qx "$name $ver" "$RUN/extensions.selected"; then
         echo "the selector did not choose $name $ver for this base:" >&2
         cat "$RUN/degraded" >&2 2>/dev/null
-        rm -rf "$dest"; /usr/libexec/furcate-os/extension-select
+        drop; /usr/libexec/furcate-os/extension-select
         exit 1
     fi
+    /usr/libexec/furcate-os/post-merge --before
     systemd-sysext refresh --image-policy=root=signed:=absent
     /usr/libexec/furcate-os/extension-check
     if ! grep -q '^ok' "$RUN/extensions.status"; then
         echo "health check failed after merging $name $ver: $(cat "$RUN/extensions.status"); rolling back to ${prev:-nothing}" >&2
-        rm -rf "$dest"
+        drop
         /usr/libexec/furcate-os/extension-select
         systemd-sysext refresh --image-policy=root=signed:=absent
         /usr/libexec/furcate-os/extension-check

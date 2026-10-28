@@ -27,6 +27,15 @@ pub enum Unit {
     MetresPerSecondSquared,
     /// A fraction between zero and one, for anything normalised.
     Fraction,
+    /// Magnetic flux density.
+    Microtesla,
+    /// Angular rate.
+    RadiansPerSecond,
+    /// Electrical resistance, for gas sensors that report it.
+    Ohms,
+    /// A number with no unit that is not a count or a fraction: a quaternion
+    /// component, or an index defined by the sensor.
+    Unitless,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +66,28 @@ pub enum SensorKind {
     /// A quantity a model extracted from images or video, such as a count of
     /// people in a room or whether a cabinet door is open.
     VisionDerived,
+    /// Signed acceleration along one axis, gravity included. Distinct from
+    /// `Vibration`, which is a magnitude.
+    Acceleration,
+    /// Angular rate about one axis.
+    AngularRate,
+    /// Magnetic flux density along one axis.
+    MagneticField,
+    /// Resistance of a gas sensor element. The raw quantity behind any air
+    /// quality estimate, and a measurement in its own right.
+    GasResistance,
+    /// One component of an orientation estimate fused from several sensors.
+    Orientation,
+    /// A step count from a pedometer algorithm.
+    StepCount,
+    /// A class from an activity recognition algorithm.
+    ActivityState,
+    /// An air quality index computed from gas resistance.
+    AirQualityIndex,
+    /// A concentration estimated from gas resistance, such as a CO2 or
+    /// breath-VOC equivalent. Not a measurement of that gas: `AirQuality`
+    /// stays the kind for a sensor that measures CO2.
+    GasEquivalent,
     /// Anything the schema does not name.
     Other,
 }
@@ -75,7 +106,10 @@ pub enum SensorKind {
 pub enum Modality {
     /// A transducer measuring a physical quantity.
     Direct,
-    /// A model's output over a richer signal — audio, images, video.
+    /// A value computed from other signals rather than transduced: a model's
+    /// output over audio, images or video, or a fusion, counting or estimation
+    /// algorithm running on the sensor itself. Which of those it was is
+    /// recorded with the reading, not in this flag.
     Inferred,
 }
 
@@ -83,7 +117,13 @@ impl SensorKind {
     /// How readings of this kind come to exist.
     pub fn modality(&self) -> Modality {
         match self {
-            SensorKind::AudioEvent | SensorKind::VisionDerived => Modality::Inferred,
+            SensorKind::AudioEvent
+            | SensorKind::VisionDerived
+            | SensorKind::Orientation
+            | SensorKind::StepCount
+            | SensorKind::ActivityState
+            | SensorKind::AirQualityIndex
+            | SensorKind::GasEquivalent => Modality::Inferred,
             _ => Modality::Direct,
         }
     }
