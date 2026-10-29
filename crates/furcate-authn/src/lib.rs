@@ -524,6 +524,15 @@ pub mod device {
         /// was measured, if it is admitted *now*.
         fn key_for(&self, node_id: &str, now: u64) -> Option<(VerifyingKey, bool)>;
 
+        /// The suite of a machine that is admitted now but whose credential
+        /// this verifier cannot check, because its key is not an Ed25519 key.
+        /// Machine credentials are Ed25519 signatures today; a machine admitted
+        /// with a key of another suite is refused by saying so, not by
+        /// reporting it as unknown.
+        fn unverifiable_suite(&self, _node_id: &str, _now: u64) -> Option<String> {
+            None
+        }
+
         /// How many machines are recognised, for a startup line an operator
         /// reads.
         fn count(&self, now: u64) -> usize;
@@ -610,6 +619,12 @@ pub mod device {
                 return Err(Refusal::new("a machine credential must name the machine"));
             };
             let Some((key, boot_measured)) = self.keys.key_for(id, now) else {
+                if let Some(suite) = self.keys.unverifiable_suite(id, now) {
+                    return Err(Refusal::new(format!(
+                        "{id} is admitted with a {suite} key, and this site checks machine credentials against ed25519 keys only; \
+                         the key is on the roster and the credential cannot be verified"
+                    )));
+                }
                 // Named rather than vague: an operator reading this needs to
                 // know the machine is unknown or lapsed, not that its signature
                 // was bad.
@@ -877,6 +892,35 @@ mod live_key_tests {
             body: b"{}".to_vec(),
             credential: Some(format!("node:n1:{}", inner.trim_start_matches(local::SCHEME))),
         }
+    }
+
+    /// A machine admitted under a P-256 key: present on the roster, but its
+    /// credential cannot be checked against an Ed25519 key.
+    struct P256Machine;
+
+    impl MachineKeys for P256Machine {
+        fn key_for(&self, _id: &str, _now: u64) -> Option<(VerifyingKey, bool)> {
+            None
+        }
+        fn unverifiable_suite(&self, id: &str, _now: u64) -> Option<String> {
+            (id == "n1").then(|| "p256".to_string())
+        }
+        fn count(&self, _now: u64) -> usize {
+            1
+        }
+    }
+
+    #[test]
+    fn a_machine_admitted_under_another_suite_is_refused_for_that_reason() {
+        let v = DeviceVerifier::from_keys(Box::new(P256Machine));
+        let e = v.verify(&cred("a", 700), 500).unwrap_err();
+        assert!(e.because.contains("admitted with a p256 key") && e.because.contains("ed25519 keys only"), "{e:?}");
+        assert!(!e.because.contains("not a machine this site currently admits"), "{e:?}");
+        // A machine that is not on the roster is still reported as unknown.
+        let mut other = cred("b", 700);
+        other.credential = other.credential.map(|c| c.replacen("node:n1:", "node:n2:", 1));
+        let e = v.verify(&other, 500).unwrap_err();
+        assert!(e.because.contains("currently admits"), "{e:?}");
     }
 
     #[test]

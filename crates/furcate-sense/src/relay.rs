@@ -52,6 +52,17 @@ pub struct RelaySource {
     pub statement: String,
 }
 
+/// A channel a relay signs for, as its adapter declares it.
+#[derive(Clone, Debug)]
+pub struct RelayChannel<'a> {
+    /// The channel id after `<sensing node>/`.
+    pub suffix: &'a str,
+    pub modality: crate::registry::Modality,
+    /// How the value came to exist at the sensing node: measured, or computed
+    /// by a named algorithm on the device.
+    pub derivation: Derivation,
+}
+
 pub struct Relay {
     id: String,
     signer: Arc<dyn MessageSigner>,
@@ -96,12 +107,37 @@ impl Relay {
         claim: AssuranceClass,
         now_ms: u64,
     ) -> Result<Frame, RelayError> {
+        let c = CHANNELS.iter().find(|c| c.suffix == channel).ok_or_else(|| RelayError::UnknownChannel(channel.to_string()))?;
+        let derivation = match c.derivation {
+            DerivationKind::Transducer => Derivation::Measured,
+            DerivationKind::OnSensor(a) => Derivation::OnSensor { algorithm: a.to_string() },
+        };
+        let ch = RelayChannel { suffix: c.suffix, modality: c.kind.modality(), derivation };
+        self.frame_channel(src, &ch, value, seq, taken_at, claim, None, now_ms)
+    }
+
+    /// [`Relay::frame`] for a channel the caller declares, and with the model
+    /// binding the relay states for it. The Nicla channel table is not
+    /// consulted: a bus adapter declares its own channels (quantity, unit and
+    /// range live with the adapter), and the exporter learns them the same way
+    /// ([`crate::cascade::physical::BatchBuilder::with_channels`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn frame_channel(
+        &mut self,
+        src: &RelaySource,
+        ch: &RelayChannel,
+        value: f64,
+        seq: u64,
+        taken_at: u64,
+        claim: AssuranceClass,
+        binding: Option<crate::cascade::binding::ModelBinding>,
+        now_ms: u64,
+    ) -> Result<Frame, RelayError> {
         if !value.is_finite() {
             return Err(RelayError::NonFinite);
         }
-        let c = CHANNELS.iter().find(|c| c.suffix == channel).ok_or_else(|| RelayError::UnknownChannel(channel.to_string()))?;
         let sensing = src.identity.node_id.as_str().to_string();
-        let sensor_id = format!("{sensing}/{}", c.suffix);
+        let sensor_id = format!("{sensing}/{}", ch.suffix);
         let payload = reading_payload(&sensor_id, &sensing, value, seq, taken_at);
         let raw = self.signer.sign(&payload).map_err(|e| RelayError::Sign(format!("{e:#}")))?;
         let signature = self.key.seal(&payload, &raw).map_err(RelayError::Sign)?;
@@ -122,20 +158,17 @@ impl Relay {
             attestation,
             source_module: sensing.clone(),
             transport: src.transport,
-            modality: c.kind.modality(),
+            modality: ch.modality,
             chain: vec![
                 Hop {
                     role: NodeRole::Sensing,
                     node_id: sensing.clone(),
                     attestation_level: src.identity.assurance(),
-                    derivation: match c.derivation {
-                        DerivationKind::Transducer => Derivation::Measured,
-                        DerivationKind::OnSensor(a) => Derivation::OnSensor { algorithm: a.to_string() },
-                    },
+                    derivation: ch.derivation.clone(),
                 },
                 Hop { role: NodeRole::MicroProcessing, node_id: self.id.clone(), attestation_level: claim, derivation: Derivation::Relayed },
             ],
-            binding: None,
+            binding,
         };
         let envelope_signature = self.hw.sign_message(ENVELOPE_DOMAIN, &envelope_message(&reading, &provenance)).map_err(RelayError::Sign)?;
         let item = BridgedReading { reading, provenance, envelope_signature, countersignatures: Vec::new() };
@@ -151,5 +184,57 @@ impl Relay {
             .values()
             .map(|l| l.checkpoint(now_ms, &self.hw as &dyn CascadeSigner).map(|checkpoint| Frame::Checkpoint { checkpoint }).map_err(RelayError::Sign))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cascade::binding::ModelBinding;
+    use crate::identity::{enrol, fingerprint_of};
+    use crate::registry::Modality;
+    use furcate_identity::signer::Ed25519Signer;
+
+    fn relay() -> Relay {
+        Relay::new("furcate:node:r", Arc::new(Ed25519Signer(Arc::new(ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]))))).unwrap()
+    }
+
+    fn source() -> RelaySource {
+        RelaySource {
+            identity: enrol(fingerprint_of("SYNTH-0001", None).unwrap(), "n", b"n").unwrap(),
+            transport: Transport::UsbFrame,
+            statement: "test".into(),
+        }
+    }
+
+    #[test]
+    fn a_declared_channel_carries_its_modality_derivation_and_binding() {
+        let (mut r, s) = (relay(), source());
+        let b = ModelBinding::new(&"ab".repeat(32), 3, Some(b"cal"), true).unwrap();
+        let ch = RelayChannel { suffix: "joint1.position", modality: Modality::Inferred, derivation: Derivation::OnSensor { algorithm: "ekf".into() } };
+        let Frame::Reading { item, .. } = r.frame_channel(&s, &ch, 0.5, 1, 10, AssuranceClass::Device, Some(b.clone()), 1000).unwrap() else { panic!() };
+        assert_eq!(item.provenance.modality, Modality::Inferred);
+        assert_eq!(item.provenance.binding, Some(b));
+        assert!(matches!(&item.provenance.chain[0].derivation, Derivation::OnSensor { algorithm } if algorithm == "ekf"));
+        assert!(item.reading.sensor_id.ends_with("/joint1.position"));
+        assert_eq!(item.provenance.attestation_level, AssuranceClass::Soft);
+    }
+
+    #[test]
+    fn the_nicla_path_is_the_declared_path_with_the_nicla_table() {
+        let s = source();
+        let (mut a, mut b) = (relay(), relay());
+        let Frame::Reading { item: x, .. } = a.frame(&s, "tmp", 21.0, 1, 10, AssuranceClass::Device, 1000).unwrap() else { panic!() };
+        let ch = RelayChannel { suffix: "tmp", modality: Modality::Direct, derivation: Derivation::Measured };
+        let Frame::Reading { item: y, .. } = b.frame_channel(&s, &ch, 21.0, 1, 10, AssuranceClass::Device, None, 1000).unwrap() else { panic!() };
+        assert_eq!(x.envelope_signature, y.envelope_signature);
+        assert_eq!(x.reading.signature, y.reading.signature);
+    }
+
+    #[test]
+    fn a_non_finite_value_and_an_unknown_nicla_channel_are_refused() {
+        let (mut r, s) = (relay(), source());
+        assert_eq!(r.frame(&s, "tmp", f64::NAN, 1, 1, AssuranceClass::Soft, 1).unwrap_err(), RelayError::NonFinite);
+        assert!(matches!(r.frame(&s, "no.such", 1.0, 1, 1, AssuranceClass::Soft, 1), Err(RelayError::UnknownChannel(_))));
     }
 }

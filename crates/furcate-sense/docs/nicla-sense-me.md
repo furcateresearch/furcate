@@ -48,6 +48,184 @@ are withheld while the sensor reports accuracy 0 (stabilising).
 
 Vectors are one registry sensor per axis, because a reading carries one number.
 
+`chip.tmp` is a separate channel: the die temperature of the micro processing
+node that hosts the module (`Origin::HostChip`). It is not the module's `tmp`
+and is not registered under the module's identity.
+
+## Channel catalogue
+
+One table per quantity. "Verified" means read from a real board and checked;
+"built" means decoded and tested against constructed bytes only. Datasheet
+figures are the part maker's typical values, not transcribed or measured here,
+and are marked as such; figures from the recorded Standalone capture
+(`tests/fixtures/nicla-standalone-real-capture.bin`, 60 lines of each class at
+about 1 per second) are marked as measured.
+
+Applies to every channel: the module's own timestamps are discarded by the vendor
+library, so a reading is stamped when the processing node reads the frame
+(`taken_at`, whole seconds) and the transport latency is its timing
+uncertainty (not characterised). Every reading carries the `binding` the
+signing node states (model, epoch, `calibration`, `self_test`). `calibration`
+is the first 4 bytes of the SHA-256 of a calibration artefact and is all zero
+when there is none; no calibration artefact exists for any module channel
+today, so every module reading carries zeros. The attestation floor of every
+module channel is `soft` (fingerprint-identified, see Attestation). Every
+channel except the derived ones (`Inferred`) is `Direct` and may justify an
+action together with other evidence; none of them does so alone while the
+module is `soft` in a chain that requires more.
+
+### Acceleration: `acc.x`, `acc.y`, `acc.z`
+
+| | |
+|---|---|
+| Kind, unit | `acceleration`, m/s2, gravity included |
+| Wire | signed 16-bit counts, full scale 2, 4, 8 or 16 g set on the hub; value = counts / 32768 * range * 9.80665 |
+| Resolution | one count = 0.061 mg at 2 g, 0.244 mg (2.39 mm/s2) at 8 g |
+| Noise | measured: rms scatter of the three axes 3.5 to 5.0 mg and of the magnitude 4.0 mg over the capture, taken at +/-2 g; an upper bound, the board was not clamped. Datasheet noise density: not transcribed |
+| Bias, cross-axis, drift | not characterised. Zero-g offset needs a six-position test per unit |
+| Range in effect | must be stated (`--accel-g`); never inferred. Over BLE the stock firmware runs 8 g (gravity reads 1.00 g, verified). The Standalone capture prints +/-8 g but gravity reads 1.0015 g only at +/-2 g, see the open points |
+| Rate | requested 10 Hz |
+| Calibration binding | zeros (none) |
+| Twin variable | `specific_force`: validates and recalibrates a body or structure model of load and motion; the magnitude near 1 g is the check that the stated range is right |
+| Status | text path verified on a board; BLE path verified (leaf firmware); binary path built |
+
+### Angular rate: `gyr.x`, `gyr.y`, `gyr.z`
+
+| | |
+|---|---|
+| Kind, unit | `angular_rate`, rad/s |
+| Wire | signed 16-bit counts, full scale 125 to 2000 dps; value = counts / 32768 * range * pi / 180 |
+| Resolution | one count = 0.061 dps (1.07 mrad/s) at 2000 dps |
+| Bias, noise | measured by the leaf tool on a still board: bias 0.010, -0.010, 0.002 dps; noise 0.04 to 0.08 dps. The Standalone capture scatters 0.44 to 1.9 dps rms, which does not agree with that figure; the board may have been moving, and the two setups ran different ranges |
+| Scale | the 2000 dps default is the library's; the scale itself is not checked (the check needs a rotation of about 90 degrees, `tools/nicla_gyro_check.py`) |
+| Cross-axis, drift | not characterised |
+| Rate | requested 10 Hz |
+| Calibration binding | zeros |
+| Twin variable | `angular_velocity`: validates and recalibrates a rotating-body model; integrated, it is checked against the fused orientation (`cascade::coherence`) |
+| Status | text and BLE paths verified for the signal, scale unchecked; binary path built |
+
+### Magnetic field: `mag.x`, `mag.y`, `mag.z`
+
+| | |
+|---|---|
+| Kind, unit | `magnetic_field`, microtesla |
+| Wire | signed 16-bit counts at a full scale that is a setting and has no default (`--mag-ut`, `Ranges::set_mag`, `CONFIG_FL_NICLA_I2C_MAG_UT`, NVS `fl-nicla/mag_ut`); a frame arriving with none set is refused and counted, and the sensor is not asked for |
+| Resolution | one count = 0.040 uT at 1300 uT full scale; the sensor's own step is coarser (datasheet, about 0.3 uT, not transcribed) |
+| Range | the sensor measures +/-1300 uT in x and y and +/-2500 uT in z (datasheet) |
+| Bias, hard and soft iron, noise | not characterised; the raw field includes the board's own and nearby iron and current |
+| Rate | requested 10 Hz |
+| Calibration binding | zeros |
+| Twin variable | `magnetic_flux_density`: a change from the site's baseline marks nearby motors, steel or current (the derived `field_strength`); heading needs tilt compensation and a calibrated hub |
+| Status | built; never read from a real board |
+
+### Orientation: `rot.x`, `rot.y`, `rot.z`, `rot.w`
+
+| | |
+|---|---|
+| Kind, unit | `orientation`, unitless: a unit quaternion from the hub's sensor fusion, `Inferred` |
+| Wire | four signed 16-bit components at 1/16384 and an accuracy field |
+| Resolution | 6.1e-5 per component |
+| Measured | the capture holds the board still: components stable to 0.001 over 60 s, norm 1.00015 |
+| Accuracy | the field reads a constant 3.142 (pi rad) in the capture, i.e. no estimate; it is not exported. Over BLE batching the vendor library overwrites that byte |
+| Drift | yaw drift of a gyro-and-accelerometer fusion without a calibrated magnetometer: not characterised |
+| Rate | requested 10 Hz |
+| Calibration binding | zeros; the derivation is recorded as `on_sensor: bhi260ap-sensor-fusion` |
+| Twin variable | `attitude`: validates a pose forecast; being inferred it never recalibrates a twin and never stands alone behind an action |
+| Status | text path verified; BLE path decoded on constructed frames; binary path built |
+
+### Temperature: `tmp`
+
+| | |
+|---|---|
+| Kind, unit | `temperature`, celsius |
+| Wire | signed 16-bit at 0.01 degC |
+| Range | the sensor covers -40 to 85 degC (datasheet) |
+| Measured | 29.53 to 29.73 degC over the capture (rms 0.06). It rises 0.2 degC in a minute, which points to self-heating from the board and the gas heater (not isolated here), so it reads above the air. An offset against a reference thermometer is not calibrated; until then it is a board-side temperature, not air temperature |
+| Accuracy | datasheet about +/-0.5 degC at 25 degC before self-heating; not verified |
+| Rate | requested 1 Hz; the module sends on change |
+| Calibration binding | zeros |
+| Twin variable | `temperature`: validates a thermal model of the board's surroundings only after an offset calibration; recalibrates a housing or surface temperature of the machine it is mounted on |
+| Status | text path verified; BLE path verified |
+
+### Pressure: `prs`
+
+| | |
+|---|---|
+| Kind, unit | `pressure`, pascal |
+| Wire | unsigned 24-bit in 1/128 hPa (one count = 0.78 Pa); 1013.25 hPa is 129696. Verified on the module over BLE. The binary decoder read it as 1/128 Pa until this change, which put a 101325 Pa reading at 1013 Pa, inside the interface's range check |
+| Range | the sensor covers 300 to 1250 hPa (datasheet) |
+| Accuracy | datasheet about +/-0.5 hPa absolute and +/-0.03 hPa relative; not verified here |
+| Rate | requested 1 Hz; sent on change |
+| Calibration binding | zeros |
+| Twin variable | `pressure`: validates and recalibrates an ambient or process-line pressure model; the derived `pressure_height_change` follows relative pressure at about 8 m per hPa near sea level |
+| Status | BLE path verified; binary path built |
+
+### Humidity: `hum`
+
+| | |
+|---|---|
+| Kind, unit | `humidity`, percent relative |
+| Wire | one byte, 1 %RH steps, under the wake-up id 134 only (id 130 stays silent on the stock firmware); both are accepted |
+| Accuracy | datasheet about +/-3 %RH; not verified. First frames read 30 to 33 %RH indoors (verified) |
+| Rate | requested 1 Hz; sent on change |
+| Calibration binding | zeros |
+| Twin variable | `relative_humidity`; with `tmp` it gives the derived `dew_point` |
+| Status | BLE path verified |
+
+### Gas resistance: `gas`
+
+| | |
+|---|---|
+| Kind, unit | `gas_resistance`, ohm, unsigned 32-bit, `Direct` |
+| Measured | 10053 to 10434 ohm over the capture (rms 75 ohm, 0.7 %) |
+| Meaning | the resistance of the heated sensing layer. It depends on the heater profile, temperature and humidity and drifts over weeks; it is a trend, not a concentration. The unit is the vendor's word and has not been checked against a reference |
+| Rate | requested 1 Hz |
+| Calibration binding | zeros |
+| Twin variable | `gas_sensor_resistance`: validates a change in the air of a space against a baseline; recalibrates nothing by itself |
+| Status | text path verified; BLE path verified |
+
+### Air quality: `iaq`, `co2eq`, `bvoceq`
+
+| | |
+|---|---|
+| Kind, unit | `air_quality_index` (unitless, static index 0 to 500), `gas_equivalent` (ppm) twice: CO2 equivalent and breath-VOC equivalent. `Inferred`: the vendor's closed algorithm computes them from gas resistance, so they are estimates, not a measurement of CO2 |
+| Wire | the long frame (20 bytes): index u16, static index u16, VOC u16 at 0.01 ppm, CO2 u24 ppm, accuracy u8 |
+| Accuracy field | 0 stabilising (withheld and counted), 1 to 3 rising confidence |
+| Rate | requested 0.33 Hz (one estimate per 3 s) |
+| Calibration binding | zeros; the derivation is recorded as `on_sensor: bsec-air-quality` |
+| Twin variable | `air_quality_index` and `gas_concentration_estimate`: validate an occupancy or ventilation model; never recalibrate, never stand alone behind an action |
+| Status | built; the module has not been run with the air-quality firmware here |
+
+### Steps and activity: `steps`, `act`
+
+| | |
+|---|---|
+| Kind, unit | `step_count` (count), `activity_state` (code); both `Inferred` |
+| Wire | steps: unsigned 32-bit; activity: a 16-bit word, bit n (0 to 6) an activity ended, bit n + 8 started; the published code is the bit index (still 0, walking 1, running 2, on bicycle 3, in vehicle 4, tilting 5, in vehicle still 6) |
+| Behaviour | the step count restarts when the hub restarts. A word with several changes publishes one value on the leaf (the last) and counts the collapse; the host decoder publishes every change |
+| Rate | requested 1 Hz; sent on change |
+| Calibration binding | zeros |
+| Twin variable | `step_count`, `activity_state`: validate a people-flow or machine-state model; never recalibrate |
+| Status | built |
+
+### Chip temperature: `chip.tmp`
+
+| | |
+|---|---|
+| Kind, unit | `temperature`, celsius; the processing node's own die, `Direct` |
+| Range | -10 to 80 degC as configured in the driver |
+| Meaning | die temperature, which sits above ambient under load; not air temperature |
+| Twin variable | `temperature` of the controller; a thermal-load check on the node itself |
+| Status | verified over the USB link on the real pair |
+
+Drift tests: `tests/measurement_kinds.rs` holds the kind, unit and modality of
+every channel against `tests/fixtures/measurement-kinds.json`, which the
+consumer keeps byte for byte; `tests/nicla_vectors.rs` decodes the 27 frame
+vectors the firmware's host test decodes with its own C decoder
+(`nicla-frame-vectors.txt`); `tests/physical_batch.rs` signs every channel into
+a batch (`physical-batch-all-channels.golden.json`) that the consumer verifies.
+The frame vectors are constructed from the documented layouts, not recorded.
+
 ## Transports
 
 | Path | Needs | Status |

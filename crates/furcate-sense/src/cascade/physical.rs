@@ -19,6 +19,7 @@ use super::signer::CascadeSigner;
 use super::small::{verify_forwarded, ForwardRefusal, Forwarded, ForwardedItem};
 use super::witness::{genesis, item_digest, verify_cosigned, Cosigned, LogEntry};
 use crate::nicla::{Hop, CHANNELS};
+use crate::registry::{SensorKind, Unit};
 use furcate_identity::AssuranceClass;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -92,6 +93,7 @@ pub struct BatchBuilder {
     readings: Vec<Pending>,
     logs: BTreeMap<String, LogSegment>,
     birth_record_hash: Option<String>,
+    channels: BTreeMap<String, (SensorKind, Unit)>,
 }
 
 impl BatchBuilder {
@@ -117,7 +119,19 @@ impl BatchBuilder {
             readings: Vec::new(),
             logs: BTreeMap::new(),
             birth_record_hash: None,
+            channels: BTreeMap::new(),
         }
+    }
+
+    /// Teach the exporter channels the Nicla table does not know: a bus adapter's
+    /// declared channels, by full sensor id (`<sensing node>/<channel>`) with the
+    /// kind and unit it declared. An id not named here still resolves through
+    /// the Nicla table, so a builder that never calls this is unchanged.
+    pub fn with_channels(mut self, channels: impl IntoIterator<Item = (String, SensorKind, Unit)>) -> Self {
+        for (id, kind, unit) in channels {
+            self.channels.insert(id, (kind, unit));
+        }
+        self
     }
 
     /// Name the birth record of the model that produced these readings, by its hash
@@ -151,7 +165,13 @@ impl BatchBuilder {
             .sensor_id
             .strip_prefix(&format!("{}/", r.leaf_id))
             .ok_or_else(|| ExportRefusal::UnknownChannel(r.sensor_id.clone()))?;
-        let ch = CHANNELS.iter().find(|c| c.suffix == suffix).ok_or_else(|| ExportRefusal::UnknownChannel(r.sensor_id.clone()))?;
+        let (kind, unit) = match self.channels.get(&r.sensor_id) {
+            Some(ku) => *ku,
+            None => {
+                let ch = CHANNELS.iter().find(|c| c.suffix == suffix).ok_or_else(|| ExportRefusal::UnknownChannel(r.sensor_id.clone()))?;
+                (ch.kind, ch.unit)
+            }
+        };
 
         let hops: Vec<&Hop> = b.provenance.chain.iter().chain(b.countersignatures.iter().map(|c| &c.hop)).collect();
         let mut wire_hops: Vec<Value> = report
@@ -178,8 +198,8 @@ impl BatchBuilder {
         let mut o = Map::new();
         o.insert("sensor_id".into(), json!(r.sensor_id));
         o.insert("leaf_id".into(), json!(r.leaf_id));
-        o.insert("kind".into(), serde_json::to_value(ch.kind).map_err(|e| ExportRefusal::BadLog(e.to_string()))?);
-        o.insert("unit".into(), serde_json::to_value(ch.unit).map_err(|e| ExportRefusal::BadLog(e.to_string()))?);
+        o.insert("kind".into(), serde_json::to_value(kind).map_err(|e| ExportRefusal::BadLog(e.to_string()))?);
+        o.insert("unit".into(), serde_json::to_value(unit).map_err(|e| ExportRefusal::BadLog(e.to_string()))?);
         o.insert("modality".into(), serde_json::to_value(b.provenance.modality).map_err(|e| ExportRefusal::BadLog(e.to_string()))?);
         o.insert("value".into(), json!(r.value));
         o.insert("seq".into(), json!(r.seq));

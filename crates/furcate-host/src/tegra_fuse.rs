@@ -1,0 +1,310 @@
+//! Read-only view of a Jetson's secure-boot fuses.
+//!
+//! Source of the fuse model: NVIDIA Jetson Linux Developer Guide r39.2,
+//! "Secure Boot", "Fuse Configuration" and "Fuse Operations"
+//! (docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/Security/).
+//!
+//! * `SecurityMode` (1 bit, also called `odm_production_mode`) is the lock:
+//!   once 1, further fuse writes are blocked.
+//! * `PublicKeyHash` (64 bytes) is the hash the BootROM checks the boot chain
+//!   against. On Orin it is the SHA-512 of the PKC public key; on Thor it is a
+//!   hash over the hashes of 16 keys.
+//! * `BootSecurityInfo` (4 bytes) selects the scheme. On Orin bits [2:0] are
+//!   the authentication scheme (`001` is RSA-3K). On Thor the scheme is chosen
+//!   at signing time, bit 13 enables the firmware TPM.
+//!
+//! Secure boot is therefore enforced only when the lock is set **and** a key
+//! hash is present. `SecurityMode` alone, or a key hash alone, is not it.
+//!
+//! The documented way to read these on a running device is
+//! `nv_fuse_read.sh <name>` (root). Its output format is not documented, so the
+//! parser accepts one value per call, bare or as `name: value` / `name = value`,
+//! and anything else reads as "not read". The sysfs nodes some JetPack 5
+//! releases exposed (`efuse-burn`, `tegra-fuse`) are tried first; whether
+//! JetPack 6 and 7 publish them is unverified. Neither route is run on a real
+//! device. Key fuses (SBK, KDK, OEM_K, FEK, KEK) are never read: the allow-list
+//! below is the whole of what this module asks for.
+
+use crate::board::{SecureBoot, TegraSoc};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// The only fuses this module reads. None of them is secret.
+pub const READABLE: &[&str] = &[
+    "security_mode",
+    "boot_security_info",
+    "public_key",
+    "odmid",
+    "odm_lock",
+    "arm_jtag_disable",
+    "ecid",
+];
+
+/// Names `nv_fuse_read.sh` or sysfs may use for the same fuse, tried in order.
+/// Unverified: NVIDIA's pages give the fuse names (`SecurityMode`,
+/// `PublicKeyHash`), the forum shows the sysfs spellings.
+pub fn aliases(name: &str) -> &'static [&'static str] {
+    match name {
+        "security_mode" => &["security_mode", "odm_production_mode"],
+        "public_key" => &["public_key", "public_key_hash"],
+        "arm_jtag_disable" => &["arm_jtag_disable", "jtag_disable"],
+        "boot_security_info" => &["boot_security_info"],
+        "odmid" => &["odmid", "odm_id"],
+        "odm_lock" => &["odm_lock"],
+        "ecid" => &["ecid"],
+        _ => &[],
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fuses {
+    pub security_mode: Option<u64>,
+    pub boot_security_info: Option<u64>,
+    /// Lower-case hex, no prefix, as read.
+    pub public_key_hash: Option<String>,
+    pub odm_id: Option<u64>,
+    pub odm_lock: Option<u64>,
+    pub arm_jtag_disable: Option<u64>,
+    pub ecid: Option<String>,
+}
+
+/// Pull the value out of one reading. `name` is any alias.
+pub fn parse_reading(text: &str, name: &str) -> Option<String> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut value = line;
+    for sep in [':', '='] {
+        if let Some((k, v)) = line.split_once(sep) {
+            let k = k.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+            if !k.is_empty() && !aliases_contains(name, &k) {
+                return None; // a different fuse answered
+            }
+            value = v;
+            break;
+        }
+    }
+    let v = value.trim().trim_start_matches("0x").trim_start_matches("0X").to_ascii_lowercase();
+    (!v.is_empty() && v.len() <= 256 && v.bytes().all(|b| b.is_ascii_hexdigit())).then_some(v)
+}
+
+fn aliases_contains(name: &str, key: &str) -> bool {
+    aliases(name).contains(&key) || key == name
+}
+
+fn as_u64(h: &str) -> Option<u64> {
+    (h.len() <= 16).then(|| u64::from_str_radix(h, 16).ok()).flatten()
+}
+
+impl Fuses {
+    /// Build from `(canonical name, raw text)` readings.
+    pub fn from_readings<'a>(readings: impl IntoIterator<Item = (&'a str, &'a str)>) -> Fuses {
+        let mut f = Fuses::default();
+        for (name, text) in readings {
+            let Some(v) = parse_reading(text, name) else { continue };
+            match name {
+                "security_mode" => f.security_mode = as_u64(&v),
+                "boot_security_info" => f.boot_security_info = as_u64(&v),
+                "public_key" => f.public_key_hash = Some(v),
+                "odmid" => f.odm_id = as_u64(&v),
+                "odm_lock" => f.odm_lock = as_u64(&v),
+                "arm_jtag_disable" => f.arm_jtag_disable = as_u64(&v),
+                "ecid" => f.ecid = Some(v),
+                _ => {}
+            }
+        }
+        f
+    }
+
+    fn key_hash_present(&self) -> Option<bool> {
+        self.public_key_hash.as_ref().map(|h| h.bytes().any(|b| b != b'0'))
+    }
+
+    /// Whether the firmware TPM is enabled by fuse, where the fuses say so.
+    /// Thor: `BootSecurityInfo` bit 13. Orin: not carried by that register.
+    pub fn ftpm_enable_bit(&self, soc: TegraSoc) -> Option<bool> {
+        match soc {
+            TegraSoc::Thor => self.boot_security_info.map(|b| b & (1 << 13) != 0),
+            TegraSoc::Orin => None,
+        }
+    }
+}
+
+/// Where the fuses are read from.
+pub struct Source {
+    pub sysfs: Vec<PathBuf>,
+    pub script: Option<PathBuf>,
+}
+
+impl Source {
+    pub fn system() -> Source {
+        Source {
+            sysfs: vec![
+                PathBuf::from("/sys/devices/platform/efuse-burn"),
+                PathBuf::from("/sys/devices/platform/tegra-fuse"),
+            ],
+            script: ["/usr/sbin/nv_fuse_read.sh", "/usr/bin/nv_fuse_read.sh", "/opt/nvidia/jetson-io/nv_fuse_read.sh"]
+                .iter()
+                .map(PathBuf::from)
+                .find(|p| p.exists()),
+        }
+    }
+
+    /// Read every allowed fuse. Each call is read-only.
+    pub fn read(&self) -> Fuses {
+        let mut owned: Vec<(&str, String)> = Vec::new();
+        for name in READABLE {
+            if let Some(t) = self.read_one(name) {
+                owned.push((name, t));
+            }
+        }
+        Fuses::from_readings(owned.iter().map(|(n, t)| (*n, t.as_str())))
+    }
+
+    fn read_one(&self, name: &str) -> Option<String> {
+        for alias in aliases(name) {
+            for dir in &self.sysfs {
+                if let Ok(t) = std::fs::read_to_string(dir.join(alias)) {
+                    return Some(t);
+                }
+            }
+        }
+        let script = self.script.as_deref().filter(|s| Path::new(s).exists())?;
+        for alias in aliases(name) {
+            if let Ok(o) = Command::new(script).arg(alias).output() {
+                if o.status.success() {
+                    return Some(String::from_utf8_lossy(&o.stdout).into_owned());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Is secure boot fused? Anything not established reads as not enforced.
+pub fn secure_boot(soc: TegraSoc, f: &Fuses) -> SecureBoot {
+    let (Some(mode), Some(hash)) = (f.security_mode, f.key_hash_present()) else {
+        let mut missing = Vec::new();
+        if f.security_mode.is_none() {
+            missing.push("SecurityMode");
+        }
+        if f.public_key_hash.is_none() {
+            missing.push("PublicKeyHash");
+        }
+        return SecureBoot::Unknown { why: format!("fuse(s) not readable here: {}", missing.join(", ")) };
+    };
+    match (mode, hash) {
+        (0, false) => SecureBoot::Off { detail: "SecurityMode is 0 and PublicKeyHash is zero: development part, not fused".into() },
+        (0, true) => SecureBoot::Configured {
+            detail: "PublicKeyHash is burned but SecurityMode is 0: not locked, further fuse writes are still possible".into(),
+        },
+        (1, false) => SecureBoot::Configured {
+            detail: "SecurityMode is 1 but PublicKeyHash is zero: locked with no key to check against".into(),
+        },
+        (1, true) => match soc {
+            TegraSoc::Orin => match f.boot_security_info {
+                None => SecureBoot::Unknown { why: "BootSecurityInfo not readable, authentication scheme unknown".into() },
+                Some(b) if b & 0b111 == 0b001 => SecureBoot::Enforced {
+                    detail: format!("SecurityMode 1, PublicKeyHash burned, BootSecurityInfo {b:#x} (RSA-3K)"),
+                },
+                Some(b) => SecureBoot::Configured {
+                    detail: format!(
+                        "BootSecurityInfo {b:#x}: authentication scheme bits {:03b} are not the documented RSA-3K value",
+                        b & 0b111
+                    ),
+                },
+            },
+            TegraSoc::Thor => SecureBoot::Enforced {
+                detail: format!(
+                    "SecurityMode 1, PublicKeyHash burned{}",
+                    f.boot_security_info.map(|b| format!(", BootSecurityInfo {b:#x}")).unwrap_or_default()
+                ),
+            },
+        },
+        (other, _) => SecureBoot::Unknown { why: format!("SecurityMode {other:#x} is not 0 or 1") },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Synthetic values in the documented shapes. Not captured from a device.
+    const KEY: &str = "5d1b0f0c9e3a4b7c8d2e1f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071829304";
+
+    fn fuses(mode: &str, hash: &str, bsi: Option<&str>) -> Fuses {
+        let mut r = vec![("security_mode", mode), ("public_key", hash)];
+        if let Some(b) = bsi {
+            r.push(("boot_security_info", b));
+        }
+        Fuses::from_readings(r)
+    }
+
+    fn zero() -> String {
+        "0".repeat(128)
+    }
+
+    #[test]
+    fn orin_fused_with_rsa3k_is_enforced() {
+        // 0x2be1 is NVIDIA's sample "sign only" value.
+        let f = fuses("0x1", KEY, Some("0x2be1"));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &f), SecureBoot::Enforced { .. }));
+    }
+
+    #[test]
+    fn wrong_levels_are_not_enforced() {
+        let z = zero();
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", &z, Some("0x2be1"))), SecureBoot::Off { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", KEY, Some("0x2be1"))), SecureBoot::Configured { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", &z, Some("0x2be1"))), SecureBoot::Configured { .. }));
+        // scheme bits not 001
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some("0x2be2"))), SecureBoot::Configured { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some("0x2be0"))), SecureBoot::Configured { .. }));
+        // no BootSecurityInfo on Orin
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, None)), SecureBoot::Unknown { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("2", KEY, Some("0x2be1"))), SecureBoot::Unknown { .. }));
+    }
+
+    #[test]
+    fn missing_fuses_are_unknown() {
+        assert!(matches!(secure_boot(TegraSoc::Orin, &Fuses::default()), SecureBoot::Unknown { .. }));
+        let only_mode = Fuses::from_readings([("security_mode", "0x1")]);
+        assert!(matches!(secure_boot(TegraSoc::Thor, &only_mode), SecureBoot::Unknown { .. }));
+    }
+
+    #[test]
+    fn thor_needs_lock_and_key_hash() {
+        let f = fuses("1", KEY, Some("0x2228"));
+        assert!(matches!(secure_boot(TegraSoc::Thor, &f), SecureBoot::Enforced { .. }));
+        assert_eq!(f.ftpm_enable_bit(TegraSoc::Thor), Some(true)); // 0x2228: bit 13 (0x2000) set
+        assert_eq!(fuses("1", KEY, Some("0x0228")).ftpm_enable_bit(TegraSoc::Thor), Some(false));
+        assert_eq!(f.ftpm_enable_bit(TegraSoc::Orin), None);
+    }
+
+    #[test]
+    fn readings_parse_strictly() {
+        assert_eq!(parse_reading("0x1\n", "security_mode").as_deref(), Some("1"));
+        assert_eq!(parse_reading("security_mode: 0x1", "security_mode").as_deref(), Some("1"));
+        assert_eq!(parse_reading("odm_production_mode = 1", "security_mode").as_deref(), Some("1"));
+        // another fuse answered
+        assert_eq!(parse_reading("odmid: 0x1", "security_mode"), None);
+        assert_eq!(parse_reading("permission denied", "security_mode"), None);
+        assert_eq!(parse_reading("", "security_mode"), None);
+        assert_eq!(parse_reading("0xzz", "security_mode"), None);
+    }
+
+    #[test]
+    fn source_reads_sysfs_files_and_never_secret_names() {
+        let d = std::env::temp_dir().join(format!("furcate-fuse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("security_mode"), "0x1\n").unwrap();
+        std::fs::write(d.join("public_key"), format!("{KEY}\n")).unwrap();
+        std::fs::write(d.join("boot_security_info"), "0x2be1\n").unwrap();
+        std::fs::write(d.join("secure_boot_key"), "deadbeef").unwrap();
+        let f = Source { sysfs: vec![d.clone()], script: None }.read();
+        assert!(matches!(secure_boot(TegraSoc::Orin, &f), SecureBoot::Enforced { .. }));
+        for secret in ["secure_boot_key", "sbk", "kdk0", "oem_k1", "oem_k2", "fek", "kek0"] {
+            assert!(!READABLE.contains(&secret));
+        }
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+}

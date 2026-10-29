@@ -10,7 +10,7 @@
 //!     "key": "p256:04...",
 //!     "custody": {"kind": "readable-identifiers"},
 //!     "mac": "44b176b05724", "otp": "0102030405060708", "revision": "0002",
-//!     "channels": {"0": "tmp"},
+//!     "channels": {"0": "chip.tmp"},
 //!     "module": {"name": "nicla-1", "serial": "NSM-0042", "device_id": "0908070605040302",
 //!                "device_addr": "c00102030405", "unit_fingerprint": "6b8b373a92128b23de4ac344cdcd5f03",
 //!                "channels": {"16": "tmp"}}
@@ -131,10 +131,10 @@ mod tests {
     fn leaf() -> Value {
         json!({
             "name": "micro-01",
-            "key": format!("p256:04{}", "ab".repeat(64)),
+            "key": "p256:041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3",
             "custody": {"kind": "readable-identifiers"},
             "mac": "44b176b05724", "otp": "0102030405060708", "revision": "0002",
-            "channels": {"0": "tmp"},
+            "channels": {"0": "chip.tmp"},
             "module": {"name": "nicla-1", "serial": "NSM-0042", "device_id": "0908070605040302", "device_addr": "c00102030405", "unit_fingerprint": "6b8b373a92128b23de4ac344cdcd5f03", "channels": {"16": "hum"}}
         })
     }
@@ -144,7 +144,7 @@ mod tests {
         let l = load(&json!({"bridge_id": "furcate:node:b", "ceiling": "device", "leaves": [leaf()]})).unwrap();
         assert_eq!(l.ceiling, AssuranceClass::Device);
         assert_eq!(l.sources.len(), 1);
-        assert_eq!(l.sources[0].chip_channels.get(&0).map(String::as_str), Some("tmp"));
+        assert_eq!(l.sources[0].chip_channels.get(&0).map(String::as_str), Some("chip.tmp"));
         assert!(l.sources[0].module.is_some());
         assert_eq!(l.sources[0].leaf_unit.len(), 64);
     }
@@ -158,6 +158,11 @@ mod tests {
         let mut bad_key = leaf();
         bad_key["key"] = json!("ed25519:00");
         assert!(load(&json!({"bridge_id": "b", "ceiling": "soft", "leaves": [bad_key]})).is_err());
+        // A key that is the right length but not a point on the curve is not enrolled.
+        let mut off_curve = leaf();
+        off_curve["key"] = json!(format!("p256:04{}", "ab".repeat(64)));
+        let e = load(&json!({"bridge_id": "b", "ceiling": "soft", "leaves": [off_curve]})).err().unwrap();
+        assert!(e.contains("not a point on P-256"), "{e}");
     }
 
     #[test]

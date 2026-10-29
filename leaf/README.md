@@ -15,7 +15,7 @@ A leaf node does five things:
 | Role | Chip | Status |
 |---|---|---|
 | Development board | Classic ESP32 (ESP32-D0WD-V3 rev 3.1, 4 MB flash, no PSRAM) | Phase 1 runs here |
-| Development and gateway, micro processing node | ESP32-S3 (XIAO ESP32S3: 8 MB flash, 8 MB PSRAM, USB-Serial/JTAG): identity from eFuse silicon values, HMAC-key path when a key is burned, own sensors, BLE link to a Nicla Sense ME sensing module, no camera or microphone input. See the device page docs/leaf-devices/xiao-esp32s3.md in the Furcate repository | Builds and runs; no eFuse burned |
+| Development and gateway, micro processing node | ESP32-S3 (XIAO ESP32S3: 8 MB flash, 8 MB PSRAM, USB-Serial/JTAG): identity from eFuse silicon values, HMAC-key path when a key is burned, own sensors, BLE link to a Nicla Sense ME sensing module, or I2C host on the expansion port for the same module (host-tested bus exchange; not yet run on the board), no camera or microphone input. See the device page docs/leaf-devices/xiao-esp32s3.md in the Furcate repository | Builds and runs; no eFuse burned |
 | **Production, sensors** | ESP32-C5 (rev 1.2 or later): Key Manager with a PUF-derived hardware key, ECDSA peripheral, TEE, glitch detector | Decided; backend pending |
 | **Production, vision** | ESP32-P4 (rev 3.0 or later) with a C5/C6 radio: Key Manager/PUF, ECDSA, glitch detector, AI vector unit, PSRAM | Decided; backend pending |
 
@@ -24,7 +24,11 @@ The classic ESP32 is a development board only:
 - It has no hardware engine that uses a key without software seeing it.
 - There are published, unfixed physical attacks on its secure boot and flash encryption.
 
-Its lock-down checklist in [docs/SECURITY.md](docs/SECURITY.md) hardens development units. It does not make them production units. On production hardware the device key never leaves the chip.
+Its lock-down checklist in [docs/SECURITY.md](docs/SECURITY.md) hardens development units. It does not make them production units. On production hardware the device key never leaves the chip. The rehearsal of that lock-down on the classic board, with the mapping to the ESP32-S3 plan and the real-burn runbook, is `docs/EFUSE-REHEARSAL-ON-CLASSIC.md`.
+
+On a sacrificial classic ESP32 the lock-down stages S0 to S6 were executed on silicon with a throwaway signing key and compared with the expected states; the observed result is in `docs/EFUSE-REHEARSAL-CLASSIC-RESULT-2026-10-29.md`. That board was an article for the rehearsal, not a deployed unit.
+
+The silicon-fingerprint identity keeps its helper data in flash, so an erase-flash changes a classic ESP32 leaf's id. Helper data v3 adds a key check and an export and import for an escrowed copy, with the arithmetic host-tested; the cause and the fix are in the development repository, `docs/IDENTITY-PERSISTENCE.md`. This is code and host tests only.
 
 The firmware is portable across targets:
 
@@ -37,6 +41,7 @@ The firmware is portable across targets:
 main/                     boot sequence and command dispatch
 components/fl_core/       identity, silicon fingerprint, trust anchors, channel, OTA, wire format
 components/fl_nicla/      BLE central for a sensing module (Nicla Sense ME) on the ESP32-S3, frame decoding
+components/fl_nicla_i2c/  I2C host for the same module on the expansion port, feeding the same decoder
 components/fl_sense/      the leaf's own sensors and the signed reading path
 components/fl_models/     model server: slots, signed manifests, capability check, TFLM runtime
 components/micro-ecc/     P-256 (vendored, BSD-2-Clause)
@@ -65,6 +70,9 @@ This repository is the device side. The monorepo changes this firmware needs are
 - [docs/DESIGN.md](docs/DESIGN.md): architecture, protocol, model server
 - [docs/SECURITY.md](docs/SECURITY.md): hardware dossier, threat model, production lock-down
 - [docs/MODELS.md](docs/MODELS.md): what runs on which chip, with measured and published numbers
+- `docs/SENSOR-MODULE-I2C.md` (development repository): the sensing module over I2C, the same signed readings as the BLE path
+- `docs/pi-head-sense.md`: verified readings at the Pi head (written and tested; not deployed)
+- `docs/EFUSE-REHEARSAL-ON-CLASSIC.md` and its observed result: the lock-down rehearsal on the classic board
 - The ESP32-S3 leaf (XIAO ESP32S3) is described on the device page `docs/leaf-devices/xiao-esp32s3.md` in the Furcate repository; the three node roles and the cascade are in its `docs/leaf-tier.md`.
 
 ## Building and flashing the ESP32-S3 target

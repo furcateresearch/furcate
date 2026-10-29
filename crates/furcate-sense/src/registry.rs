@@ -36,6 +36,18 @@ pub enum Unit {
     /// A number with no unit that is not a count or a fraction: a quaternion
     /// component, or an index defined by the sensor.
     Unitless,
+    /// Linear position or distance.
+    Metres,
+    /// Joint or shaft angle.
+    Radians,
+    /// Force along an axis.
+    Newtons,
+    /// Torque about an axis.
+    NewtonMetres,
+    /// Frequency, for a drive output or a mains measurement.
+    Hertz,
+    /// Electrical energy, for a meter register.
+    KilowattHours,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +56,8 @@ pub enum SensorKind {
     Temperature,
     Humidity,
     Power,
+    /// Electrical energy accumulated by a meter register, in kilowatt hours.
+    Energy,
     Current,
     Voltage,
     Pressure,
@@ -88,6 +102,17 @@ pub enum SensorKind {
     /// breath-VOC equivalent. Not a measurement of that gas: `AirQuality`
     /// stays the kind for a sensor that measures CO2.
     GasEquivalent,
+    /// Position of a joint, axis or body, linear or angular (the unit says which).
+    Position,
+    /// Velocity of a joint, axis or body, linear or angular.
+    Velocity,
+    /// Torque at a joint or shaft.
+    Torque,
+    /// Force at a tool or a load cell.
+    Force,
+    /// A status word, error code or state number reported by a controller or
+    /// drive. Computed by the device from its own state, not transduced.
+    StatusCode,
     /// Anything the schema does not name.
     Other,
 }
@@ -123,7 +148,8 @@ impl SensorKind {
             | SensorKind::StepCount
             | SensorKind::ActivityState
             | SensorKind::AirQualityIndex
-            | SensorKind::GasEquivalent => Modality::Inferred,
+            | SensorKind::GasEquivalent
+            | SensorKind::StatusCode => Modality::Inferred,
             _ => Modality::Direct,
         }
     }

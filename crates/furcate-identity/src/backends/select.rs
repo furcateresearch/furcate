@@ -390,15 +390,26 @@ fn ek_chain(tpm: &Tpm2Tools, bundle: Option<&Path>) -> EkChain {
         Ok(Some(c)) => Some(c),
         _ => tpm.ek_certificate_ecc().ok().flatten(),
     };
-    verify_in_scratch(cert.as_deref(), bundle)
+    verify_in_scratch(cert.as_deref(), bundle, tpm.ek_public().ok().as_deref())
 }
 
-fn verify_in_scratch(cert: Option<&[u8]>, bundle: Option<&Path>) -> EkChain {
+/// Chain check, then the check that the certificate is for *this* TPM's EK.
+/// A chain that verifies for some other device's certificate proves nothing.
+fn verify_in_scratch(cert: Option<&[u8]>, bundle: Option<&Path>, ek_public: Option<&[u8]>) -> EkChain {
     let work = std::env::temp_dir().join(format!("furcate-ekchain-{}", std::process::id()));
     if let Err(e) = std::fs::create_dir_all(&work) {
         return EkChain::Rejected { why: format!("creating {}: {e}", work.display()) };
     }
-    let chain = firmware_tpm::verify_ek_chain(cert, bundle, &work);
+    let mut chain = firmware_tpm::verify_ek_chain(cert, bundle, &work);
+    if let (EkChain::Verified { .. }, Some(cert)) = (&chain, cert) {
+        let bound = match ek_public {
+            Some(ek) => super::ek_bind::certificate_matches_ek(cert, ek, &work),
+            None => Err("the TPM's endorsement key could not be read to compare".to_string()),
+        };
+        if let Err(why) = bound {
+            chain = EkChain::Rejected { why };
+        }
+    }
     let _ = std::fs::remove_dir_all(&work);
     chain
 }
@@ -418,7 +429,10 @@ pub struct Endorsement {
 /// endorsed whatever it holds.
 pub fn endorsement<R: RootOfTrust + ?Sized>(rot: &R, policy: &Policy) -> Endorsement {
     let cert = rot.ek_certificate().ok().flatten();
-    endorsement_of(rot.assurance(), cert.as_deref(), |c| verify_in_scratch(Some(c), policy.ek_ca_bundle.as_deref()))
+    let ek = rot.ek_public().ok();
+    endorsement_of(rot.assurance(), cert.as_deref(), |c| {
+        verify_in_scratch(Some(c), policy.ek_ca_bundle.as_deref(), ek.as_deref())
+    })
 }
 
 fn endorsement_of(class: AssuranceClass, cert: Option<&[u8]>, verify: impl FnOnce(&[u8]) -> EkChain) -> Endorsement {

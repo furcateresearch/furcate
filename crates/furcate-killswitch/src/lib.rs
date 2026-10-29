@@ -1,4 +1,10 @@
-//! The kill switch: signed orders to stop a machine, a domain or the cluster.
+//! The kill switch: signed orders to request a stop of a machine, a domain or
+//! the cluster.
+//!
+//! For a machine that does physical work this is an advisory stop request to
+//! its own safety-rated controller. It is not an emergency stop and not a safety
+//! function, a missing order is not a safe state, and Furcate never resets,
+//! clears or overrides an emergency stop or sends a restart.
 //!
 //! This is its own crate, and Apache-2.0, because of what it claims. A kill
 //! switch asserts that an order was authorised by the operator key and by nobody

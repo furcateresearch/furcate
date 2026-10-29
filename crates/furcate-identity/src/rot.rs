@@ -20,7 +20,8 @@ use std::fmt;
 pub enum AssuranceClass {
     /// File-backed key with no hardware binding. VMs, containers, development.
     Soft,
-    /// Fuse-backed keys and secure boot on microcontroller-class silicon. A
+    /// A key held in a read-protected fuse block or key peripheral on
+    /// microcontroller-class silicon. Secure boot alone does not earn it: a
     /// leaf earns it from its key custody, never by stating it; see
     /// [`crate::leaf`].
     Device,

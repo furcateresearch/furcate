@@ -175,7 +175,7 @@ fn enrol(args: &Args) -> Result<()> {
                     "key": h.key(),
                     "custody": {"kind": "readable-identifiers"},
                     "mac": ev(1), "otp": ev(20), "revision": ev(2),
-                    "channels": {"0": "tmp"},
+                    "channels": {"0": "chip.tmp"},
                     "note": format!("the leaf's own label is `{label}`; set `custody` from what the operator knows of how its key is held, not from this label")
                 }))?
             );

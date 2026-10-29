@@ -62,7 +62,7 @@ fn each_refusal_has_its_own_code() {
         ("outside sender envelope", Box::new(|v| v["envelope"]["max"] = json!(20)), NOW, Decision::Denied, OutsideLwEnvelope),
         ("outside site envelope", Box::new(|v| { v["body"]["value"] = json!(27.0); v["envelope"]["max"] = json!(29); }), NOW, Decision::Denied, OutsideSiteEnvelope),
         ("no site limit", Box::new(|v| v["target"]["actuator_id"] = json!("valve-9")), NOW, Decision::Denied, NoSiteLimit),
-        ("unsupported kind", Box::new(|v| v["kind"] = json!("trajectory")), NOW, Decision::Denied, UnsupportedKind),
+        ("unsupported kind", Box::new(|v| v["kind"] = json!("model_update")), NOW, Decision::Denied, UnsupportedKind),
         ("unknown field", Box::new(|v| v["extra"] = json!(1)), NOW, Decision::Denied, Malformed),
     ];
     for (name, m, now, d, c) in cases {

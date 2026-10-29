@@ -43,7 +43,7 @@ One mechanism, the one `furcate-identity` already has, applies at every position
   part changed (continues), replaced (a value that never changes did: escalate), key mismatch
   (same silicon values, different key), or duplicate session (one identity already live).
 * A unit identified only by silicon values is identified, not authenticated. It stays `Soft` however
-  well it matches. No attestation level is added for it; the existing two cover it.
+  well it matches. No attestation level is added for it. The scale has six levels, weakest to strongest `soft`, `device`, `se`, `tee`, `dice`, `tpm` (`AssuranceClass`); a unit identified only by silicon values is the first of them.
 
 ## Readings carry the chain
 
@@ -81,10 +81,15 @@ to the head of the Raspberry Pi (small processing node), then to the next rung a
   link, an independent verifier checked all nine signed readings and the unit-binding record against the
   leaf key. Frame decoding is host-tested with constructed frames and a simulated BLE peer.
 * Built, not yet run end to end: the head's `sense` control op (the gateway program in the leaf firmware
-  repository), the Wi-Fi leg to the Pi.
-* Limits: the BLE link is unencrypted and unbonded and the module is `soft`; values carry the leaf's
-  arrival time, not the sensor's own timestamp; the gyroscope scale is the library default and not
-  checked with a known rotation; the module sent no humidity frames. The ESP32-S3 joins 2.4 GHz only.
+  repository) and the Wi-Fi leg to the Pi.
+* Tested over Wi-Fi as well: the S3 joins the 2.4 GHz network at about -50 dBm in 3.7 s with its antenna
+  attached, and eleven signed readings (including humidity) plus the unit record verified after
+  Nicla, BLE, S3, Wi-Fi, a byte relay and the node key.
+* Limits: the BLE link is plaintext (the stock module firmware stops answering when asked to pair), so a
+  radio attacker can inject, alter or block module values, but they arrive as `soft` readings signed by
+  the leaf and cannot raise the trust level; values carry the leaf's arrival time, not the sensor's own
+  timestamp; the gyroscope scale is the library default (a check tool exists, the capture so far had no
+  motion). The ESP32-S3 joins 2.4 GHz only.
 
 ### The path from sensor to Living Worlds, and where each part stands
 

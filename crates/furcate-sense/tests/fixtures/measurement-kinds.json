@@ -1,0 +1,152 @@
+{
+  "note": "The physical-batch kinds, their one unit, plausible range and modality. Kept byte for byte identical on the producer side (crates/open/furcate-sense/tests/fixtures) and the consumer side; each side tests its own table against it.",
+  "kinds": {
+    "acceleration": {
+      "unit": "metres_per_second_squared",
+      "min": -20000,
+      "max": 20000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "activity_state": {
+      "unit": "count",
+      "min": 0,
+      "max": 1000,
+      "modality": "inferred",
+      "may_actuate_alone": false
+    },
+    "air_quality": {
+      "unit": "ppm",
+      "min": 0,
+      "max": 1000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "air_quality_index": {
+      "unit": "unitless",
+      "min": 0,
+      "max": 1000,
+      "modality": "inferred",
+      "may_actuate_alone": false
+    },
+    "airflow": {
+      "unit": "metres_per_second",
+      "min": 0,
+      "max": 400,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "angular_rate": {
+      "unit": "radians_per_second",
+      "min": -1000,
+      "max": 1000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "current": {
+      "unit": "amps",
+      "min": -1000000,
+      "max": 1000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "flow": {
+      "unit": "litres_per_minute",
+      "min": 0,
+      "max": 1000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "gas_equivalent": {
+      "unit": "ppm",
+      "min": 0,
+      "max": 1000000,
+      "modality": "inferred",
+      "may_actuate_alone": false
+    },
+    "gas_resistance": {
+      "unit": "ohms",
+      "min": 0,
+      "max": 1000000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "humidity": {
+      "unit": "percent",
+      "min": 0,
+      "max": 100,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "light": {
+      "unit": "lux",
+      "min": 0,
+      "max": 10000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "magnetic_field": {
+      "unit": "microtesla",
+      "min": -5000,
+      "max": 5000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "orientation": {
+      "unit": "unitless",
+      "min": -1.0001,
+      "max": 1.0001,
+      "modality": "inferred",
+      "may_actuate_alone": false
+    },
+    "power": {
+      "unit": "watts",
+      "min": -1000000000,
+      "max": 1000000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "pressure": {
+      "unit": "pascals",
+      "min": 1000,
+      "max": 200000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "sound_level": {
+      "unit": "decibels",
+      "min": 0,
+      "max": 200,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "step_count": {
+      "unit": "count",
+      "min": 0,
+      "max": 1000000000,
+      "modality": "inferred",
+      "may_actuate_alone": false
+    },
+    "temperature": {
+      "unit": "celsius",
+      "min": -100,
+      "max": 1000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "vibration": {
+      "unit": "metres_per_second_squared",
+      "min": 0,
+      "max": 20000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    },
+    "voltage": {
+      "unit": "volts",
+      "min": -1000000,
+      "max": 1000000,
+      "modality": "direct",
+      "may_actuate_alone": true
+    }
+  }
+}

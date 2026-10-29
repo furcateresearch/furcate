@@ -5,6 +5,7 @@
 //! stronger root of trust changes which backend is selected, not how the rest
 //! of Furcate treats identity.
 
+pub mod ek_bind;
 pub mod fingerprint;
 pub mod firmware_tpm;
 pub mod host;

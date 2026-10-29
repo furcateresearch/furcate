@@ -1,0 +1,24 @@
+# The module's channels as the leaf publishes them: leaf sensor index, channel name, kind, unit (the INFO table entry is `<index>:<kind>:<unit>:nicla-sense-me/<name>`).
+# Kept byte for byte identical in furcate-leaf-firmware (test/host/vectors) and furcate-enterprise (crates/open/furcate-sense/tests/fixtures). The firmware test checks its table against this file, the enterprise test checks it against the cascade catalogue.
+16 acc.x acceleration m/s2
+17 acc.y acceleration m/s2
+18 acc.z acceleration m/s2
+19 gyr.x angular_rate rad/s
+20 gyr.y angular_rate rad/s
+21 gyr.z angular_rate rad/s
+22 tmp temperature celsius
+23 prs pressure pascal
+24 hum humidity percent
+25 gas gas_resistance ohm
+26 mag.x magnetic_field uT
+27 mag.y magnetic_field uT
+28 mag.z magnetic_field uT
+29 rot.x orientation unitless
+30 rot.y orientation unitless
+31 rot.z orientation unitless
+32 rot.w orientation unitless
+33 iaq air_quality_index unitless
+34 co2eq gas_equivalent ppm
+35 bvoceq gas_equivalent ppm
+36 steps step_count count
+37 act activity_state count

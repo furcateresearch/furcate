@@ -26,6 +26,7 @@
 #include "esp_system.h"
 #include "heap_memory_layout.h"
 #include "nvs.h"
+#include "fl_puf_core.h"
 
 static const char *TAG = "fl-puf";
 
@@ -128,56 +129,65 @@ static bool enroll_step(void) {
     return true;
 }
 
-// Helper data layout in NVS: positions[FL_PUF_BITS][FL_PUF_REP] (u16) and
-// parity[FL_PUF_BITS] (u8 bitmask of FL_PUF_REP-1 XOR bits).
-typedef struct {
-    uint16_t pos[FL_PUF_BITS][FL_PUF_REP];
-    uint8_t parity[FL_PUF_BITS];
-} helper_t;
+// Helper data in NVS, namespace "fl-puf":
+//   helper3  fl_puf_blob_t: cell positions, parities, region address, and a
+//            check value over the secret. Written by every new enrollment.
+//   helper2  fl_puf_helper_t alone (enrollments of 0.1.4 to 0.1.x). Still
+//            read, unchanged, so leaves enrolled before keep their identity;
+//            it has no check value.
+// NVS lives in flash, which erase-flash wipes. The helper data is public, so
+// the parent keeps a copy (fl_puf_helper_export) and puts it back with
+// fl_puf_helper_import. Without it a wiped leaf enrolls afresh and gets a new id.
+static fl_puf_blob_t s_blob;
+static bool s_has_check;
 
-static int bit_at(const uint8_t *buf, int pos) { return (buf[pos >> 3] >> (pos & 7)) & 1; }
+static esp_err_t load_helper(nvs_handle_t nv) {
+    size_t len = sizeof s_blob;
+    if (nvs_get_blob(nv, "helper3", &s_blob, &len) == ESP_OK && len == sizeof s_blob &&
+        fl_puf_blob_valid(&s_blob, REGION_ADDR)) {
+        s_has_check = true;
+        return ESP_OK;
+    }
+    len = sizeof s_blob.h;
+    if (nvs_get_blob(nv, "helper2", &s_blob.h, &len) == ESP_OK && len == sizeof s_blob.h) {
+        s_has_check = false;
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
+}
 
 esp_err_t fl_puf_secret(uint8_t out[FL_PUF_BITS / 8], fl_puf_stats_t *stats) {
     if (!s_stats.valid) return ESP_ERR_INVALID_STATE;
-    static helper_t h;
     nvs_handle_t nv;
     ESP_ERROR_CHECK(nvs_open("fl-puf", NVS_READWRITE, &nv));
-    size_t len = sizeof h;
-    esp_err_t e = nvs_get_blob(nv, "helper2", &h, &len);
-    if (e != ESP_OK || len != sizeof h) {
+    if (load_helper(nv) != ESP_OK) {
         size_t ol = 0;
         if (nvs_get_blob(nv, "helper", NULL, &ol) == ESP_OK)
             ESP_LOGW(TAG, "helper data belongs to the old linker-placed region; enrolling the fixed region "
                           "at 0x%08x: this leaf's id changes once", REGION_ADDR);
+        ESP_LOGW(TAG, "no helper data in flash: enrolling afresh. A leaf whose flash was erased gets a NEW id "
+                      "unless its escrowed helper data is imported first");
         enroll_step();  // returns only when enrollment has enough readings
         int stable_bits = 0;
         for (int i = 0; i < REGION_BYTES; i++) stable_bits += popcount8(s_enroll.stable[i]);
         s_stats.enroll_stable_permille = (uint16_t)(stable_bits * 1000 / (REGION_BYTES * 8));
-        if (stable_bits < FL_PUF_BITS * FL_PUF_REP) {
+        if (!fl_puf_core_enroll(s_enroll.ref, s_enroll.stable, &s_blob.h)) {
             ESP_LOGE(TAG, "only %d stable cells; need %d", stable_bits, FL_PUF_BITS * FL_PUF_REP);
             s_enroll.magic = 0;
             nvs_close(nv);
             return ESP_ERR_INVALID_SIZE;
         }
-        // Spread the chosen cells across the region rather than taking the first ones.
-        int stride = stable_bits / (FL_PUF_BITS * FL_PUF_REP);
-        int seen = 0, k = 0;
-        for (int p = 0; p < REGION_BYTES * 8 && k < FL_PUF_BITS * FL_PUF_REP; p++) {
-            if (!bit_at(s_enroll.stable, p)) continue;
-            if (seen++ % stride) continue;
-            h.pos[k / FL_PUF_REP][k % FL_PUF_REP] = (uint16_t)p;
-            k++;
-        }
-        for (int b = 0; b < FL_PUF_BITS; b++) {
-            uint8_t par = 0;
-            int first = bit_at(s_enroll.ref, h.pos[b][0]);
-            for (int j = 1; j < FL_PUF_REP; j++)
-                par |= (uint8_t)((bit_at(s_enroll.ref, h.pos[b][j]) ^ first) << (j - 1));
-            h.parity[b] = par;
-        }
-        ESP_ERROR_CHECK(nvs_set_blob(nv, "helper2", &h, sizeof h));
+        uint8_t enrolled_secret[FL_PUF_BITS / 8];
+        fl_puf_core_reconstruct(&s_blob.h, s_enroll.ref, enrolled_secret, NULL, NULL);
+        s_blob.magic = FL_PUF_BLOB_MAGIC;
+        s_blob.addr = REGION_ADDR;
+        fl_puf_core_check(enrolled_secret, s_blob.check);
+        memset(enrolled_secret, 0, sizeof enrolled_secret);
+        s_has_check = true;
+        ESP_ERROR_CHECK(nvs_set_blob(nv, "helper3", &s_blob, sizeof s_blob));
         ESP_ERROR_CHECK(nvs_set_u32(nv, "addr", REGION_ADDR));
         nvs_erase_key(nv, "helper");
+        nvs_erase_key(nv, "helper2");
         ESP_ERROR_CHECK(nvs_set_u16(nv, "stable", s_stats.enroll_stable_permille));
         ESP_ERROR_CHECK(nvs_commit(nv));
         memset(&s_enroll, 0, sizeof s_enroll);
@@ -189,35 +199,46 @@ esp_err_t fl_puf_secret(uint8_t out[FL_PUF_BITS / 8], fl_puf_stats_t *stats) {
     }
     nvs_close(nv);
 
-    memset(out, 0, FL_PUF_BITS / 8);
-    int flipped_cells = 0, corrected = 0;
-    for (int b = 0; b < FL_PUF_BITS; b++) {
-        int first = bit_at(s_reading, h.pos[b][0]);
-        int votes1 = 0;
-        // Each cell votes for the value of the first cell at enrollment.
-        for (int j = 0; j < FL_PUF_REP; j++) {
-            int v = bit_at(s_reading, h.pos[b][j]);
-            if (j > 0) v ^= (h.parity[b] >> (j - 1)) & 1;
-            votes1 += v;
-        }
-        int bit = votes1 * 2 > FL_PUF_REP;
-        int minority = bit ? FL_PUF_REP - votes1 : votes1;
-        flipped_cells += minority;
-        if (minority) corrected++;
-        (void)first;
-        out[b >> 3] |= (uint8_t)(bit << (b & 7));
-    }
-    s_stats.cells_flipped = (uint16_t)flipped_cells;
-    s_stats.bits_corrected = (uint16_t)corrected;
+    fl_puf_core_reconstruct(&s_blob.h, s_reading, out, &s_stats.cells_flipped, &s_stats.bits_corrected);
     memset(s_reading, 0, REGION_BYTES);
-    if (flipped_cells > MAX_FLIPPED_CELLS) {
+    if (s_stats.cells_flipped > MAX_FLIPPED_CELLS) {
         memset(out, 0, FL_PUF_BITS / 8);
-        ESP_LOGE(TAG, "fingerprint does not match enrollment (%d of %d cells differ); no identity", flipped_cells,
-                 FL_PUF_BITS * FL_PUF_REP);
+        ESP_LOGE(TAG, "fingerprint does not match enrollment (%d of %d cells differ); no identity",
+                 s_stats.cells_flipped, FL_PUF_BITS * FL_PUF_REP);
+        return ESP_ERR_INVALID_CRC;
+    }
+    if (s_has_check && !fl_puf_core_check_ok(out, s_blob.check)) {
+        memset(out, 0, FL_PUF_BITS / 8);
+        ESP_LOGE(TAG, "rebuilt secret fails the check value (wrong die, wrong helper data, or a bad reading); "
+                      "no identity");
         return ESP_ERR_INVALID_CRC;
     }
     if (stats) *stats = s_stats;
     return ESP_OK;
+}
+
+esp_err_t fl_puf_helper_export(fl_puf_blob_t *out) {
+    nvs_handle_t nv;
+    esp_err_t e = nvs_open("fl-puf", NVS_READONLY, &nv);
+    if (e != ESP_OK) return e;
+    size_t len = sizeof *out;
+    e = nvs_get_blob(nv, "helper3", out, &len);
+    nvs_close(nv);
+    if (e != ESP_OK || len != sizeof *out) return ESP_ERR_NOT_FOUND;
+    return fl_puf_blob_valid(out, REGION_ADDR) ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t fl_puf_helper_import(const fl_puf_blob_t *in) {
+    if (!fl_puf_blob_valid(in, REGION_ADDR)) return ESP_ERR_INVALID_ARG;
+    if (fl_puf_enrolled()) return ESP_ERR_INVALID_STATE;
+    nvs_handle_t nv;
+    esp_err_t e = nvs_open("fl-puf", NVS_READWRITE, &nv);
+    if (e != ESP_OK) return e;
+    e = nvs_set_blob(nv, "helper3", in, sizeof *in);
+    if (e == ESP_OK) e = nvs_set_u32(nv, "addr", REGION_ADDR);
+    if (e == ESP_OK) e = nvs_commit(nv);
+    nvs_close(nv);
+    return e;
 }
 
 esp_err_t fl_puf_forget(void) {
@@ -237,7 +258,8 @@ bool fl_puf_enrolled(void) {
     size_t len = 0;
     bool ok = false;
     if (nvs_open("fl-puf", NVS_READONLY, &nv) == ESP_OK) {
-        ok = nvs_get_blob(nv, "helper2", NULL, &len) == ESP_OK && len > 0;
+        ok = (nvs_get_blob(nv, "helper3", NULL, &len) == ESP_OK && len > 0) ||
+             (nvs_get_blob(nv, "helper2", NULL, &len) == ESP_OK && len > 0);
         nvs_close(nv);
     }
     return ok;

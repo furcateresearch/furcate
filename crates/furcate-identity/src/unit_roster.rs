@@ -21,6 +21,7 @@
 use crate::backends::fingerprint::{Characteristic, Continuity, Fingerprint};
 use crate::leaf::LeafKeyCustody;
 use crate::rot::AssuranceClass;
+use crate::suite::{KeySuite, SuiteKey};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What the operator recorded when the unit was enrolled.
@@ -30,7 +31,9 @@ pub struct EnrolledUnit {
     /// name the operator gave a unit that has no key.
     pub unit_id: String,
     pub fingerprint: Fingerprint,
-    /// The unit's public key (`p256:<hex>`), when it holds one.
+    /// The unit's public key with its suite (`p256:<hex>` or `ed25519:<hex>`),
+    /// when it holds one. The suite is the key's prefix and nothing else
+    /// decides it ([`SuiteKey`]); a key written without one is refused.
     pub key: Option<String>,
     /// How that key is held, when there is one.
     pub custody: Option<LeafKeyCustody>,
@@ -77,7 +80,7 @@ impl UnitRoster {
     /// anchors to identify anything, and an id that is already enrolled
     /// (replacing one is a re-enrolment the operator does on purpose, with
     /// [`UnitRoster::forget`] first).
-    pub fn enrol(&mut self, unit: EnrolledUnit) -> Result<(), String> {
+    pub fn enrol(&mut self, mut unit: EnrolledUnit) -> Result<(), String> {
         if !unit.fingerprint.is_usable() {
             return Err(format!(
                 "unit `{}` rests on {} hardware anchors, need {}",
@@ -89,11 +92,22 @@ impl UnitRoster {
         if unit.key.is_some() != unit.custody.is_some() {
             return Err(format!("unit `{}`: a key and how it is held go together", unit.unit_id));
         }
+        // The key is kept in the one spelling a key has, so a later session
+        // that presents the same key written another way still matches it.
+        if let Some(k) = unit.key.as_mut() {
+            *k = SuiteKey::parse(k).map_err(|e| format!("unit `{}`: key: {e}", unit.unit_id))?.id();
+        }
         if self.units.contains_key(&unit.unit_id) {
             return Err(format!("unit `{}` is already enrolled; forget it first to enrol it again", unit.unit_id));
         }
         self.units.insert(unit.unit_id.clone(), unit);
         Ok(())
+    }
+
+    /// The suite a unit's enrolled key signs under, when it has a key.
+    pub fn suite_of(&self, unit_id: &str) -> Option<KeySuite> {
+        let k = self.units.get(unit_id)?.key.as_deref()?;
+        SuiteKey::parse(k).ok().map(|k| k.suite())
     }
 
     pub fn forget(&mut self, unit_id: &str) -> bool {
@@ -118,8 +132,13 @@ impl UnitRoster {
         if let Continuity::HardwareChanged { fields } = continuity {
             return Verdict::Replaced { fields };
         }
-        if enrolled.key.as_deref() != key {
-            return Verdict::KeyMismatch;
+        // The enrolled key decides; the presented one must be the same key in
+        // the same suite. A key that does not parse, or has no suite, is not it.
+        let presented_key = key.map(|k| SuiteKey::parse(k).map(|k| k.id()));
+        match (&enrolled.key, presented_key) {
+            (None, None) => {}
+            (Some(want), Some(Ok(got))) if *want == got => {}
+            _ => return Verdict::KeyMismatch,
         }
         self.live.insert(unit_id.to_string());
         match continuity {
@@ -154,11 +173,21 @@ mod tests {
             .with(Characteristic::BoardRevision, "nrf52832-QFAA-E1")
     }
 
+    /// Two P-256 keys (private scalars 7 and 8) and an Ed25519 key.
+    const KEY_A: &str = "p256:031e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896e";
+    const KEY_A_UNCOMPRESSED: &str = "p256:041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3";
+    const KEY_ED: &str = "ed25519:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+
+    /// Another valid P-256 key: the generator point.
+    fn key_b() -> &'static str {
+        "p256:036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296"
+    }
+
     fn micro(uid: &str, custody: LeafKeyCustody) -> EnrolledUnit {
         EnrolledUnit {
             unit_id: "6f01a05cb51e53f79e31b55d89fa2f2e".into(),
             fingerprint: s3(uid),
-            key: Some("p256:02aa".into()),
+            key: Some(KEY_A.into()),
             custody: Some(custody),
         }
     }
@@ -193,11 +222,11 @@ mod tests {
         r.enrol(open).unwrap();
         r.enrol(micro("b58651c2", LeafKeyCustody::FuseKey { lockdown: Lockdown::default() })).unwrap();
         assert_eq!(
-            r.verify("open", &s3("b58651c2"), Some("p256:02aa")),
+            r.verify("open", &s3("b58651c2"), Some(KEY_A)),
             Verdict::Verified { class: AssuranceClass::Soft }
         );
         assert_eq!(
-            r.verify("6f01a05cb51e53f79e31b55d89fa2f2e", &s3("b58651c2"), Some("p256:02aa")),
+            r.verify("6f01a05cb51e53f79e31b55d89fa2f2e", &s3("b58651c2"), Some(KEY_A)),
             Verdict::Verified { class: AssuranceClass::Device }
         );
     }
@@ -219,7 +248,7 @@ mod tests {
         let mut r = UnitRoster::new();
         r.enrol(micro("b58651c2", LeafKeyCustody::ReadableIdentifiers)).unwrap();
         // Same silicon values replayed, but the key is not the enrolled one.
-        let v = r.verify("6f01a05cb51e53f79e31b55d89fa2f2e", &s3("b58651c2"), Some("p256:02bb"));
+        let v = r.verify("6f01a05cb51e53f79e31b55d89fa2f2e", &s3("b58651c2"), Some(key_b()));
         assert_eq!(v, Verdict::KeyMismatch);
         // And no key at all where one was enrolled.
         assert_eq!(r.verify("6f01a05cb51e53f79e31b55d89fa2f2e", &s3("b58651c2"), None), Verdict::KeyMismatch);
@@ -258,12 +287,54 @@ mod tests {
         assert!(e.contains("hardware anchors"));
         // A key with no statement of how it is held is not enrolled either.
         let mut u = sensing("a1b2");
-        u.key = Some("p256:02aa".into());
+        u.key = Some(KEY_A.into());
         assert!(r.enrol(u).is_err());
         // Enrolling twice needs a deliberate forget.
         r.enrol(sensing("a1b2")).unwrap();
         assert!(r.enrol(sensing("a1b2")).is_err());
         assert!(r.forget("nicla-1"));
         r.enrol(sensing("c3d4")).unwrap();
+    }
+
+    #[test]
+    fn a_unit_key_is_enrolled_only_with_a_suite_and_a_real_key() {
+        for bad in ["p256:02aa", "02aa", "ed25519:00", "rsa:00", KEY_ED.trim_start_matches("ed25519:")] {
+            let mut u = micro("b58651c2", LeafKeyCustody::ReadableIdentifiers);
+            u.key = Some(bad.into());
+            let e = UnitRoster::new().enrol(u).unwrap_err();
+            assert!(e.contains("key:"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_unit_may_hold_a_key_of_either_suite_and_the_suite_is_the_enrolled_keys() {
+        let mut r = UnitRoster::new();
+        let mut p = micro("b58651c2", LeafKeyCustody::FuseKey { lockdown: Lockdown::default() });
+        p.unit_id = "p".into();
+        r.enrol(p).unwrap();
+        let mut e = micro("b58651c2", LeafKeyCustody::FuseKey { lockdown: Lockdown::default() });
+        e.unit_id = "e".into();
+        e.key = Some(KEY_ED.into());
+        r.enrol(e).unwrap();
+        assert_eq!(r.suite_of("p"), Some(KeySuite::P256));
+        assert_eq!(r.suite_of("e"), Some(KeySuite::Ed25519));
+        assert_eq!(r.suite_of("nobody"), None);
+        assert!(r.verify("p", &s3("b58651c2"), Some(KEY_A)).admits());
+        assert!(r.verify("e", &s3("b58651c2"), Some(KEY_ED)).admits());
+    }
+
+    #[test]
+    fn the_same_key_written_another_way_matches_and_another_suite_does_not() {
+        let mut r = UnitRoster::new();
+        r.enrol(micro("b58651c2", LeafKeyCustody::ReadableIdentifiers)).unwrap();
+        let id = "6f01a05cb51e53f79e31b55d89fa2f2e";
+        // The uncompressed spelling of the enrolled key is that key.
+        assert!(r.verify(id, &s3("b58651c2"), Some(KEY_A_UNCOMPRESSED)).admits());
+        r.end_session(id);
+        // A key of the other suite, a key with no suite, and a key that is not
+        // a key are all mismatches, never an error and never a pass.
+        for presented in [KEY_ED, KEY_A.trim_start_matches("p256:"), "p256:02aa", "", "ed25519:"] {
+            assert_eq!(r.verify(id, &s3("b58651c2"), Some(presented)), Verdict::KeyMismatch, "{presented:?}");
+        }
     }
 }

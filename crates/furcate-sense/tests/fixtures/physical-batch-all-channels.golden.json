@@ -1,0 +1,1396 @@
+{
+  "batch": {
+    "batch_id": "00000000-0000-4000-8000-000000000002",
+    "batch_seq": 1,
+    "created_at_ms": 1761600001320,
+    "format": "physical-batch",
+    "logs": [
+      {
+        "anchor": "a824c7e09ec54fe82a758730fdad5ce6bf777bab14110db3f721a7004e190bad",
+        "checkpoint": {
+          "head": "1a11f33ea427a5e91c555cc844ef31810bb5e64893c0a986c510ae998f25fde1",
+          "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+          "size": 22,
+          "ts_ms": 1220
+        },
+        "checkpoint_signature": "e13f4466f88f1fd96dc67ec709bfff2bdff7e16693715fb58f1e89d3f92a8d61c70fed3cfe247ff857edb1e54b1b70036608b1b109cf3a1a3eb8e28671345007",
+        "cosign": {
+          "at_ms": 1225,
+          "signature": "c11172793434d00cd0f22913da738d902d91c513546cf7887815bfff3d8c397e863c2f3fd9a580215cab8fa3da14aae28dbfb8fdd0706a344a596bc805569b05",
+          "witness": "furcate:node:small1",
+          "witness_key_id": "ed25519:ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1"
+        },
+        "entries": [
+          {
+            "digest": "79ae9e2c339a2870a713a499b0baed5d13ccbb3c5da4753ec732ecd3f95ad573",
+            "hash": "8a0923e53dd0552c6cec191aefe05c44b40bfd778bca349615632f1454e0d95d",
+            "prev": "a824c7e09ec54fe82a758730fdad5ce6bf777bab14110db3f721a7004e190bad",
+            "seq": 1,
+            "ts_ms": 1000
+          },
+          {
+            "digest": "de9734640bd4aa1f8d75b8ca7867e31b00553c0d8d0a2cfc1d350520fc3f9aea",
+            "hash": "72a95744190bf46dbb72e7e85a25992966a8d0b21bb4bbecdc18c64ce9132e6c",
+            "prev": "8a0923e53dd0552c6cec191aefe05c44b40bfd778bca349615632f1454e0d95d",
+            "seq": 2,
+            "ts_ms": 1000
+          },
+          {
+            "digest": "b6ce5e227eb55ff0bde68d04c886d8b360defa30fca21b9985db45a48520c8e1",
+            "hash": "b7a7574fc46d66b03fd6a0866c048688a396e0773040f3c52521ac016d67c541",
+            "prev": "72a95744190bf46dbb72e7e85a25992966a8d0b21bb4bbecdc18c64ce9132e6c",
+            "seq": 3,
+            "ts_ms": 1000
+          },
+          {
+            "digest": "0c28b88ee5f4e232819a3c21934b79faaa1e03d854e824eb4d04309fd2ab7baf",
+            "hash": "0579390b0a7b82e1e5905ca58f7b4a40a0a78e646b48003cc6e3a843965de0fa",
+            "prev": "b7a7574fc46d66b03fd6a0866c048688a396e0773040f3c52521ac016d67c541",
+            "seq": 4,
+            "ts_ms": 1030
+          },
+          {
+            "digest": "74db8f2017d4b3418c0d2461d589bb142bfbc06f1fc6cefc95ddeace491a8c34",
+            "hash": "0c86eaded2fc9cea5d18077db7ca9fbc4569346248a16eebf1194de8aac57b9d",
+            "prev": "0579390b0a7b82e1e5905ca58f7b4a40a0a78e646b48003cc6e3a843965de0fa",
+            "seq": 5,
+            "ts_ms": 1030
+          },
+          {
+            "digest": "1e98c327bad2ab2d8c251c79ac26d53eca98e3634763f16f8a2e1756e42d781f",
+            "hash": "66c653964a4b1d8a3db595e6ff0db732636b031f775bb658a316f894d38ed371",
+            "prev": "0c86eaded2fc9cea5d18077db7ca9fbc4569346248a16eebf1194de8aac57b9d",
+            "seq": 6,
+            "ts_ms": 1030
+          },
+          {
+            "digest": "6c4f3d623bcd37758a2c6d2cf34621bc94cca434adf1e05c715df329a21fbe30",
+            "hash": "7a3045e8b6899d3747e4b1e17d36777b8148faced2cd876df3be5fc599539f13",
+            "prev": "66c653964a4b1d8a3db595e6ff0db732636b031f775bb658a316f894d38ed371",
+            "seq": 7,
+            "ts_ms": 1060
+          },
+          {
+            "digest": "476ac45508295f9efe279f41fc2287c5406eaf1a5ad206876650883e705992ff",
+            "hash": "b1baa73c89a3225fd991af6dfae46e00279cb0294e8d59381eac1810d1d45b83",
+            "prev": "7a3045e8b6899d3747e4b1e17d36777b8148faced2cd876df3be5fc599539f13",
+            "seq": 8,
+            "ts_ms": 1060
+          },
+          {
+            "digest": "32c12ee513bb555adaeb3bdabf6eb6c0f12f05125904c097fdbecf5cdfe288a4",
+            "hash": "5b4a513faa36869ab522537b809635ec11818623422ad3c649be8e02e137b560",
+            "prev": "b1baa73c89a3225fd991af6dfae46e00279cb0294e8d59381eac1810d1d45b83",
+            "seq": 9,
+            "ts_ms": 1060
+          },
+          {
+            "digest": "db758b71db1c08ba4e926f1abd434e30044c4c16e32efdd3f284cbcf31a7c731",
+            "hash": "b2095a6fdeba12d569e12ef780b40345d306276b4bf6a2243dd79b85f0b1c362",
+            "prev": "5b4a513faa36869ab522537b809635ec11818623422ad3c649be8e02e137b560",
+            "seq": 10,
+            "ts_ms": 1090
+          },
+          {
+            "digest": "67394579114f5ec20baeb7c7034234edff7438da5b638fef72dd23ac2593c119",
+            "hash": "8a9ac55f97dcf0b0e05446acc3f3b6a80ee2606c0706f4d0020a698365b9e42a",
+            "prev": "b2095a6fdeba12d569e12ef780b40345d306276b4bf6a2243dd79b85f0b1c362",
+            "seq": 11,
+            "ts_ms": 1090
+          },
+          {
+            "digest": "a409ce4e56e9ce304906045cb1216b6e82942b17c080e28b877e29aeb6f1bcd8",
+            "hash": "db8d23e3f1b8f53134623f2c09885f87829beaec97cdeed8f23a56c65ea87809",
+            "prev": "8a9ac55f97dcf0b0e05446acc3f3b6a80ee2606c0706f4d0020a698365b9e42a",
+            "seq": 12,
+            "ts_ms": 1090
+          },
+          {
+            "digest": "d28a7123e8e89e79d71af867f8b8934df58eec42ec5f80c1256eea7d490bcb20",
+            "hash": "7b422699c07719c3a6fd939b334c5f57e300d99a3a8376139cf256b954d6399e",
+            "prev": "db8d23e3f1b8f53134623f2c09885f87829beaec97cdeed8f23a56c65ea87809",
+            "seq": 13,
+            "ts_ms": 1090
+          },
+          {
+            "digest": "0744e8998bbb1e98e45eab6b89756e69fd19e3222b875b451d0e5bd16da24218",
+            "hash": "d7d770be408794d0248303e5de4adfceb5b3fa5e78d3d9c1d83d921eed025482",
+            "prev": "7b422699c07719c3a6fd939b334c5f57e300d99a3a8376139cf256b954d6399e",
+            "seq": 14,
+            "ts_ms": 1130
+          },
+          {
+            "digest": "584f26d48ecd1e604476444dca807021b7772cdd5a83e9ff59a5e5007ec25c9a",
+            "hash": "fb2e0c959fc7fe52d87831e59f67b7ed162b015fd82c9e3f6edbfa1086061154",
+            "prev": "d7d770be408794d0248303e5de4adfceb5b3fa5e78d3d9c1d83d921eed025482",
+            "seq": 15,
+            "ts_ms": 1140
+          },
+          {
+            "digest": "6319235f1ffd5826ab7a46f7240b8e33abd4d24170ae477e33f6595e3e6b02b0",
+            "hash": "74cb0bd4294056391d7b222ffb7e593944d6af824abd060027c2f494bdb1182a",
+            "prev": "fb2e0c959fc7fe52d87831e59f67b7ed162b015fd82c9e3f6edbfa1086061154",
+            "seq": 16,
+            "ts_ms": 1150
+          },
+          {
+            "digest": "b5664e28247398ae89c7ef8d50b43b62d9d69c91f5e445bc397963f964d976cb",
+            "hash": "ee8f2bf27632d3dec419f4bbf64e514b577632cee9e73a10e6fcb9bebf4e3e66",
+            "prev": "74cb0bd4294056391d7b222ffb7e593944d6af824abd060027c2f494bdb1182a",
+            "seq": 17,
+            "ts_ms": 1160
+          },
+          {
+            "digest": "cafa11c553870d87341a9d26d72fc9b0e371c938bfbb191326fad205f1686f50",
+            "hash": "10c0ad563d0a8671cac8ba7b905e19fade40e0ad304b7aa1b7e9dd4d51d0de7a",
+            "prev": "ee8f2bf27632d3dec419f4bbf64e514b577632cee9e73a10e6fcb9bebf4e3e66",
+            "seq": 18,
+            "ts_ms": 1170
+          },
+          {
+            "digest": "5b51a0e88c2d3c693fa212bf0901824a537ffecf0f55e88a1e8cdb95e01da0a5",
+            "hash": "7a86db845bd09cfa6308fb5cae09ae8cb5f220981b799aedd8c690d69917fa0e",
+            "prev": "10c0ad563d0a8671cac8ba7b905e19fade40e0ad304b7aa1b7e9dd4d51d0de7a",
+            "seq": 19,
+            "ts_ms": 1170
+          },
+          {
+            "digest": "95f27daecb8bd925f4fb94db7c610bdadc88707fc55cbf4bc024a75cae312e58",
+            "hash": "1b3a21226ada92a0c12e5b86fcbe95f35cc8fda0d6c03ba240ed511077734a56",
+            "prev": "7a86db845bd09cfa6308fb5cae09ae8cb5f220981b799aedd8c690d69917fa0e",
+            "seq": 20,
+            "ts_ms": 1170
+          },
+          {
+            "digest": "f43169cdd47efb35992227bc15dc338bb7ed09e436af32fbabff52cf4afde3af",
+            "hash": "ae543518d757be0397e8b9fc2018c8f8e523d3bd59966ec4f0980621458cc621",
+            "prev": "1b3a21226ada92a0c12e5b86fcbe95f35cc8fda0d6c03ba240ed511077734a56",
+            "seq": 21,
+            "ts_ms": 1200
+          },
+          {
+            "digest": "50e23b47e4f855ac9c8ba6aa45b4cc912e4c6863d8bb6868897120cedd3d624d",
+            "hash": "1a11f33ea427a5e91c555cc844ef31810bb5e64893c0a986c510ae998f25fde1",
+            "prev": "ae543518d757be0397e8b9fc2018c8f8e523d3bd59966ec4f0980621458cc621",
+            "seq": 22,
+            "ts_ms": 1210
+          }
+        ],
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "leaf_key_id": "ed25519:fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618"
+      }
+    ],
+    "readings": [
+      {
+        "at_ms": 1761600001005,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "d015138b88ce32751755c8c98068b07ce133e00a5b74eb00b5ea06d93d70e74cedeb2c0bce628941f9a53fee6676227d0d288a161413aa0d7918f70d5eafa700",
+        "item_digest": "79ae9e2c339a2870a713a499b0baed5d13ccbb3c5da4753ec732ecd3f95ad573",
+        "kind": "acceleration",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 1,
+        "modality": "direct",
+        "reading_signature": "323ae63808b0ab991cf22d476ee0b4773b88c53ebaa5ccc8012b331660f16d42df3bd84bfbfc44bdb182281be55ce536645f5a4af95117e9afba6f1cd42dc80e",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/acc.x",
+        "sensor_ts_ms": null,
+        "seq": 1,
+        "taken_at_leaf_s": 1,
+        "unit": "metres_per_second_squared",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001005,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "8c83ce91829e8d9f44665a8ffa795e113866327d6225a4a66fc3cfbee2ca9e38df0da5b1de9ea7915ea266dd4fe4204b046be8e8cde473cbc73210c0317a900c",
+        "item_digest": "de9734640bd4aa1f8d75b8ca7867e31b00553c0d8d0a2cfc1d350520fc3f9aea",
+        "kind": "acceleration",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 2,
+        "modality": "direct",
+        "reading_signature": "abc95b7a61ed4738a76938e118a04ec6a1192b3b77a0bf02fe867aa9ec6bb8330cfc65f95355c8897d38fa01a05399d2f5620ca71ab08683722001661f755c05",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/acc.y",
+        "sensor_ts_ms": null,
+        "seq": 2,
+        "taken_at_leaf_s": 1,
+        "unit": "metres_per_second_squared",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001005,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "008bd633b5f52087d0d70c05ecb29275f6929f4be83a315963ac10ad86691742a42425e3bc68b920dd50265db18032b1be1d9cb7b196da2774630c604acc9d05",
+        "item_digest": "b6ce5e227eb55ff0bde68d04c886d8b360defa30fca21b9985db45a48520c8e1",
+        "kind": "acceleration",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 3,
+        "modality": "direct",
+        "reading_signature": "0156ec9981ad2dc649ed6b4c3287e9f4e23bd5a85a04f40c91260ebb223238da8474ccfcec30b15ac895f37d9c29baec368b8d79519c55f927db26b5a0e82e02",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/acc.z",
+        "sensor_ts_ms": null,
+        "seq": 3,
+        "taken_at_leaf_s": 1,
+        "unit": "metres_per_second_squared",
+        "value": 19.6133
+      },
+      {
+        "at_ms": 1761600001035,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "2d6c2909a99ad6b894ae4487f39c0945e491d8d2f5f0cd25ad88446effb0277e5949ac61d94df4b79779f95a3e1aeee82109a4b1b8c11a61c11c1c59394d3007",
+        "item_digest": "0c28b88ee5f4e232819a3c21934b79faaa1e03d854e824eb4d04309fd2ab7baf",
+        "kind": "angular_rate",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 4,
+        "modality": "direct",
+        "reading_signature": "3f4a656b32bcef55ca70e2408dca1ca387aac3b4f0084c245b0ceb1b81c48ef0ff5fe181f860292c6c54e03803a67cb0602dda56a0ce5449549a9f9301764f05",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/gyr.x",
+        "sensor_ts_ms": null,
+        "seq": 4,
+        "taken_at_leaf_s": 1,
+        "unit": "radians_per_second",
+        "value": 0.06817692390602849
+      },
+      {
+        "at_ms": 1761600001035,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "492a75c17871511c29ef2f2424ff623b7ee4c1909621a2713cb8fcb9ca71a935e79d1d2cb01ca1b9fa483b5a7aa0b7c570a54814f6648ac6b0745716b188360e",
+        "item_digest": "74db8f2017d4b3418c0d2461d589bb142bfbc06f1fc6cefc95ddeace491a8c34",
+        "kind": "angular_rate",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 5,
+        "modality": "direct",
+        "reading_signature": "0259a0b1d5d8b66e5092485d45b77b905cc60e0c49a4dc5cdfa32490376dcdf11eb9d5725f141d8b42463a0d15411fbe2b731f3d26281a6a94f5c0820ee8a10d",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/gyr.y",
+        "sensor_ts_ms": null,
+        "seq": 5,
+        "taken_at_leaf_s": 1,
+        "unit": "radians_per_second",
+        "value": -0.06817692390602849
+      },
+      {
+        "at_ms": 1761600001035,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "52229761ee55ee3687a46ec62bd1f3a5071f65a0d583b103ece8ac51a5a6775564b8605f67df891231c65b2c8fde6449028765d700e55fb88de4f490187baa05",
+        "item_digest": "1e98c327bad2ab2d8c251c79ac26d53eca98e3634763f16f8a2e1756e42d781f",
+        "kind": "angular_rate",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 6,
+        "modality": "direct",
+        "reading_signature": "a8843a4639c51bad63b9239518c58f727ab72c471231f875b683df5fea3a4772a52cb78ddaa19d7631a117c48e0036dc14d583b1e649b88188209782af37ab01",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/gyr.z",
+        "sensor_ts_ms": null,
+        "seq": 6,
+        "taken_at_leaf_s": 1,
+        "unit": "radians_per_second",
+        "value": 0.008522115488253561
+      },
+      {
+        "at_ms": 1761600001065,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "599351c8a5017645e2ffa35f5a1cbe288858f0cae5f2798722e9b0834de20a533f767796a79c9055e3512023f35bf6af8a5fc3dd63084ea054d9e37e3e5d9405",
+        "item_digest": "6c4f3d623bcd37758a2c6d2cf34621bc94cca434adf1e05c715df329a21fbe30",
+        "kind": "magnetic_field",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 7,
+        "modality": "direct",
+        "reading_signature": "8083ce8d73b83bf509100c4b60e9e8dd311aa87db554f80ffb5324af1659774be97393abf4425d48e4e4ce839e28636a030515e36a5404f1f93be290adf7e105",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/mag.x",
+        "sensor_ts_ms": null,
+        "seq": 7,
+        "taken_at_leaf_s": 1,
+        "unit": "microtesla",
+        "value": 39.6728515625
+      },
+      {
+        "at_ms": 1761600001065,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "7445f39571d36d3ead06006dceccba3e3e80eb7c34beffc82725f2f1ee2d0b2565b1aebb1b790a6c264aecb4ef90568f9524ddffded565b96a7d56f5be135c0c",
+        "item_digest": "476ac45508295f9efe279f41fc2287c5406eaf1a5ad206876650883e705992ff",
+        "kind": "magnetic_field",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 8,
+        "modality": "direct",
+        "reading_signature": "016237594019a5ab12043ef315ad2150c950b66b0641d84ea943d64a41bb0850ffb9119f5e0592c586ed4b5544d21c47f3dfb01f44b5be030777226626a32806",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/mag.y",
+        "sensor_ts_ms": null,
+        "seq": 8,
+        "taken_at_leaf_s": 1,
+        "unit": "microtesla",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001065,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "29844cf9cf1af19b699673a8f890bc8f1869450db1c6852246d8fc6579eee7615161ec672c90df63691d49b723a601de336bfd6d1f198a5b27e00000d5532008",
+        "item_digest": "32c12ee513bb555adaeb3bdabf6eb6c0f12f05125904c097fdbecf5cdfe288a4",
+        "kind": "magnetic_field",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 9,
+        "modality": "direct",
+        "reading_signature": "e8ecee1da55010563c2ebce56c02f04c6adbd25d0f46a1f6ec4f94cdf4cea15667bc91b6d0eb3cdc7c88a393df07515ca563c0c0e00a496d577975cdfe62c601",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/mag.z",
+        "sensor_ts_ms": null,
+        "seq": 9,
+        "taken_at_leaf_s": 1,
+        "unit": "microtesla",
+        "value": -39.6728515625
+      },
+      {
+        "at_ms": 1761600001095,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-sensor-fusion"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "83fd6b860edec0442f4f22d020aa9dfaa7c5fc1aa745fa57caa97f15f84fef501f7d895130bd0f460bc96bfcc73355f6e7f32689920db2958813da892fc5340f",
+        "item_digest": "db758b71db1c08ba4e926f1abd434e30044c4c16e32efdd3f284cbcf31a7c731",
+        "kind": "orientation",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 10,
+        "modality": "inferred",
+        "reading_signature": "b05a517291283014e40c50d4fe560b62fb1269e80c1e99cf166209e4fc50245fdb27567ae7667d7b94af726b678eaae8c4b7f8831846d2d079779ac3b8f34b0b",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/rot.x",
+        "sensor_ts_ms": null,
+        "seq": 10,
+        "taken_at_leaf_s": 1,
+        "unit": "unitless",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001095,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-sensor-fusion"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "9be5f2ea7937021bbf56701860b155d326e8b4662f82abd8f9f61c56c7a00a03eb9c0b22d8f24445364089e71450fe9f341aae52a5fb4c75ebdbdcd9395f1a07",
+        "item_digest": "67394579114f5ec20baeb7c7034234edff7438da5b638fef72dd23ac2593c119",
+        "kind": "orientation",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 11,
+        "modality": "inferred",
+        "reading_signature": "1572b2064ade636a6620aa9cb86b523a917137d6c46eab893c5139c86b3af44de01e9a7c4754b10d08a1a6d85e8fb6080f44d409425815326d1e761f1e510b0c",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/rot.y",
+        "sensor_ts_ms": null,
+        "seq": 11,
+        "taken_at_leaf_s": 1,
+        "unit": "unitless",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001095,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-sensor-fusion"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "ba43c95b870db09105a5b012ba694dbc82bbddce4b8a56b50199f0424f1f27c3a5274b7a8bb0de793f2cac661c191f1c8eca46e5bc23b16ed0964e02a4e0da04",
+        "item_digest": "a409ce4e56e9ce304906045cb1216b6e82942b17c080e28b877e29aeb6f1bcd8",
+        "kind": "orientation",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 12,
+        "modality": "inferred",
+        "reading_signature": "63761dc3ce7ab21ef70243e4480dc090894a5bee6ba7878840622c8f9b81d90f3d746f216766dfb5dc84e6d1ba65f1c096b4ffa6c8b10da7f89be18ac40ee409",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/rot.z",
+        "sensor_ts_ms": null,
+        "seq": 12,
+        "taken_at_leaf_s": 1,
+        "unit": "unitless",
+        "value": 0.0
+      },
+      {
+        "at_ms": 1761600001095,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-sensor-fusion"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "790ed66f5001ca49c200867073df8b3d1c881cab60368f9f895151acfdf3f16706f4766920aee95d933b727ee05015cc8cb70de3f2e8b4ab2849f5117184da02",
+        "item_digest": "d28a7123e8e89e79d71af867f8b8934df58eec42ec5f80c1256eea7d490bcb20",
+        "kind": "orientation",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 13,
+        "modality": "inferred",
+        "reading_signature": "eb990f516d6c120a33747c970e0979bf903881ae7bf13283ae0c9c7f8d117cebb5f2ea5595ee11f1e65fe858c0ef30bacfb7f04d65f49f3e51a2fccfc95f6e00",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/rot.w",
+        "sensor_ts_ms": null,
+        "seq": 13,
+        "taken_at_leaf_s": 1,
+        "unit": "unitless",
+        "value": 1.0
+      },
+      {
+        "at_ms": 1761600001135,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "4743908853d27260471ed48b9170060907588f4c1bd73df543095a37755286566bc39bf66f8c1e3c70f94aa80a00544a6bbaec11c1e578ad944d09d7bc0eac0e",
+        "item_digest": "0744e8998bbb1e98e45eab6b89756e69fd19e3222b875b451d0e5bd16da24218",
+        "kind": "temperature",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 14,
+        "modality": "direct",
+        "reading_signature": "0eb3cf7c5237bc29d32871699a45e19c8227260231c1246cfad1e70fb1a42b1e65ddedd90abc8f5e892684f3f7e02fbc415018fa6da7b5efa43b7f6c10a21504",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/tmp",
+        "sensor_ts_ms": null,
+        "seq": 14,
+        "taken_at_leaf_s": 1,
+        "unit": "celsius",
+        "value": 28.29
+      },
+      {
+        "at_ms": 1761600001145,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "8e228e1a6d798bc48d8b962657e8b7d2e66944a26211e82ae2f3472cbede8609d78bc235cc53d778f5a738472b061fb632c9ed77a03233754fb2c003bb44bc05",
+        "item_digest": "584f26d48ecd1e604476444dca807021b7772cdd5a83e9ff59a5e5007ec25c9a",
+        "kind": "pressure",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 15,
+        "modality": "direct",
+        "reading_signature": "9814d211fc97c0dfc5288f8143b52585e10fed89e06172a11e4dc2d1821cffd711451de1cbb1f50221eb701bc9be9a4db674a27612c05a6d3a730fedb92b050b",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/prs",
+        "sensor_ts_ms": null,
+        "seq": 15,
+        "taken_at_leaf_s": 1,
+        "unit": "pascals",
+        "value": 101325.0
+      },
+      {
+        "at_ms": 1761600001155,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "5b980c5d9d62f976effa7118d08bc8432ef6e85a3d16fb1e428f9cf24236329738e2ffd4bdea0cdecc00fea2b0b69bf044bbc9d685562599baaab9579d9bea04",
+        "item_digest": "6319235f1ffd5826ab7a46f7240b8e33abd4d24170ae477e33f6595e3e6b02b0",
+        "kind": "humidity",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 16,
+        "modality": "direct",
+        "reading_signature": "c53f7bb71570bdfc28735a5a1e8a2fde24b88f076ed5a9060ba40c8483b0d6e5060f95e4e8ecda49c9551661b413872d7fb968cda28785f150ddc7505eaaf70e",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/hum",
+        "sensor_ts_ms": null,
+        "seq": 16,
+        "taken_at_leaf_s": 1,
+        "unit": "percent",
+        "value": 47.0
+      },
+      {
+        "at_ms": 1761600001165,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": "measured",
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "c74ff9ca0d7bbcf5843c15b1c14092d925198875e95d6bc24b9eaf4ed1963afdd5f4643373b6af48f8baf2885f6aaea38f010e5f59444a38dcc123112d2a9408",
+        "item_digest": "b5664e28247398ae89c7ef8d50b43b62d9d69c91f5e445bc397963f964d976cb",
+        "kind": "gas_resistance",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 17,
+        "modality": "direct",
+        "reading_signature": "a91ca6279ed6b5abb639b5bcdf5b7574fc509c79bb7a8537fddbea45e97ba0ae2db904484e0ba95196236624bbb980652bf5fba240f0c76e92712bd04ca2a505",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/gas",
+        "sensor_ts_ms": null,
+        "seq": 17,
+        "taken_at_leaf_s": 1,
+        "unit": "ohms",
+        "value": 52000.0
+      },
+      {
+        "at_ms": 1761600001175,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bsec-air-quality"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "568082eb908600d4686ed40408cefdd52afa85c43a07005cd7296ce5d636f16e95bc9ae828157375518a9fd5542f92892a061b5b89745346d6400a36a901db00",
+        "item_digest": "cafa11c553870d87341a9d26d72fc9b0e371c938bfbb191326fad205f1686f50",
+        "kind": "air_quality_index",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 18,
+        "modality": "inferred",
+        "reading_signature": "7b80e9f8676d4c201fefff2951da83fdddfea7a9cc39fb0e634a8d57a7c463d4f1d3e9e1e0c6873fc3d2d010cea8baef45a80ab0fa60fcea8d88c1306b07c606",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/iaq",
+        "sensor_ts_ms": null,
+        "seq": 18,
+        "taken_at_leaf_s": 1,
+        "unit": "unitless",
+        "value": 90.0
+      },
+      {
+        "at_ms": 1761600001175,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bsec-air-quality"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "ddbc1b7721defffadc164fa5803544a88c04da5593bf97ed5f7e4815057c0fae9de897d4629a2c3a374b43909d9b193f783af28f4fe47f2b99e33270bf6cf606",
+        "item_digest": "5b51a0e88c2d3c693fa212bf0901824a537ffecf0f55e88a1e8cdb95e01da0a5",
+        "kind": "gas_equivalent",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 19,
+        "modality": "inferred",
+        "reading_signature": "67ac19f4d6f4e9ab451cc1b8fda65265a3bc9326478f779c48bbe6c0e10247746f88e2c2d57d945d50f9558474900a9fd3fda2619d523f05a890ae2de3c4ac0c",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/co2eq",
+        "sensor_ts_ms": null,
+        "seq": 19,
+        "taken_at_leaf_s": 1,
+        "unit": "ppm",
+        "value": 650.0
+      },
+      {
+        "at_ms": 1761600001175,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bsec-air-quality"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "f3f2c0d10907aed309d3529f4c3588caaf7e961dcea16616cb8173c2d890479f17a9484e70a6cca0a9eaedeb658096397880356b5ad7fe180da8cd0fac136801",
+        "item_digest": "95f27daecb8bd925f4fb94db7c610bdadc88707fc55cbf4bc024a75cae312e58",
+        "kind": "gas_equivalent",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 20,
+        "modality": "inferred",
+        "reading_signature": "335249461b1541423ad7e3834ff6f97b57009892f215c0cd627db2f40b92a99c05b2a89f7295edf4fc9c40fcedd564831d1ab06d75508fba83df08ac7d9baa06",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/bvoceq",
+        "sensor_ts_ms": null,
+        "seq": 20,
+        "taken_at_leaf_s": 1,
+        "unit": "ppm",
+        "value": 1.23
+      },
+      {
+        "at_ms": 1761600001205,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-step-counter"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "abeb680e72221467d39888fe2b15637ea46d37a01df5a0b9e132a3420335314d7a39937872835c1944d3e312d9723f15f097564d0c93b35f793d5b863ead6600",
+        "item_digest": "f43169cdd47efb35992227bc15dc338bb7ed09e436af32fbabff52cf4afde3af",
+        "kind": "step_count",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 21,
+        "modality": "inferred",
+        "reading_signature": "b128790f178e1e38286f0e87212b286449f4ad92b5d104ba289aaf12847ead4fbe28693e79a977ebac23548bbfa0f77d7396d239377523368b833bf695664909",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/steps",
+        "sensor_ts_ms": null,
+        "seq": 21,
+        "taken_at_leaf_s": 1,
+        "unit": "count",
+        "value": 1234.0
+      },
+      {
+        "at_ms": 1761600001215,
+        "attestation": {
+          "effective": "soft",
+          "hops": [
+            {
+              "derivation": {
+                "on_sensor": {
+                  "algorithm": "bhi260ap-activity-recognition"
+                }
+              },
+              "level": "soft",
+              "node_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+              "role": "sensing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:micro1",
+              "role": "micro_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "device",
+              "node_id": "furcate:node:small1",
+              "role": "small_processing"
+            },
+            {
+              "derivation": "relayed",
+              "level": "soft",
+              "node_id": "furcate:node:large1",
+              "role": "large_processing"
+            }
+          ],
+          "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq"
+        },
+        "binding": {
+          "calibration": "00000000",
+          "epoch": 1,
+          "model": "6532d33dc83b1afb",
+          "self_test": true
+        },
+        "envelope_signature": "f89d2ad9b5d0b78718be637672cba7f9d80c47ad16616023d1c23b020b173a5cf32fbb28abfabaec09933dd54e3490c6bb5a188c52961f2ef647c74feb730503",
+        "item_digest": "50e23b47e4f855ac9c8ba6aa45b4cc912e4c6863d8bb6868897120cedd3d624d",
+        "kind": "activity_state",
+        "leaf_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+        "log_seq": 22,
+        "modality": "inferred",
+        "reading_signature": "332e86f1e98579d880446f93d272d5950927c1758d6860326d059f9d572ecdf8ed62f3173b3dc8a90b2283c3d6d8f44cb078a4ce346b97ace6b3b9452ea23c03",
+        "sensor_id": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq/act",
+        "sensor_ts_ms": null,
+        "seq": 22,
+        "taken_at_leaf_s": 1,
+        "unit": "count",
+        "value": 9.0
+      }
+    ],
+    "signature": "efccd89fd7175dc9fd2781ea7520262d129c4842577accc6c1d99ca91de163c5988b0fcde578dcb14e59016426d8f24cc0e909e2029cdbf2581f41f191e6df0e",
+    "site_clock": {
+      "source": "ntp",
+      "uncertainty_ms": 50
+    },
+    "site_id": "site-test-01",
+    "site_key_id": "ed25519:0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0",
+    "v": 1
+  },
+  "expected": {
+    "canonical_sha256": "15b5ef8782829e99da941e6238bbfc5f9dcde4cac89f373e02fe343a35c2d0c8",
+    "effective": "soft",
+    "kinds": [
+      "acceleration",
+      "activity_state",
+      "air_quality_index",
+      "angular_rate",
+      "gas_equivalent",
+      "gas_resistance",
+      "humidity",
+      "magnetic_field",
+      "orientation",
+      "pressure",
+      "step_count",
+      "temperature"
+    ],
+    "limiting_hop": "furcate:node:fbm5pgwcfocyck3i43zhajrafzksrgrkudz72p7sd44ripbxxzeq",
+    "readings": 22,
+    "site_key_id": "ed25519:0d7550754e0800a5d237eef5826035766b9b3e5a15868a940ab289958788e3b0"
+  },
+  "note": "Generated by crates/open/furcate-sense/tests/physical_batch.rs from constructed binary records, one per module channel with a test site key (seed 0x5a repeated 32 times). Do not edit; regenerate with UPDATE_GOLDEN=1."
+}

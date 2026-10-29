@@ -96,6 +96,10 @@ pub enum OpKind {
     /// A verified kill order tore a sandboxed agent down. See
     /// [`crate::agent`]. Appended last, as every variant here must be.
     AgentKilled,
+    /// A model update was decided for an agent that was born with a birth record and keeps learning: old and new
+    /// model hash, the experience reference, the evaluation against the release gate and the signer chain, refusals
+    /// included. See `furcate_command::update`. Appended last, as every variant here must be.
+    ModelUpdate,
 }
 
 /// One committed operation.
@@ -304,6 +308,19 @@ mod tests {
         c.append(1001, OpKind::KeyUse, "furcated", "ak", "created");
         c.append(1002, OpKind::Quote, "verifier", "pcr:0-7", "signed");
         c
+    }
+
+    #[test]
+    fn the_model_update_kind_is_additive() {
+        // Appended after every earlier variant, so a chain written before it existed still reads, and it round-trips.
+        let mut c = sample();
+        c.append(1003, OpKind::ModelUpdate, "update-gate:agent-1", "upd-1", "accepted:ok:00");
+        let j = serde_json::to_string(&c).unwrap();
+        assert!(j.contains("\"model_update\""));
+        let back: Chain = serde_json::from_str(&j).unwrap();
+        assert_eq!(back.verify(), Ok(()));
+        assert_eq!(back.entries().last().unwrap().kind, OpKind::ModelUpdate);
+        assert!(OpKind::ModelUpdate as u8 > OpKind::AgentKilled as u8);
     }
 
     #[test]

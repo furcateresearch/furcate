@@ -40,6 +40,12 @@ What runs today on real hardware:
   [small processing node](crates/furcate-sense/docs/small-processing-node.md). These are tested in
   software; running the whole cascade on boards is in progress.
 
+Built and tested in software, not yet run on boards or machines:
+
+- **The physical command gate.** `crates/furcate-command` is the site-side gate for commands that a simulation platform proposes. A command carries a signature and is checked against the site's own limits; every decision, refusals included, is a signed receipt on the ledger chain. The only mode is shadow: the site records what it would do and does nothing, and a request to actuate is refused. Trajectory commands are gated chunk by chunk, with an advisory stop request. The wire format is in [docs/physical-command.md](docs/physical-command.md).
+- **Keys that name their suite.** A key is written `ed25519:<hex>` or `p256:<hex>`, and the verifier takes the suite from the enrolled key, never from a signature.
+- **Supported hardware.** [docs/leaf-devices/supported-hardware.md](docs/leaf-devices/supported-hardware.md) lists each part, its position in the cascade, the attestation class it earns and how far it is verified. The NVIDIA Jetson page, [docs/leaf-devices/jetson.md](docs/leaf-devices/jetson.md), is built from NVIDIA's documentation and has never been run on a Jetson.
+
 In progress:
 
 - **Local models served on the gateway.** The commands above exist; the guided path is being verified on the Pi.
@@ -52,7 +58,7 @@ Status is updated as each piece is proven on hardware.
 ## What makes it different
 
 - **Hardware-rooted identity.** A node's name is a public key produced by the machine's own root of trust and sealed to it. No registry issued it and none can revoke it.
-- **Authority you hold.** Policy is a file you keep. Deny by default, and deny beats allow. Halting, powering down, isolating and erasing a machine are the operator's alone, over their own signing key.
+- **Authority you hold.** Policy is a file you keep. Deny by default, and deny beats allow. Halting, powering down, isolating and erasing a machine are the operator's alone, over their own signing key. For a machine on a production line, the kill switch is an advisory stop request to that machine's safety-rated controller, never an emergency stop; the machine's own emergency stop must work without Furcate and without the network.
 - **Claims you can read.** Everything that makes a trust claim (identity, attestation, policy, the ledger, the kill switch) is in this repository, and the default build compiles it alone.
 - **Updates that cannot break a machine.** An update replaces a signed image; it never edits a machine. Identity, sealed keys and configuration sit outside anything an update carries, and a failed component rolls back on its own.
 

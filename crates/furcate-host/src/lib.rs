@@ -38,6 +38,7 @@ pub mod platform;
 pub mod reading;
 pub mod redfish;
 pub mod storage;
+pub mod tegra_fuse;
 pub mod thermal;
 pub mod wall;
 pub mod xid;

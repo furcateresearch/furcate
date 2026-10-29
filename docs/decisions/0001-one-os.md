@@ -4,7 +4,7 @@ Date: 2026-10-11. Status: decided by the owner. **Base release superseded by [00
 
 ## Decision
 
-One Furcate OS, built on **Ubuntu 24.04 LTS**, for single-board computers, embedded AI modules and any x86_64 or arm64 server. One userspace, one image format, one update mechanism, one release line. Per-board differences are confined to kernel, firmware and boot method ([boards/](../../boards/README.md)). Furcate OS is headless everywhere; it is operated from a web or tablet interface.
+One Furcate OS, built on **Ubuntu 24.04 LTS**, for single-board computers, embedded AI modules and any x86_64 or arm64 server. One userspace, one image format, one update mechanism, one release line. Per-board differences are confined to kernel, firmware and boot method ([boards/](../../os/boards/README.md)). Furcate OS is headless everywhere; it is operated from a web or tablet interface.
 
 ## Why 24.04
 
@@ -20,4 +20,4 @@ The image-based toolchain is in the 24.04 archive (checked on packages.ubuntu.co
 
 ## Superseded
 
-The research in [docs/research/os-base-distribution.md](../research/os-base-distribution.md) recommended Ubuntu 26.04 with a separate 24.04 line for Jetson. This decision replaces the two lines with one.
+The private research note `os-base-distribution` recommended Ubuntu 26.04 with a separate 24.04 line for Jetson. This decision replaces the two lines with one.

@@ -9,6 +9,9 @@ pub enum Decision {
     /// Reserved. Nothing in this crate produces it: no actuator driver exists.
     Executed,
     Shadowed,
+    /// A trajectory chunk was accepted in part: the prefix before the first violating step. Shadow only, like
+    /// `Shadowed`; nothing is executed.
+    Truncated,
     Denied,
     Expired,
     Killed,
@@ -19,6 +22,7 @@ impl Decision {
         match self {
             Decision::Executed => "executed",
             Decision::Shadowed => "shadowed",
+            Decision::Truncated => "truncated",
             Decision::Denied => "denied",
             Decision::Expired => "expired",
             Decision::Killed => "killed",
@@ -35,6 +39,10 @@ pub struct Receipt {
     pub code: Option<crate::ErrorCode>,
     pub ledger_seq: u64,
     pub ledger_entry_hash: String,
+    /// The verdict on the chunk, for a trajectory command that was well formed enough to be judged.
+    pub verdict: Option<crate::chunk::ChunkVerdict>,
+    /// Canonical bytes of the signed advisory stop request, when one is due. See `chunk::verify_stop_request`.
+    pub stop_request: Option<Vec<u8>>,
 }
 
 /// The digest the ledger entry commits to: the receipt without its `ledger` and `signature` members.

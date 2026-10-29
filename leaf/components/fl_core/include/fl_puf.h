@@ -2,13 +2,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "fl_puf_core.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define FL_PUF_BITS 256          // secret bits reconstructed from the fingerprint
-#define FL_PUF_REP 7             // cells per secret bit (majority vote)
 #define FL_PUF_ENROLL_READS 8    // power-ups compared during enrollment
 #define FL_PUF_SLEEP_US 200000   // deep-sleep length used to power SRAM down
 
@@ -29,6 +28,13 @@ esp_err_t fl_puf_forget(void);
 const fl_puf_stats_t *fl_puf_stats(void);
 // Helper data for the fixed region exists (enrollment done).
 bool fl_puf_enrolled(void);
+// Public helper data (version 3) for escrow on the parent. ESP_ERR_NOT_FOUND
+// when this leaf holds version-2 data, which has no check value.
+esp_err_t fl_puf_helper_export(fl_puf_blob_t *out);
+// Puts escrowed helper data back after the flash was erased. Refuses when the
+// leaf is already enrolled (fl_puf_forget first). The next boot rebuilds the
+// same secret if this is the same die, or fails closed on the check value.
+esp_err_t fl_puf_helper_import(const fl_puf_blob_t *in);
 
 #ifdef __cplusplus
 }

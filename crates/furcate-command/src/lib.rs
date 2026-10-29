@@ -4,22 +4,30 @@
 //! that is appended to the site ledger chain. The only mode that exists is shadow: the site records what it would do
 //! and does nothing. A request to actuate is refused with [`ErrorCode::ActuationNotApproved`], and there is no
 //! executor other than [`ShadowExecutor`]. The wire format is in docs/physical-command.md.
+//!
+//! The fault-injection test (tests/faults.rs) runs 20,000 mutated commands in a debug build and 1,000,000 in a release
+//! build; the environment variable `FAULT_CASES` sets the count explicitly. The chunk suite (tests/chunk_faults.rs)
+//! uses the same counts.
 
 pub mod canon;
+pub mod chunk;
 pub mod command;
 pub mod gate;
 pub mod history;
 pub mod issue;
 pub mod policy;
 pub mod receipt;
+pub mod update;
 
 pub use command::{Command, ErrorCode, Mode};
 pub use gate::{Gate, KillState, NoKill};
-pub use policy::{SiteLimit, SitePolicy};
+pub use chunk::{verify_stop_request, ChunkOutcome, ChunkVerdict, LimitKind, Violation};
+pub use policy::{ChunkOverrun, RequestedStop, SiteLimit, SitePolicy, TrajectoryLimit};
 pub use receipt::{verify_receipt, Decision, Receipt};
 
 pub const COMMAND_DOMAIN: &str = "lw-physical/command/v1";
 pub const CERT_DOMAIN: &str = "lw-physical/twin-cert/v1";
+pub const STOP_REQUEST_DOMAIN: &str = chunk::STOP_REQUEST_DOMAIN;
 pub const RECEIPT_DOMAIN: &str = "furcate/physical-receipt/v1";
 
 use sha2::{Digest, Sha256};

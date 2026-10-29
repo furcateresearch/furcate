@@ -168,8 +168,10 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         s_fails++;
         s_last_reason = d->reason;
         if (s_fails <= 10 || s_fails % 20 == 0)
-            ESP_LOGW(TAG, "cannot join \"%s\" (reason %d, channel %u, RSSI %d, attempt %u)", s_cfg.ssid, d->reason,
-                     radio_channel(), d->rssi, (unsigned)s_fails);
+            ESP_LOGW(TAG, "cannot join \"%s\" (reason %d, channel %u, RSSI %d, attempt %u)%s", s_cfg.ssid, d->reason,
+                     radio_channel(), d->rssi, (unsigned)s_fails,
+                     d->rssi != 0 && d->rssi < -85 ? "; signal below -85 dBm: check the antenna" : "");
+        if (s_fails % 5 == 0) s_scan_logged = false;  // list what is visible again every fifth failure
         // Once: list what the radio can see, so the failure is on record.
         if (!s_scan_logged) {
             s_scan_logged = true;
@@ -198,6 +200,20 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         int rssi = esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0;
         ESP_LOGI(TAG, "Wi-Fi up: %s, RSSI %d dBm, channel %d, %lld ms after boot", s_ip, rssi,
                  rssi ? ap.primary : 0, s_ip_at_us / 1000);
+        // Antenna check: one line and two stored values (last join RSSI, joins),
+        // so a change of antenna or position can be measured. Better than -70
+        // dBm is a working antenna in the same room as the access point.
+        ESP_LOGI(TAG, "antenna check: RSSI %d dBm at join (%s)", rssi,
+                 rssi >= -70 ? "good" : rssi >= -85 ? "weak" : "poor: attach the external antenna");
+        nvs_handle_t nh;
+        if (nvs_open(NS, NVS_READWRITE, &nh) == ESP_OK) {
+            uint32_t joins = 0;
+            nvs_get_u32(nh, "joins", &joins);
+            nvs_set_u32(nh, "joins", joins + 1);
+            nvs_set_i8(nh, "rssi_join", (int8_t)rssi);
+            nvs_commit(nh);
+            nvs_close(nh);
+        }
         fl_time_start(s_cfg.host);
     }
 }

@@ -203,10 +203,21 @@ pub enum Sample {
 
 /// One published channel of the board.
 pub struct Channel {
+    /// Where the value comes from: the Nicla module, or the processing node that hosts it.
+    pub origin: Origin,
     pub suffix: &'static str,
     pub kind: SensorKind,
     pub unit: Unit,
     pub derivation: DerivationKind,
+}
+
+/// Which device a channel is measured on. The chip of the micro processing node
+/// that hosts the module is a different thing from the module's own sensors and
+/// is never published under a module channel name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Origin {
+    Module,
+    HostChip,
 }
 
 /// How a channel's value comes to exist, without the algorithm's name.
@@ -223,7 +234,7 @@ const CLASSIFIER: DerivationKind = DerivationKind::OnSensor("bhi260ap-activity-r
 
 macro_rules! ch {
     ($s:expr, $k:ident, $u:ident, $d:expr) => {
-        Channel { suffix: $s, kind: SensorKind::$k, unit: Unit::$u, derivation: $d }
+        Channel { origin: Origin::Module, suffix: $s, kind: SensorKind::$k, unit: Unit::$u, derivation: $d }
     };
 }
 
@@ -251,10 +262,19 @@ pub const CHANNELS: &[Channel] = &[
     ch!("bvoceq", GasEquivalent, Ppm, BSEC),
     ch!("steps", StepCount, Count, PEDOMETER),
     ch!("act", ActivityState, Count, CLASSIFIER),
+    // The die temperature of the micro processing node that hosts the module. It is
+    // not ambient air and not the module's `tmp`.
+    Channel { origin: Origin::HostChip, suffix: "chip.tmp", kind: SensorKind::Temperature, unit: Unit::Celsius, derivation: DerivationKind::Transducer },
 ];
 
 fn channel(suffix: &str) -> Option<&'static Channel> {
     CHANNELS.iter().find(|c| c.suffix == suffix)
+}
+
+/// The channel values a sample carries, by channel suffix. Air quality still
+/// stabilising is withheld, and a value that is not finite is refused.
+pub fn channel_values(s: &Sample) -> Result<Vec<(&'static str, f64)>, NiclaError> {
+    values_of(s)
 }
 
 /// The channel values a sample carries.
@@ -340,6 +360,18 @@ pub enum Transport {
     UsbFrame,
     /// The binary sensor-hub protocol over serial, ESLOV or BLE.
     Bhy2Binary,
+    /// A ROS 2 topic, observed read-only.
+    Ros2,
+    /// An OPC UA server, browsed, read and subscribed to, never written.
+    OpcUa,
+    /// EtherCAT process data observed on the wire, never sent.
+    EtherCat,
+    /// An MQTT broker, subscribed to, never published to.
+    Mqtt,
+    /// A CAN bus through SocketCAN, received only.
+    SocketCan,
+    /// Modbus registers read by function codes 1 to 4 only.
+    Modbus,
 }
 
 /// A model that produced a value, for the tier that has to trust it.
@@ -590,7 +622,7 @@ impl NiclaAdapter {
 
     /// Add the sensing node's channels to the cluster catalogue.
     pub fn register_sensors(&self, registry: &mut SensorRegistry) {
-        for c in CHANNELS {
+        for c in CHANNELS.iter().filter(|c| c.origin == Origin::Module) {
             registry.register(Sensor {
                 id: format!("{}/{}", self.leaf.id, c.suffix),
                 kind: c.kind,
@@ -642,11 +674,29 @@ impl NiclaAdapter {
     }
 }
 
+/// The wake-up variant of a sensor carries the same payload, scaling and meaning
+/// as the base id; the module's stock firmware sends humidity only under its
+/// wake-up id (134), so every variant is accepted.
+pub fn base_sensor_id(id: u8) -> u8 {
+    match id {
+        6 => 4,
+        15 => 13,
+        24 => 22,
+        35 => 34,
+        53 => 52,
+        132 => 128,
+        133 => 129,
+        134 => 130,
+        135 => 131,
+        other => other,
+    }
+}
+
 /// Turn one binary record into samples. Ids outside what the node publishes are
 /// an error rather than a silent drop, so a mis-configured hub is visible.
 pub fn samples_from_record(rec: &Record, ranges: &Ranges) -> Result<Vec<Sample>, NiclaError> {
     let d = bhy2::decode(rec)?;
-    let id = rec.sensor_id;
+    let id = base_sensor_id(rec.sensor_id);
     Ok(match (id, d) {
         (4, Decoded::Vector3 { x, y, z }) => vec![ranges.acceleration(x, y, z)?],
         (13, Decoded::Vector3 { x, y, z }) => vec![ranges.angular_rate(x, y, z)?],
@@ -877,11 +927,12 @@ mod tests {
         let a = adapter(Transport::UsbText);
         let mut r = SensorRegistry::new();
         a.register_sensors(&mut r);
-        assert_eq!(r.len(), CHANNELS.len());
+        assert_eq!(r.len(), CHANNELS.iter().filter(|c| c.origin == Origin::Module).count());
         assert_eq!(r.of_kind(SensorKind::Acceleration).len(), 3);
         assert_eq!(r.of_kind(SensorKind::Temperature).len(), 1);
-        assert_eq!(r.hosted_by(a.leaf_id()).len(), CHANNELS.len());
-        assert_eq!(r.forget_host(a.leaf_id()), CHANNELS.len());
+        let n = CHANNELS.iter().filter(|c| c.origin == Origin::Module).count();
+        assert_eq!(r.hosted_by(a.leaf_id()).len(), n);
+        assert_eq!(r.forget_host(a.leaf_id()), n);
     }
 
     #[test]
@@ -909,6 +960,69 @@ mod tests {
         assert_eq!(act, vec![Sample::Activity(9)]);
         assert!(samples_from_record(&Record::new(1, &[0; 6]), &r).is_err());
         assert!(samples_from_record(&Record::new(4, &[0; 6]), &Ranges::default()).is_err());
+    }
+
+    /// Every channel the module publishes decodes from a constructed binary record, and
+    /// the wake-up variant of each sensor means the same as its base id.
+    #[test]
+    fn every_module_channel_decodes_from_a_binary_record() {
+        let mut r = Ranges::default();
+        r.set_accel(8.0).unwrap();
+        r.set_gyro(2000.0).unwrap();
+        r.set_mag(1300.0).unwrap();
+        let one = |id: u8, p: &[u8]| samples_from_record(&Record::new(id, p), &r).unwrap();
+        // Magnetometer: 1000 counts at 1300 uT full scale.
+        let mag = one(22, &[0xE8, 0x03, 0, 0, 0x18, 0xFC]);
+        assert!(matches!(&mag[0], Sample::MagneticField { x, y, z }
+            if (*x - 1000.0 * 1300.0 / 32768.0).abs() < 1e-9 && *y == 0.0 && (*z + 1000.0 * 1300.0 / 32768.0).abs() < 1e-9));
+        assert_eq!(one(24, &[0xE8, 0x03, 0, 0, 0x18, 0xFC]), mag, "wake-up magnetometer");
+        // Rotation vector: identity with accuracy field 0x4000 (1.0 rad).
+        let rot = one(34, &[0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x40]);
+        assert_eq!(rot, vec![Sample::Rotation { x: 0.0, y: 0.0, z: 0.0, w: 1.0, accuracy: Some(1.0) }]);
+        assert_eq!(one(35, &[0, 0, 0, 0, 0, 0, 0, 0x40, 0, 0x40]), rot);
+        // Pressure: the module sends 1/128 hPa, so 1013.25 hPa is 129696.
+        let prs = one(129, &129_696u32.to_le_bytes()[..3]);
+        assert_eq!(prs, vec![Sample::Pressure(101_325.0)]);
+        assert_eq!(one(133, &129_696u32.to_le_bytes()[..3]), prs);
+        // Humidity under both ids, temperature and gas under their wake-up ids.
+        assert_eq!(one(130, &[47]), vec![Sample::Humidity(47.0)]);
+        assert_eq!(one(134, &[47]), vec![Sample::Humidity(47.0)]);
+        assert_eq!(one(132, &2829i16.to_le_bytes()), vec![Sample::Temperature(28.29)]);
+        assert_eq!(one(135, &949u32.to_le_bytes()), vec![Sample::GasResistance(949.0)]);
+        // Steps, including the wake-up id.
+        assert_eq!(one(52, &1234u32.to_le_bytes()), vec![Sample::Steps(1234)]);
+        assert_eq!(one(53, &1234u32.to_le_bytes()), vec![Sample::Steps(1234)]);
+        // Air quality from the vendor's algorithm: static index, CO2 and breath VOC equivalents.
+        let mut p = Vec::new();
+        p.extend(85u16.to_le_bytes());
+        p.extend(90u16.to_le_bytes());
+        p.extend(123u16.to_le_bytes());
+        p.extend(&650u32.to_le_bytes()[..3]);
+        p.push(3);
+        p.extend((25i16 * 256).to_le_bytes());
+        p.extend((40u16 * 500).to_le_bytes());
+        p.extend(52_000f32.to_le_bytes());
+        let iaq = one(115, &p);
+        assert!(matches!(&iaq[0], Sample::AirQuality { index, co2_eq_ppm, accuracy: 3, .. } if *index == 90.0 && *co2_eq_ppm == 650.0));
+        // A magnetometer record with no range stated is refused, not guessed.
+        assert!(matches!(
+            samples_from_record(&Record::new(22, &[0; 6]), &Ranges::default()),
+            Err(NiclaError::RangeUnknown("magnetometer"))
+        ));
+        // An id the node does not publish is an error, not a silent drop.
+        assert!(samples_from_record(&Record::new(117, &[0; 5]), &r).is_err());
+    }
+
+    #[test]
+    fn the_host_chip_is_a_channel_of_its_own() {
+        let chip = channel("chip.tmp").unwrap();
+        assert_eq!((chip.origin, chip.kind, chip.unit), (Origin::HostChip, SensorKind::Temperature, Unit::Celsius));
+        assert_eq!(channel("tmp").unwrap().origin, Origin::Module);
+        let mut registry = SensorRegistry::new();
+        let a = adapter(Transport::UsbFrame);
+        a.register_sensors(&mut registry);
+        assert!(registry.get(&format!("{}/chip.tmp", a.leaf_id())).is_none(), "the module never publishes the host chip's temperature");
+        assert!(registry.get(&format!("{}/tmp", a.leaf_id())).is_some());
     }
 
     /// The recorded fixture end to end: lines to samples to signed readings

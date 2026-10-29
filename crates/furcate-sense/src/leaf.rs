@@ -457,6 +457,9 @@ mod tests {
         v["key_custody"] = serde_json::json!({"kind": "sram-fingerprint", "lockdown": {
             "secure_boot": true, "flash_encryption": true, "download_disabled": true, "jtag_disabled": true}});
         v.as_object_mut().unwrap().remove("assurance");
+        assert_eq!(Attachment::from_record(&v).unwrap().assurance(), AssuranceClass::Soft,
+                   "a complete lockdown does not lift a fingerprint key: secure boot can be bypassed");
+        v["key_custody"]["kind"] = "fuse-key".into();
         assert_eq!(Attachment::from_record(&v).unwrap().assurance(), AssuranceClass::Device);
     }
 

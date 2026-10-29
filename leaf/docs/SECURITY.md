@@ -58,6 +58,11 @@ No other ESP32 security advisory was published in 2024-2026 (Espressif advisory 
 | Sensors and control | **ESP32-C5** (rev 1.2 or later) | Key Manager whose hardware unique key comes from an **SRAM PUF in hardware**, never exposed to software; ECDSA P-256 peripheral; ESP-TEE with attestation; hardware glitch detector; AES side-channel countermeasures (dummy rounds); Wi-Fi 6 dual-band |
 | Vision | **ESP32-P4** (rev 3.0 or later) + C5/C6 radio | Key Manager/PUF, ECDSA, glitch detector, AI vector instructions, PSRAM; YOLO11n-320 at about 0.32 s |
 
+Dated advisories to hold against this choice (Espressif advisories page, read 2026-10-29):
+
+- AR2026-006 (2026-07-28): the ROM check of ECDSA secure-boot signatures can accept invalid signatures on ESP32-H2, ESP32-C5, ESP32-C61, ESP32-P4 and ESP32-S31, so an attacker who can modify the firmware in external flash can bypass secure boot. Until Espressif's fix is confirmed for the chip revision in use, the production lock-down on C5 and P4 uses the RSA secure-boot scheme, not ECDSA. The ECDSA peripheral and Key Manager used for the leaf key are a separate mechanism; the advisory does not mention them.
+- AR2026-005 (2026-06-11): AES-128 key recovery by voltage fault injection and differential fault analysis on the ESP32-S3. A flash-encryption key on an S3 is therefore recoverable by a lab attacker with physical access; this applies to the XIAO ESP32S3 leaf once flash encryption is on.
+
 On these chips the leaf key is generated inside the chip and used only by the ECDSA peripheral. It is never readable by software, never stored in flash in usable form, and never sent anywhere. The identity backend `fl_identity_hwkey.c` implements this (pending; see PENDING.md). The rest of the firmware is unchanged.
 
 ## 4. What an attacker can do, by stage

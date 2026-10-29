@@ -1,7 +1,10 @@
 //! When a firmware TPM counts as a TPM.
 //!
-//! Jetson AGX Thor, AGX Orin, Orin NX and Orin Nano run a TPM 2.0 as an OP-TEE
-//! trusted application. To Linux it is an ordinary TPM device: `tpm2-tools`
+//! Jetson AGX Thor, AGX Orin, Orin NX and Orin Nano can run a TPM 2.0 as an
+//! OP-TEE trusted application (when the trusted OS is built with it, enabled
+//! by fuse, paired with the device key blob and provisioned; a stock module
+//! has none). Built from NVIDIA's Jetson Linux r39.2 documentation and tested
+//! against fixtures; not run on a device. To Linux it is an ordinary TPM device: `tpm2-tools`
 //! reads its endorsement key and it quotes registers that the boot chain
 //! extends (MB2 and the trusted OS land in PCR0). Treated naively it would
 //! classify [`AssuranceClass::Tpm`] like a discrete chip.
@@ -15,9 +18,10 @@
 //! 1. **Secure boot is fused.** On an unfused development module anyone with
 //!    the board can flash a different trusted OS, and the "TPM" is whatever
 //!    that OS says it is.
-//! 2. **The EK certificate chains to a CA the operator trusts.** NVIDIA does
+//! 2. **The EK certificate chains to a CA the operator trusts, and is for this
+//!    TPM's key** ([`super::ek_bind`]). NVIDIA does
 //!    not issue these; the ODM generates them at manufacture with its own CA
-//!    (which needs the KDK0 fuse provisioned). There is no global root to
+//!    (which needs the KDK0 fuse provisioned; `PscOemKdk0` on Thor). There is no global root to
 //!    check against, so the operator names the CAs they accept in
 //!    [`EK_CA_BUNDLE`] under the node's configuration directory.
 //!
@@ -25,9 +29,10 @@
 //! [`AssuranceClass::Tee`]: a key held by the secure world, which is real
 //! possession, without the vouching. The reason travels with the class.
 //!
-//! Whether the fuses are burned is not readable from userspace on current Orin
-//! releases. Unknown is treated exactly like unfused, because a class that is
-//! raised on an assumption is the failure this module exists to prevent.
+//! Fuse state is read read-only by `furcate_host::tegra_fuse` (sysfs nodes,
+//! then NVIDIA's `nv_fuse_read.sh`). Unknown is treated exactly like unfused,
+//! because a class that is raised on an assumption is the failure this module
+//! exists to prevent.
 
 use crate::rot::{AssuranceClass, PcrSet, Quote, RootOfTrust};
 use crate::NodeId;

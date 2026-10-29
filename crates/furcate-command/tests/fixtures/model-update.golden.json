@@ -1,0 +1,56 @@
+{
+  "about": "model-update golden vector; public test seeds (0x71 trainer, 0x72 evaluator, 0x73 releaser), never real keys",
+  "born": {
+    "agent_id": "agent-1",
+    "birth_record_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "ledger_head": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+    "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "decisions": [
+    {
+      "accepted": true,
+      "code": null,
+      "ledger_entry_hash": "a897524989af7f13efd234ea79128180e43886655375dac96f4db9f5bbdcbd71",
+      "ledger_seq": 1,
+      "update_sha256": "f9b2da154dfbf357c6f6b2b07b3ec03810f771bf745b0f1ee0ca9c08b47e0f1a"
+    },
+    {
+      "accepted": true,
+      "code": null,
+      "ledger_entry_hash": "9130a252fe2c26a1f5196da767abe954ab674ee18b783c9199d1851f41afc5dc",
+      "ledger_seq": 2,
+      "update_sha256": "750d61274afd2dd7e2c6bcf5626a56a06e56d88747d370337e0f93d401e44b88"
+    },
+    {
+      "accepted": true,
+      "code": null,
+      "ledger_entry_hash": "22ea911abadc6a197bbba33996ca03e5bf876c99ae5613d18e1ff4d6108ce056",
+      "ledger_seq": 3,
+      "update_sha256": "4bda88fb803de805b47542ab84778693381f2402ffb84701f2969d4fac249e88"
+    }
+  ],
+  "domain": "lw-physical/model-update/v1",
+  "now_ms": 1800000000000,
+  "records_canonical": [
+    "{\"agent_id\":\"agent-1\",\"attestation_min\":\"se\",\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"evaluation\":{\"band_certificate_sha256\":\"0000000000000000000000000000000000000000000000000000000000009001\",\"benchmarks\":[{\"name\":\"reach_success\",\"score_ppm\":962000,\"threshold_ppm\":950000},{\"name\":\"safety_envelope\",\"score_ppm\":1000000,\"threshold_ppm\":999000}],\"fidelity_minimum_ppm\":800000,\"fidelity_ppm\":930000,\"gate\":\"release-gate\",\"release_point_inside_band\":true,\"result\":\"passed\"},\"experience\":{\"ledger_entries\":1201,\"ledger_head\":\"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\",\"parent_ledger_head\":\"c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0\",\"simulated_seconds_unvalidated_delta\":3600,\"simulated_seconds_validated_delta\":86400,\"training_ref_sha256\":\"0000000000000000000000000000000000000000000000000000000000007001\"},\"format\":\"model-update\",\"issued_ms\":1799999999000,\"new_model_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"old_model_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"parent_update_sha256\":null,\"reason\":\"learn\",\"signatures\":[\"7c2630af4598bfc52fe13a49ccffa7a8826d4283976fd4e4f040584bef3a26a9e2e85f1bd224c1516cf10a2e38bb302faecc6d7451327c1df9689b79b0df8d0c\",\"16c69beba9059f9515cea255eb24356a8ceb28310d252001df28f02e46f46bd46eb9b31f9102cf73a7888d6fa307fc62ab71ca304e0e8140b48a25422773dd08\",\"a9d25643ef0e68ecd83438e62876dad885e3bcbb8ef7c361a2cbd3117bfa67afb7d2e55589f22c1d8fd56b40e88d09a26a07df63222cf22fbb109b8d444c770d\"],\"signers\":[{\"attestation\":\"tee\",\"key\":\"ed25519:e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb\",\"role\":\"trainer\"},{\"attestation\":\"tpm\",\"key\":\"ed25519:5b6489c9c7fd0dcf50545e7c164886ef40491ec06c7f1b123041797e8117535e\",\"role\":\"evaluator\"},{\"attestation\":\"se\",\"key\":\"ed25519:fec1428673f6afe89264b3807344ae8b269d125a503855202687db5a7128579f\",\"role\":\"releaser\"}],\"tenant\":\"tenant-a\",\"update_id\":\"upd-0001\",\"v\":1,\"valid_until_ms\":1800086400000}",
+    "{\"agent_id\":\"agent-1\",\"attestation_min\":\"se\",\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"evaluation\":{\"band_certificate_sha256\":\"0000000000000000000000000000000000000000000000000000000000009002\",\"benchmarks\":[{\"name\":\"reach_success\",\"score_ppm\":962000,\"threshold_ppm\":950000},{\"name\":\"safety_envelope\",\"score_ppm\":1000000,\"threshold_ppm\":999000}],\"fidelity_minimum_ppm\":800000,\"fidelity_ppm\":930000,\"gate\":\"release-gate\",\"release_point_inside_band\":true,\"result\":\"passed\"},\"experience\":{\"ledger_entries\":1202,\"ledger_head\":\"c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2\",\"parent_ledger_head\":\"c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1\",\"simulated_seconds_unvalidated_delta\":3600,\"simulated_seconds_validated_delta\":86400,\"training_ref_sha256\":\"0000000000000000000000000000000000000000000000000000000000007002\"},\"format\":\"model-update\",\"issued_ms\":1799999999000,\"new_model_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"old_model_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"parent_update_sha256\":\"f9b2da154dfbf357c6f6b2b07b3ec03810f771bf745b0f1ee0ca9c08b47e0f1a\",\"reason\":\"learn\",\"signatures\":[\"cea2c9360a7c552576fb0d1071267dce7a4e943b78aee3a9ec38c033eec5ff62ff327edace957fa3fc956a1e9a5c527ba78b90f7d90b38189ab55bc09df1090e\",\"fd81541d797e2517521afff8e104d4c05e62d023beb1d79a798f20ccfcc883485ae33b41ed79ccfa51a499d2257bb90ae69e85630360962b22474ec47406cf01\",\"6c8d12ba9d58332d9a7712860066c4c8d1a94098f78a4fed15f22fe8a41a6de0739c78d6e938c56581dd7f498f7705195f1aacbc0fbc5a657859c3cea29a6803\"],\"signers\":[{\"attestation\":\"tee\",\"key\":\"ed25519:e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb\",\"role\":\"trainer\"},{\"attestation\":\"tpm\",\"key\":\"ed25519:5b6489c9c7fd0dcf50545e7c164886ef40491ec06c7f1b123041797e8117535e\",\"role\":\"evaluator\"},{\"attestation\":\"se\",\"key\":\"ed25519:fec1428673f6afe89264b3807344ae8b269d125a503855202687db5a7128579f\",\"role\":\"releaser\"}],\"tenant\":\"tenant-a\",\"update_id\":\"upd-0002\",\"v\":1,\"valid_until_ms\":1800086400000}",
+    "{\"agent_id\":\"agent-1\",\"attestation_min\":\"se\",\"birth_record_sha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"evaluation\":{\"band_certificate_sha256\":\"0000000000000000000000000000000000000000000000000000000000009003\",\"benchmarks\":[{\"name\":\"reach_success\",\"score_ppm\":962000,\"threshold_ppm\":950000},{\"name\":\"safety_envelope\",\"score_ppm\":1000000,\"threshold_ppm\":999000}],\"fidelity_minimum_ppm\":800000,\"fidelity_ppm\":930000,\"gate\":\"release-gate\",\"release_point_inside_band\":true,\"result\":\"passed\"},\"experience\":{\"ledger_entries\":1203,\"ledger_head\":\"c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3\",\"parent_ledger_head\":\"c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2\",\"simulated_seconds_unvalidated_delta\":3600,\"simulated_seconds_validated_delta\":86400,\"training_ref_sha256\":\"0000000000000000000000000000000000000000000000000000000000007003\"},\"format\":\"model-update\",\"issued_ms\":1799999999000,\"new_model_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"old_model_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"parent_update_sha256\":\"750d61274afd2dd7e2c6bcf5626a56a06e56d88747d370337e0f93d401e44b88\",\"reason\":\"rollback\",\"signatures\":[\"98bb0eafca60e57102dac0f04bb4a8ea8887b4ebe5381aaa927f9b77ba19b1bdab7bf994bd8218aaf5768f2ff4be26c6aebb15eed659dd399651480b6c12ca05\",\"3dc90c50a64c7b57fb4a7304e4879f450a6d452eda92b9a73d1a5ffce346a038a65bb048c196909431533a757178d65e7e733e773c8b2917d818a5fa00c39e0f\",\"4e3e259c96bd49ad31b7d55a672e14f8e11127250fa265dd3af231e544d3dd4deda2e6a5b700a4272b80de5183d8779c89a00495edd660bc35b7fb08ffbd4c07\"],\"signers\":[{\"attestation\":\"tee\",\"key\":\"ed25519:e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb\",\"role\":\"trainer\"},{\"attestation\":\"tpm\",\"key\":\"ed25519:5b6489c9c7fd0dcf50545e7c164886ef40491ec06c7f1b123041797e8117535e\",\"role\":\"evaluator\"},{\"attestation\":\"se\",\"key\":\"ed25519:fec1428673f6afe89264b3807344ae8b269d125a503855202687db5a7128579f\",\"role\":\"releaser\"}],\"tenant\":\"tenant-a\",\"update_id\":\"upd-0003\",\"v\":1,\"valid_until_ms\":1800086400000}"
+  ],
+  "signers": [
+    {
+      "attestation": "tee",
+      "key": "ed25519:e2fe2a39b7326642827d6d82d497622cd6c297fe78270eaa436b01f086b6f3cb",
+      "role": "trainer"
+    },
+    {
+      "attestation": "tpm",
+      "key": "ed25519:5b6489c9c7fd0dcf50545e7c164886ef40491ec06c7f1b123041797e8117535e",
+      "role": "evaluator"
+    },
+    {
+      "attestation": "se",
+      "key": "ed25519:fec1428673f6afe89264b3807344ae8b269d125a503855202687db5a7128579f",
+      "role": "releaser"
+    }
+  ]
+}

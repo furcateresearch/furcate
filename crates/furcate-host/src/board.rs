@@ -29,8 +29,8 @@
 //! *Measured boot* means each stage is hashed into a register that something
 //! can later quote. A Raspberry Pi can have the first and never the second
 //! unless a TPM is fitted, because it has nowhere to record measurements. A
-//! development Jetson typically has the second (its firmware TPM records the
-//! boot chain) without the first (the secure boot fuses are not burned). The
+//! development Jetson with the firmware TPM enabled has the second (the boot
+//! chain is recorded) without the first (the secure boot fuses are not burned). The
 //! two are reported separately so neither stands in for the other, and a fact
 //! that cannot be read without root-only interfaces is reported as unknown
 //! rather than guessed.
@@ -281,33 +281,6 @@ pub fn pi_secure_boot(signed: Option<&[u8]>) -> SecureBoot {
     }
 }
 
-/// Paths at which some L4T releases expose the `security_mode` fuse to
-/// userspace. Orin releases do not publish it in a world-readable place;
-/// there the answer is `Unknown`, which callers must treat as not fused.
-pub const TEGRA_SECURITY_MODE_PATHS: &[&str] = &[
-    "/sys/devices/platform/tegra-fuse/security_mode",
-    "/sys/devices/platform/efuse-burn/security_mode",
-];
-
-/// Interpret a Tegra `security_mode` fuse value: non-zero once secure boot
-/// (PKC) has been burned.
-pub fn tegra_secure_boot(security_mode: Option<&str>) -> SecureBoot {
-    let Some(raw) = security_mode.map(str::trim) else {
-        return SecureBoot::Unknown {
-            why: "the security_mode fuse is not readable from userspace on this release".to_string(),
-        };
-    };
-    let value = raw
-        .strip_prefix("0x")
-        .map(|h| u64::from_str_radix(h, 16))
-        .unwrap_or_else(|| raw.parse::<u64>());
-    match value {
-        Ok(0) => SecureBoot::Off { detail: "security_mode fuse is 0: development part, not fused".to_string() },
-        Ok(v) => SecureBoot::Enforced { detail: format!("security_mode fuse is {v:#x}") },
-        Err(_) => SecureBoot::Unknown { why: format!("unparseable security_mode value {raw:?}") },
-    }
-}
-
 /// How the TPM, if any, is provided.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -462,12 +435,7 @@ pub fn boot_integrity(board: &Board) -> BootIntegrity {
         Board::RaspberryPi(_) => {
             pi_secure_boot(std::fs::read("/proc/device-tree/chosen/bootloader/signed").ok().as_deref())
         }
-        Board::Jetson(_) => {
-            let fuse = TEGRA_SECURITY_MODE_PATHS
-                .iter()
-                .find_map(|p| std::fs::read_to_string(p).ok());
-            tegra_secure_boot(fuse.as_deref())
-        }
+        Board::Jetson(j) => crate::tegra_fuse::secure_boot(j.soc, &crate::tegra_fuse::Source::system().read()),
         _ => SecureBoot::Unknown {
             why: "secure boot state is only read for Raspberry Pi and Jetson boards here".to_string(),
         },
@@ -564,14 +532,6 @@ mod tests {
             measurement: Measurement::None,
         };
         assert_eq!(b.summary(), "secure-boot-only, unmeasured");
-    }
-
-    #[test]
-    fn tegra_fuse_values() {
-        assert!(matches!(tegra_secure_boot(None), SecureBoot::Unknown { .. }));
-        assert!(matches!(tegra_secure_boot(Some("0x00000000\n")), SecureBoot::Off { .. }));
-        assert!(matches!(tegra_secure_boot(Some("0x1")), SecureBoot::Enforced { .. }));
-        assert!(matches!(tegra_secure_boot(Some("yes")), SecureBoot::Unknown { .. }));
     }
 
     #[test]

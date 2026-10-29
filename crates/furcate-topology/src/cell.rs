@@ -2063,7 +2063,7 @@ mod tests {
     }
 
     #[test]
-    fn a_p256_leaf_on_a_locked_part_attaches_as_device_with_no_opt_in() {
+    fn a_p256_leaf_with_a_key_in_fuses_attaches_as_device_with_no_opt_in() {
         let s = site();
         let pi = key(23);
         let head = lab_head(&s, &pi, None);
@@ -2074,10 +2074,14 @@ mod tests {
             download_disabled: true,
             jtag_disabled: true,
         };
-        let att = esp.attach("pi-lab", Some(LeafKeyCustody::SramFingerprint { lockdown: locked }), NOW);
+        let att = esp.attach("pi-lab", Some(LeafKeyCustody::FuseKey { lockdown: locked }), NOW);
         let leaf = enrol_leaf(&head, &att, NOW + YEAR, NOW).unwrap();
         assert!(leaf.holder.starts_with("p256:0"));
         assert_eq!(leaf.assurance, Some(AssuranceClass::Device));
+        // The same lockdown around a fingerprint key is only soft.
+        let fp = esp.attach("pi-lab", Some(LeafKeyCustody::SramFingerprint { lockdown: locked }), NOW);
+        let refused = enrol_leaf(&head, &fp, NOW + YEAR, NOW).unwrap_err();
+        assert!(refused.contains("soft"), "{refused}");
     }
 
     #[test]

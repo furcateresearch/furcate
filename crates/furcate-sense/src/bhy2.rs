@@ -200,11 +200,11 @@ const SENSORS: &[(u8, Payload, f64)] = &[
     (116, Payload::Bsec2Collector, 1.0),
     (117, Payload::Bsec2, 1.0),
     (128, Payload::I16, 0.01),
-    (129, Payload::U24, 0.0078125),
+    (129, Payload::U24, 0.78125),
     (130, Payload::U8, 1.0),
     (131, Payload::U32, 1.0),
     (132, Payload::I16, 0.01),
-    (133, Payload::U24, 0.0078125),
+    (133, Payload::U24, 0.78125),
     (134, Payload::U8, 1.0),
     (135, Payload::U32, 1.0),
     (136, Payload::U32, 1.0),
@@ -461,7 +461,7 @@ pub enum Decoded {
     /// Components are unit-quaternion values; accuracy is the raw field.
     Quaternion { x: f64, y: f64, z: f64, w: f64, accuracy_raw: u16 },
     Euler { heading_deg: f64, pitch_deg: f64, roll_deg: f64 },
-    /// A single scaled number: temperature in degrees C, pressure in Pa,
+    /// A single scaled number: temperature in degrees C, pressure in Pa (the module's firmware sends 1/128 hPa, so the scale is 100/128),
     /// humidity in percent, a step count, and so on per sensor id.
     Scalar(f64),
     Event,
@@ -676,8 +676,10 @@ mod tests {
         // 28.29 C: raw 2829 at 0.01.
         let t = decode(&Record::new(128, &2829i16.to_le_bytes())).unwrap();
         assert_eq!(t, Decoded::Scalar(2829.0 * 0.01));
-        // 101325 Pa is 12969600 in 1/128 Pa units: 24 bits.
-        let raw = 12_969_600u32.to_le_bytes();
+        // The stock module firmware sends pressure in 1/128 hPa (read off the real
+        // module: 1013.25 hPa is 129696). Read as 1/128 Pa it would be 100 times
+        // too small and still inside the physical range check.
+        let raw = 129_696u32.to_le_bytes();
         assert_eq!(decode(&Record::new(129, &raw[..3])), Ok(Decoded::Scalar(101_325.0)));
         assert_eq!(decode(&Record::new(130, &[47])), Ok(Decoded::Scalar(47.0)));
         assert_eq!(decode(&Record::new(131, &949u32.to_le_bytes())), Ok(Decoded::Scalar(949.0)));

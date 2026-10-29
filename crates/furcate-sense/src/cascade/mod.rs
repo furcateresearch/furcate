@@ -17,6 +17,7 @@
 //! | [`commit`] | a signed Merkle commitment to a batch of embeddings, and the challenge that audits one window |
 //! | [`birth`] | the signed birth record a model or policy must carry before a node accepts it |
 //! | [`chain`] | validates the rungs a reading claims to have passed through |
+//! | [`classes`] | what each position can host, its compute class and the attestation level it can reach |
 //! | [`drift`] | per-node embedding-space drift and its cause, read across nodes |
 //! | [`witness`] | per-leaf hash-chained reading log, checked and cosigned here |
 //! | [`ingest`] | verifies a frame end to end and records every refusal |
@@ -35,6 +36,7 @@ pub mod attest;
 pub mod binding;
 pub mod birth;
 pub mod chain;
+pub mod classes;
 pub mod coherence;
 pub mod commit;
 pub mod directory;

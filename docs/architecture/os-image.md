@@ -10,7 +10,7 @@
 
 ## Headless, with a web and tablet interface
 
-No graphical session ships on any machine. Every node serves the same web interface from inside its signed image, discovered on the local network, and operates one node or the whole site; a tablet and phone app wraps the same interface for passkeys and onboarding. The interface design is in [research/interface-and-control.md](../research/interface-and-control.md): passkey assertions as signed orders, a per-Hub site CA held in TPMs, BLE and QR onboarding, a Capacitor app wrapping the same web app.
+No graphical session ships on any machine. Every node serves the same web interface from inside its signed image, discovered on the local network, and operates one node or the whole site; a tablet and phone app wraps the same interface for passkeys and onboarding. The interface design (kept in the private research notes, `interface-and-control`) covers passkey assertions as signed orders, a per-Hub site CA held in TPMs, BLE and QR onboarding, a Capacitor app wrapping the same web app.
 
 ## What the image carries from furcate
 

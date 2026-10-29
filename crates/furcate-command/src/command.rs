@@ -1,5 +1,6 @@
 //! The `physical-command` record: strict parsing into typed fields, nothing guessed.
 
+use crate::chunk::{parse_body, Trajectory};
 use crate::is_lower_hex;
 use serde_json::{Map, Value};
 
@@ -63,6 +64,9 @@ codes! {
     NoSiteLimit = "no_site_limit",
     OutsideSiteEnvelope = "outside_site_envelope",
     RateExceeded = "rate_exceeded",
+    ChunkVetoed = "chunk_vetoed",
+    ChunkTruncated = "chunk_truncated",
+    BandReferenceMismatch = "band_reference_mismatch",
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +94,10 @@ pub struct Cert {
 #[derive(Clone, Debug)]
 pub struct Command {
     pub raw: Value,
+    /// `setpoint` or `trajectory`. For a trajectory the setpoint fields below (`quantity`, `unit`, `value`, the
+    /// envelope) are empty or zero and `traj` carries the chunk.
+    pub kind: String,
+    pub traj: Option<Trajectory>,
     pub command_id: String,
     pub tenant: String,
     pub site_id: String,
@@ -131,7 +139,7 @@ fn key_ok(s: &str) -> bool {
 }
 
 /// The object must have exactly these keys (and `optional` ones if present).
-fn exact<'a>(v: &'a Value, req: &[&str], opt: &[&str]) -> Option<&'a Map<String, Value>> {
+pub(crate) fn exact<'a>(v: &'a Value, req: &[&str], opt: &[&str]) -> Option<&'a Map<String, Value>> {
     let m = v.as_object()?;
     if !req.iter().all(|k| m.contains_key(*k)) {
         return None;
@@ -141,13 +149,13 @@ fn exact<'a>(v: &'a Value, req: &[&str], opt: &[&str]) -> Option<&'a Map<String,
     }
     Some(m)
 }
-fn s<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
+pub(crate) fn s<'a>(m: &'a Map<String, Value>, k: &str) -> Option<&'a str> {
     m.get(k)?.as_str()
 }
-fn u(m: &Map<String, Value>, k: &str) -> Option<u64> {
+pub(crate) fn u(m: &Map<String, Value>, k: &str) -> Option<u64> {
     m.get(k)?.as_u64()
 }
-fn f(m: &Map<String, Value>, k: &str) -> Option<f64> {
+pub(crate) fn f(m: &Map<String, Value>, k: &str) -> Option<f64> {
     let x = m.get(k)?.as_f64()?;
     x.is_finite().then_some(x)
 }
@@ -155,37 +163,47 @@ fn f(m: &Map<String, Value>, k: &str) -> Option<f64> {
 /// Why a parsed document is not a command of the kinds this gate knows.
 pub fn parse_command(v: &Value) -> Result<Command, ErrorCode> {
     use ErrorCode::*;
-    let m = exact(
-        v,
-        &[
-            "format", "v", "command_id", "tenant", "site_id", "target", "kind", "body", "issued_at_ms", "not_before_ms",
-            "expires_at_ms", "nonce", "command_seq", "mode", "policy_sha256", "model_sha256", "envelope", "twin_cert",
-            "signer", "signature",
-        ],
-        &["birth_record_sha256"],
-    )
-    .ok_or(Malformed)?;
+    let is_traj = v.get("kind").and_then(|k| k.as_str()) == Some("trajectory");
+    let mut req = vec![
+        "format", "v", "command_id", "tenant", "site_id", "target", "kind", "body", "issued_at_ms", "not_before_ms",
+        "expires_at_ms", "nonce", "command_seq", "mode", "policy_sha256", "model_sha256", "twin_cert", "signer", "signature",
+    ];
+    if !is_traj {
+        req.push("envelope");
+    }
+    let m = exact(v, &req, &["birth_record_sha256"]).ok_or(Malformed)?;
     if s(m, "format") != Some("physical-command") || u(m, "v") != Some(1) {
         return Err(UnsupportedFormat);
     }
-    if s(m, "kind").ok_or(Malformed)? != "setpoint" {
-        return Err(if m["kind"].is_string() { UnsupportedKind } else { Malformed });
+    let kind = s(m, "kind").ok_or(Malformed)?;
+    if kind != "setpoint" && kind != "trajectory" {
+        return Err(UnsupportedKind);
     }
     let target = exact(&m["target"], &["actuator_id", "scope"], &[]).ok_or(Malformed)?;
-    let body = exact(&m["body"], &["quantity", "unit", "value"], &[]).ok_or(Malformed)?;
-    let env = exact(&m["envelope"], &["min", "max", "max_rate_per_s"], &[]).ok_or(Malformed)?;
+    let empty = Map::new();
+    let (body, env, traj) = if is_traj {
+        (&empty, &empty, Some(parse_body(&m["body"])?))
+    } else {
+        (
+            exact(&m["body"], &["quantity", "unit", "value"], &[]).ok_or(Malformed)?,
+            exact(&m["envelope"], &["min", "max", "max_rate_per_s"], &[]).ok_or(Malformed)?,
+            None,
+        )
+    };
     let cert = parse_cert(&m["twin_cert"])?;
 
     let c = Command {
         raw: v.clone(),
+        kind: kind.to_string(),
+        traj,
         command_id: s(m, "command_id").ok_or(Malformed)?.into(),
         tenant: s(m, "tenant").ok_or(Malformed)?.into(),
         site_id: s(m, "site_id").ok_or(Malformed)?.into(),
         actuator_id: s(target, "actuator_id").ok_or(Malformed)?.into(),
         scope: s(target, "scope").ok_or(Malformed)?.into(),
-        quantity: s(body, "quantity").ok_or(Malformed)?.into(),
-        unit: s(body, "unit").ok_or(Malformed)?.into(),
-        value: f(body, "value").ok_or(Malformed)?,
+        quantity: if is_traj { String::new() } else { s(body, "quantity").ok_or(Malformed)?.into() },
+        unit: if is_traj { String::new() } else { s(body, "unit").ok_or(Malformed)?.into() },
+        value: if is_traj { 0.0 } else { f(body, "value").ok_or(Malformed)? },
         issued_at_ms: u(m, "issued_at_ms").ok_or(Malformed)?,
         not_before_ms: u(m, "not_before_ms").ok_or(Malformed)?,
         expires_at_ms: u(m, "expires_at_ms").ok_or(Malformed)?,
@@ -198,9 +216,9 @@ pub fn parse_command(v: &Value) -> Result<Command, ErrorCode> {
             None => None,
             Some(x) => Some(x.as_str().ok_or(Malformed)?.to_string()),
         },
-        env_min: f(env, "min").ok_or(Malformed)?,
-        env_max: f(env, "max").ok_or(Malformed)?,
-        env_max_rate_per_s: f(env, "max_rate_per_s").ok_or(Malformed)?,
+        env_min: if is_traj { 0.0 } else { f(env, "min").ok_or(Malformed)? },
+        env_max: if is_traj { 0.0 } else { f(env, "max").ok_or(Malformed)? },
+        env_max_rate_per_s: if is_traj { 0.0 } else { f(env, "max_rate_per_s").ok_or(Malformed)? },
         cert,
         signer: s(m, "signer").ok_or(Malformed)?.into(),
         signature: s(m, "signature").ok_or(Malformed)?.into(),
@@ -210,8 +228,7 @@ pub fn parse_command(v: &Value) -> Result<Command, ErrorCode> {
         && id_ok(&c.site_id)
         && id_ok(&c.actuator_id)
         && id_ok(&c.scope)
-        && name_ok(&c.quantity)
-        && name_ok(&c.unit)
+        && (is_traj || (name_ok(&c.quantity) && name_ok(&c.unit)))
         && hex_ok(&c.nonce, 32)
         && c.command_seq >= 1
         && matches!(c.mode_text.as_str(), "shadow" | "actuate")

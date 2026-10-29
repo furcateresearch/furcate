@@ -31,10 +31,14 @@
 //!   variation makes specific to the piece of silicon, using helper data
 //!   that is not secret on its own. Whoever can run code on the part at
 //!   power-up can read the pattern, and with the helper data rebuild the key.
-//!   On a part with secure boot, flash encryption, the serial download mode
-//!   disabled and JTAG disabled, only firmware the operator signed ever runs
-//!   there, so the pattern is the silicon's own secret: `Device`. Missing any
-//!   one of the four, anyone with a USB cable can flash a reader: `Soft`.
+//!   The only thing between that pattern and the person holding the part is
+//!   the lockdown, and a lockdown is a set of fuses, not a property of the
+//!   silicon: published, unfixed physical attacks bypass secure boot and flash
+//!   encryption on the classic ESP32 (CVE-2023-35818, Espressif advisory
+//!   AR2023-005; AES-engine CPA, AR2022-003), and [`Lockdown::complete`] cannot
+//!   know of them. A fingerprint key therefore never earns more than `Soft`,
+//!   with every fuse burned or none. The lockdown is still recorded and shown,
+//!   because a part with it open is weaker than one with it closed.
 //! - [`LeafKeyCustody::FuseKey`]: a key held in a read-protected eFuse block,
 //!   or in the chip's key manager or ECDSA peripheral, that firmware can use
 //!   but not read. Nothing on the part can surrender it: `Device`.
@@ -47,10 +51,12 @@
 //! holds the site's keys: a leaf holds no custody, and admitting a `soft`
 //! leaf to a cell changes nothing about [`crate::custody`].
 //!
-//! No class sits between `Soft` and `Device` for a fingerprint on an open
-//! part. Its binding to the silicon is real, but it protects nothing against
-//! the person holding the board, and that person is the one the class has to
-//! answer for.
+//! No class sits between `Soft` and `Device` for a fingerprint. Its binding to
+//! the silicon is real, but it protects nothing against the person holding the
+//! board, and that person is the one the class has to answer for. A part that
+//! needs `Device` holds its key in a read-protected eFuse block or a key
+//! peripheral ([`LeafKeyCustody::FuseKey`]), whose secrecy does not depend on
+//! secure boot holding.
 
 use crate::rot::AssuranceClass;
 use serde::{Deserialize, Serialize};
@@ -129,7 +135,7 @@ impl LeafKeyCustody {
     pub fn class(&self) -> AssuranceClass {
         match self {
             LeafKeyCustody::Stored | LeafKeyCustody::ReadableIdentifiers => AssuranceClass::Soft,
-            LeafKeyCustody::SramFingerprint { lockdown } if lockdown.complete() => AssuranceClass::Device,
+            // Whatever the lockdown says: it cannot see silicon-level bypasses.
             LeafKeyCustody::SramFingerprint { .. } => AssuranceClass::Soft,
             LeafKeyCustody::FuseKey { .. } => AssuranceClass::Device,
         }
@@ -143,7 +149,9 @@ impl LeafKeyCustody {
                 "the key is derived from identifiers anything on the part can read, so it can be copied".into()
             }
             LeafKeyCustody::SramFingerprint { lockdown } if lockdown.complete() => {
-                "the key is rebuilt from the SRAM start-up pattern on a part that runs only signed firmware".into()
+                "the key is rebuilt from the SRAM start-up pattern; the fuses are burned, but published attacks \
+                 bypass secure boot on parts that use this scheme, so anyone holding the part can still read it"
+                    .into()
             }
             LeafKeyCustody::SramFingerprint { lockdown } => format!(
                 "the key is rebuilt from the SRAM start-up pattern, but {}, so anyone holding the part can read it",
@@ -196,8 +204,28 @@ mod tests {
         assert_eq!(LeafKeyCustody::Stored.class(), AssuranceClass::Soft);
         assert_eq!(LeafKeyCustody::ReadableIdentifiers.class(), AssuranceClass::Soft);
         assert_eq!(LeafKeyCustody::SramFingerprint { lockdown: OPEN }.class(), AssuranceClass::Soft);
-        assert_eq!(LeafKeyCustody::SramFingerprint { lockdown: LOCKED }.class(), AssuranceClass::Device);
+        assert_eq!(LeafKeyCustody::SramFingerprint { lockdown: LOCKED }.class(), AssuranceClass::Soft);
         assert_eq!(LeafKeyCustody::FuseKey { lockdown: OPEN }.class(), AssuranceClass::Device);
+        assert_eq!(LeafKeyCustody::FuseKey { lockdown: LOCKED }.class(), AssuranceClass::Device);
+    }
+
+    #[test]
+    fn a_locked_down_fingerprint_part_is_soft_because_secure_boot_can_be_bypassed() {
+        // The classic ESP32 with every fuse burned: its secure boot and flash
+        // encryption are bypassed by published, unfixed attacks, so the SRAM
+        // pattern is readable by whoever holds the part. Device would overstate it.
+        let e = LeafKeyCustody::SramFingerprint { lockdown: LOCKED };
+        assert!(LOCKED.complete());
+        assert_eq!(e.class(), AssuranceClass::Soft);
+        assert!(e.class() < AssuranceClass::Device);
+        assert!(e.reason().contains("bypass") && e.reason().contains("anyone holding the part"), "{}", e.reason());
+        // The same record read from a roster or an attachment says the same.
+        let json = serde_json::to_string(&e).unwrap();
+        let back: LeafKeyCustody = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.class(), AssuranceClass::Soft);
+        // A cell with the default floor refuses it.
+        assert!(admits_leaf(None, e.class()).is_err());
+        // Only a key the silicon will not surrender reaches Device.
         assert_eq!(LeafKeyCustody::FuseKey { lockdown: LOCKED }.class(), AssuranceClass::Device);
     }
 

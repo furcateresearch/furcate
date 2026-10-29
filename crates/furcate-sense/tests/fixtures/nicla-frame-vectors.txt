@@ -1,0 +1,34 @@
+# Frame vectors for the sensing module, shared byte for byte by furcate-enterprise (crates/open/furcate-sense/tests/fixtures) and furcate-leaf-firmware (test/host).
+# Frames are the constructed wire layouts (id, size = payload length + 1, payload, zero padded): 12 bytes short, 20 bytes long.
+# They were not recorded from a board. `ranges` sets full scales (a missing one means unset); `->` lists channel=value in order,
+# `refused` means no value may be produced, `withheld` means a valid frame that must not be published.
+# Values compare with a relative tolerance of 1e-4.
+ranges accel=8 gyro=2000 mag=1300
+frame 04 07 00 00 00 00 00 10 00 00 00 00 -> acc.x=0 acc.y=0 acc.z=9.80665
+frame 06 07 00 00 00 00 00 10 00 00 00 00 -> acc.x=0 acc.y=0 acc.z=9.80665
+frame 04 07 af 16 56 06 97 3d 00 00 00 00 -> acc.x=13.903129 acc.y=3.88339509 acc.z=37.7493776
+frame 0d 07 66 06 00 00 9a f9 00 00 00 00 -> gyr.x=1.74490315 gyr.y=0 gyr.z=-1.74490315
+frame 0f 07 66 06 00 00 9a f9 00 00 00 00 -> gyr.x=1.74490315 gyr.y=0 gyr.z=-1.74490315
+frame 16 07 e8 03 00 00 18 fc 00 00 00 00 -> mag.x=39.6728516 mag.y=0 mag.z=-39.6728516
+frame 18 07 e8 03 00 00 18 fc 00 00 00 00 -> mag.x=39.6728516 mag.y=0 mag.z=-39.6728516
+frame 22 0b 00 00 00 00 00 00 00 40 00 40 -> rot.x=0 rot.y=0 rot.z=0 rot.w=1
+frame 23 0b 00 00 00 00 00 00 00 40 00 40 -> rot.x=0 rot.y=0 rot.z=0 rot.w=1
+frame 22 0b 00 20 00 20 00 20 00 20 00 00 -> rot.x=0.5 rot.y=0.5 rot.z=0.5 rot.w=0.5
+frame 80 03 0d 0b 00 00 00 00 00 00 00 00 -> tmp=28.29
+frame 84 03 0d 0b 00 00 00 00 00 00 00 00 -> tmp=28.29
+frame 80 03 da fd 00 00 00 00 00 00 00 00 -> tmp=-5.5
+frame 81 04 a0 fa 01 00 00 00 00 00 00 00 -> prs=101325
+frame 85 04 a0 fa 01 00 00 00 00 00 00 00 -> prs=101325
+frame 82 02 2f 00 00 00 00 00 00 00 00 00 -> hum=47
+frame 86 02 2f 00 00 00 00 00 00 00 00 00 -> hum=47
+frame 83 05 b5 03 00 00 00 00 00 00 00 00 -> gas=949
+frame 87 05 b5 03 00 00 00 00 00 00 00 00 -> gas=949
+frame 34 05 d2 04 00 00 00 00 00 00 00 00 -> steps=1234
+frame 35 05 d2 04 00 00 00 00 00 00 00 00 -> steps=1234
+frame 3f 03 00 02 00 00 00 00 00 00 00 00 -> act=9
+frame 3f 03 01 00 00 00 00 00 00 00 00 00 -> act=0
+frame 73 13 55 00 5a 00 7b 00 8a 02 00 03 00 19 20 4e 00 20 4b 47 -> iaq=90 co2eq=650 bvoceq=1.23
+frame 73 13 55 00 5a 00 7b 00 8a 02 00 00 00 19 20 4e 00 20 4b 47 -> withheld
+ranges accel=8 gyro=2000
+frame 16 07 e8 03 00 00 18 fc 00 00 00 00 -> refused
+frame 04 07 00 00 00 00 00 10 00 00 00 00 -> acc.x=0 acc.y=0 acc.z=9.80665

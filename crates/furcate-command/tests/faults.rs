@@ -1,6 +1,7 @@
 //! Fault injection: a seeded generator mutates valid commands in every way the task names, and the gate must accept
 //! none of them. The same cases go to a baseline that checks only the signature and the expiry, to show what that
-//! would let through. Case count: 1,000,000 by default (FAULT_CASES overrides for a quick local run).
+//! would let through. Case count: 20,000 in a debug-profile run (the default for `cargo test`) and 1,000,000 in a
+//! release run. FAULT_CASES overrides either, for example `FAULT_CASES=1000000 cargo test` for the full run in debug.
 
 mod common;
 use common::*;
@@ -518,8 +519,9 @@ fn run_range(lo: u64, hi: u64, base: &Value, base_bytes: &[u8], ptrs: &[String])
 }
 
 #[test]
-fn a_million_mutated_commands_get_no_false_accept() {
-    let n: u64 = std::env::var("FAULT_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(1_000_000);
+fn mutated_commands_get_no_false_accept() {
+    let default_cases: u64 = if cfg!(debug_assertions) { 20_000 } else { 1_000_000 };
+    let n: u64 = std::env::var("FAULT_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
     let base = parse(&valid(1));
     let base_bytes = valid(1);
     let ptrs = pointers(&base);

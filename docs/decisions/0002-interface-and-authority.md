@@ -10,7 +10,7 @@ Date: 2026-10-11. Status: approved by the owner.
 4. **`isolate` is a node isolating itself.** It drops the node's own reach. It never removes a peer from the overlay, consistent with the overlay invariant that refuses that.
 5. **A minimal multi-node site view is open**, so a home lab with several machines runs on the open edition.
 
-Design: [research/interface-and-control.md](../research/interface-and-control.md).
+Design: the private research note `interface-and-control`.
 
 ## Passkey rules shared with the wallet methodology (2026-10-11)
 

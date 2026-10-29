@@ -3,10 +3,9 @@
 //!
 //! A record binds the artefact hashes to their digital lineage and to the head
 //! of a hash-chained experience ledger. It is signed by a Living Worlds signer
-//! the node has enrolled. The contract, the codes and the golden vector are in
-//! `docs/birth-record.md`; the producer is a separate implementation, and
-//! `tests/fixtures/birth-record.golden.json` is the byte-identical vector both
-//! sides verify.
+//! the node has enrolled. The contract is held by the producer; the codes are
+//! in this module, and `tests/fixtures/birth-record.golden.json` is the
+//! byte-identical vector both sides verify.
 //!
 //! Simulated time counts for physical purposes only inside the band the twin was
 //! validated against real measurements. The record keeps validated and

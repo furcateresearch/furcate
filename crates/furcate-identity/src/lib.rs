@@ -33,10 +33,12 @@ pub mod signer;
 pub mod rot;
 pub mod leaf;
 pub mod unit_roster;
+pub mod suite;
 
 pub use custody::{Custody, CustodyGrant, CustodyMode, CustodyRecord, CustodySettings};
 pub use enroll::Enrollment;
 pub use leaf::{admits_leaf, LeafKeyCustody, Lockdown};
+pub use suite::{signing_digest, signing_frame, KeySuite, SuiteKey};
 pub use unit_roster::{EnrolledUnit, UnitRoster, Verdict};
 pub use node_id::NodeId;
 pub use pin::EnrolledIdentity;

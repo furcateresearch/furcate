@@ -2447,26 +2447,36 @@ fn roster_admit(
     hours: &str,
 ) -> Result<()> {
     let hours: u64 = hours.parse().context("hours must be a number")?;
-    if hex::decode(pubkey).map(|b| b.len()) != Ok(32) {
-        bail!("a public key is 32 bytes of hex; read it from the node's /identity");
-    }
+    let body = roster_admit_body(node, pubkey, hours).map_err(|e| anyhow::anyhow!("{e}"))?;
+    report(signed_post(key_path, site, "/roster/admit", &body)?, &format!("admitted {node}"))
+}
+
+/// The `/roster/admit` request for a key written as `ed25519:<64 hex>`,
+/// `p256:<hex SEC1 point>`, or the bare 64-hex Ed25519 form from before keys
+/// carried their suite. A key with a suite is sent with its `suite` member, and
+/// the controller refuses one that does not agree with it.
+fn roster_admit_body(node: &str, pubkey: &str, hours: u64) -> Result<serde_json::Value, String> {
+    let key = furcate_identity::SuiteKey::parse_stored(pubkey)
+        .map_err(|e| format!("{e}; read the key from the node's /identity"))?;
     // The controller reads `ttl_s`, a duration, and ignores anything else:
     //
     //     let ttl = req.body.get("ttl_s").and_then(|v| v.as_u64()).unwrap_or(3600);
     //
-    // This sent `valid_until`, an absolute timestamp, under a name the
-    // controller never looks up — so the `hours` argument was silently
+    // This once sent `valid_until`, an absolute timestamp, under a name the
+    // controller never looks up, so the `hours` argument was silently
     // discarded and every admission lasted exactly one hour. A roster that
     // lapses an hour after it is set looks like neglect and is a field-name
     // mismatch. `policy grant` next door already sends `ttl_s` correctly.
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "node_id": node,
         "public_key": pubkey,
         "ttl_s": hours * 3600,
     });
-    report(signed_post(key_path, site, "/roster/admit", &body)?, &format!("admitted {node}"))
+    if pubkey.contains(':') {
+        body["suite"] = key.suite().to_string().into();
+    }
+    Ok(body)
 }
-
 
 /// Where the fleet controller answers.
 ///
@@ -3779,6 +3789,35 @@ mod sealed_key_tests {
         let err = seal_operator_dir(&sealer, fresh_key_hex().as_bytes(), &custody(), &dir).unwrap_err();
         assert!(format!("{err:#}").contains("plaintext left in place"), "{err:#}");
         assert!(!dir.exists(), "a half-sealed directory was left behind");
+    }
+}
+
+#[cfg(test)]
+mod roster_admit_body_tests {
+    use super::roster_admit_body;
+
+    const ED: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+    const P: &str = "p256:036b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296";
+
+    #[test]
+    fn a_key_with_a_suite_is_sent_with_the_suite_the_key_names() {
+        let b = roster_admit_body("furcate:node:a", P, 2).unwrap();
+        assert_eq!((b["suite"].as_str(), b["public_key"].as_str(), b["ttl_s"].as_u64()), (Some("p256"), Some(P), Some(7200)));
+        let typed = format!("ed25519:{ED}");
+        assert_eq!(roster_admit_body("n", &typed, 1).unwrap()["suite"], "ed25519");
+    }
+
+    #[test]
+    fn the_bare_form_from_before_suites_is_still_an_ed25519_key_sent_without_one() {
+        let b = roster_admit_body("n", ED, 1).unwrap();
+        assert!(b.get("suite").is_none());
+    }
+
+    #[test]
+    fn anything_else_is_refused_before_a_request_is_made() {
+        for bad in ["", "aa", "p256:02aa", "rsa:00", &format!("{ED}00")] {
+            assert!(roster_admit_body("n", bad, 1).is_err(), "{bad}");
+        }
     }
 }
 

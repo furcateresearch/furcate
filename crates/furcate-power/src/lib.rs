@@ -9,7 +9,8 @@
 //! graph** is the harder half — shutdown is choreography, startup is
 //! dependency resolution, and it is where this site has actually been burned.
 //! The **kill switch** is the operator's authority over their own hardware,
-//! and is deliberately the one thing no remote party can invoke.
+//! and is deliberately the one thing no remote party can invoke. For a
+//! machine it is an advisory stop request, never an emergency stop.
 //!
 //! Measurement comes first, and it differs by machine: [`rapl`] reads the
 //! x86 package counters, [`rails`] the INA3221/INA238 rail monitors on Jetson

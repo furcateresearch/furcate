@@ -5,6 +5,7 @@
 //! Nothing is revoked — entries lapse, which means a compromised node stops
 //! being accepted without anyone having to reach it.
 
+use furcate_identity::SuiteKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -13,12 +14,39 @@ use std::fmt;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Entry {
     pub node_id: String,
-    /// Public half of the key the node signs with, hex.
+    /// Public half of the key the node signs with, written with its suite:
+    /// `ed25519:<hex>` or `p256:<hex>`. An entry stored before keys carried
+    /// their suite holds a bare 64-hex string, which is an Ed25519 key.
     pub public_key: String,
     /// When this admission lapses. Short-lived by design.
     pub valid_until: u64,
     /// Whether the appraisal behind it covered the OS as well as the platform.
     pub os_measured: bool,
+}
+
+impl Entry {
+    /// The enrolled key with its suite. The suite is read from the key and from
+    /// nothing else.
+    pub fn key(&self) -> Result<SuiteKey, String> {
+        SuiteKey::parse_stored(&self.public_key)
+    }
+}
+
+/// The key an admission request names.
+///
+/// A key written with its suite (`ed25519:<hex>`, `p256:<hex>`) must come with
+/// a `suite` member that says the same; the key decides, and a missing or
+/// different member is refused. A bare 64-hex key is the form that existed
+/// before suites, is an Ed25519 key, and may omit the member (if it gives one
+/// it must be `ed25519`). Nothing else is read.
+pub fn admission_key(public_key: &str, declared_suite: Option<&str>) -> Result<SuiteKey, String> {
+    let key = SuiteKey::parse_stored(public_key)?;
+    let bare = !public_key.contains(':');
+    if bare && declared_suite.is_none() {
+        return Ok(key);
+    }
+    key.check_declared(declared_suite)?;
+    Ok(key)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -49,6 +77,7 @@ pub struct Roster {
     pub(crate) entries: BTreeMap<String, Entry>,
     /// Nonces accepted, with the time they expire, so the set can be swept.
     seen: BTreeMap<String, u64>,
+    dropped: Vec<String>,
 }
 
 impl Roster {
@@ -60,6 +89,18 @@ impl Roster {
     pub fn admit(&mut self, entry: Entry) -> &mut Self {
         self.entries.insert(entry.node_id.clone(), entry);
         self
+    }
+
+    /// Admit a node under a checked key. The key is stored in its one spelling.
+    pub fn admit_key(&mut self, node_id: &str, key: &SuiteKey, valid_until: u64, os_measured: bool) -> &mut Self {
+        self.admit(Entry { node_id: node_id.to_string(), public_key: key.id(), valid_until, os_measured })
+    }
+
+    /// Entries read from a file whose key could not be read, by node id. They
+    /// are not admitted: an entry whose key cannot be parsed could never have
+    /// authenticated anything.
+    pub fn dropped(&self) -> &[String] {
+        &self.dropped
     }
 
     /// Withdraw an admission now, rather than waiting for it to lapse.
@@ -171,6 +212,10 @@ pub fn load(path: &std::path::Path, now: u64) -> std::io::Result<Roster> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let mut r = Roster::new();
     for e in entries.into_iter().filter(|e| e.valid_until > now) {
+        if e.key().is_err() {
+            r.dropped.push(e.node_id);
+            continue;
+        }
         r.admit(e);
     }
     Ok(r)
@@ -265,5 +310,72 @@ mod tests {
     fn platform_only_nodes_are_surfaced_rather_than_hidden() {
         let r = roster_with(1, "furcate:node:a", 1000);
         assert!(r.platform_only(100).contains("furcate:node:a"));
+    }
+
+    const ED: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+    const P: &str = "p256:031e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896e";
+    const P_UNCOMPRESSED: &str = "p256:041e18532fd4754c02f3041d9c75ceb33b83ffd81ac7ce4fe882ccb1c98bc5896ea46c311c4e2ff40dd96a3653e6e45445d32dfe486eced75c7a90c6a18881c0a3";
+
+    #[test]
+    fn a_key_with_a_suite_needs_the_suite_member_and_the_key_decides() {
+        let ed = format!("ed25519:{ED}");
+        assert_eq!(admission_key(&ed, Some("ed25519")).unwrap().id(), ed);
+        assert_eq!(admission_key(P, Some("p256")).unwrap().id(), P);
+        // The uncompressed spelling is the same key, stored in the one spelling.
+        assert_eq!(admission_key(P_UNCOMPRESSED, Some("p256")).unwrap().id(), P);
+        // Missing member.
+        assert!(admission_key(&ed, None).unwrap_err().contains("no `suite`"));
+        assert!(admission_key(P, None).unwrap_err().contains("no `suite`"));
+        // The member can only agree with the key: it never overrides it.
+        assert!(admission_key(&ed, Some("p256")).unwrap_err().contains("enrolled key is ed25519"));
+        assert!(admission_key(P, Some("ed25519")).unwrap_err().contains("enrolled key is p256"));
+        assert!(admission_key(P, Some("ES256")).is_err());
+    }
+
+    #[test]
+    fn the_bare_key_from_before_suites_is_ed25519_and_nothing_else_is_bare() {
+        assert_eq!(admission_key(ED, None).unwrap().id(), format!("ed25519:{ED}"));
+        assert!(admission_key(ED, Some("ed25519")).is_ok());
+        assert!(admission_key(ED, Some("p256")).is_err());
+        for bad in ["", "00", &format!("{ED}00"), "p256:02aa", "p256:zz", "rsa:00", "ed25519:00"] {
+            assert!(admission_key(bad, Some("ed25519")).is_err(), "{bad}");
+            assert!(admission_key(bad, None).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn an_admitted_key_is_stored_in_one_spelling_and_survives_a_restart_with_its_suite() {
+        let d = std::env::temp_dir().join(format!("furcate-roster-suite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let p = d.join("roster.json");
+        let mut r = Roster::new();
+        r.admit_key("furcate:node:p", &admission_key(P_UNCOMPRESSED, Some("p256")).unwrap(), 10_000, false);
+        r.admit_key("furcate:node:e", &admission_key(ED, None).unwrap(), 10_000, false);
+        save(&r, &p).unwrap();
+        let back = load(&p, 100).unwrap();
+        let by = |n: &str| back.current(100).into_iter().find(|e| e.node_id == n).unwrap().key().unwrap();
+        assert_eq!(by("furcate:node:p").suite(), furcate_identity::KeySuite::P256);
+        assert_eq!(by("furcate:node:p").id(), P);
+        assert_eq!(by("furcate:node:e").suite(), furcate_identity::KeySuite::Ed25519);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_roster_file_from_before_suites_still_loads_and_an_unreadable_key_is_dropped_by_name() {
+        let d = std::env::temp_dir().join(format!("furcate-roster-legacy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("roster.json");
+        let file = serde_json::json!([
+            {"node_id": "furcate:node:old", "public_key": ED, "valid_until": 10_000, "os_measured": false},
+            {"node_id": "furcate:node:junk", "public_key": "p256:02aa", "valid_until": 10_000, "os_measured": false},
+        ]);
+        std::fs::write(&p, file.to_string()).unwrap();
+        let back = load(&p, 100).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back.dropped(), ["furcate:node:junk".to_string()]);
+        let old = back.current(100)[0].key().unwrap();
+        assert_eq!(old.suite(), furcate_identity::KeySuite::Ed25519);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
