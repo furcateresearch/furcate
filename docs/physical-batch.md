@@ -47,7 +47,7 @@ sensing node (joint states, currents) plus an actuator set on the same rungs.
   [ Living Worlds core ]  verifies signature, log, level;    |
         |  stores; feeds the twin loop and calibration       |
         v                                                    |
-  [ Lisgen ]  simulate, train, plan; validate in the band ---+
+  [ interface layer ]  simulate, train, plan; validate in the band ---+
         |
         +--> residual from the measured response goes back up the same path (stage 7)
              and a signed model or calibration update goes down the cascade, refused unsigned.
