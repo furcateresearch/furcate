@@ -372,6 +372,9 @@ pub enum Transport {
     SocketCan,
     /// Modbus registers read by function codes 1 to 4 only.
     Modbus,
+    /// Records an application running on a GPU sensor-processing runtime hands to a local
+    /// socket the reader owns; the reader never answers.
+    Holoscan,
 }
 
 /// A model that produced a value, for the tier that has to trust it.

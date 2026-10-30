@@ -14,7 +14,7 @@ Status words used below. Verified on hardware: run on the real part and recorded
 | ESP32-S3 (Seeed Studio XIAO ESP32S3: dual-core Xtensa LX7, 8 MB flash, 8 MB octal PSRAM, Wi-Fi, BLE 5) | Micro processing node | `soft` (key derived from the unique ID and MAC, which any code on the part can read) | `device` (eFuse HMAC key) | Verified on hardware: identity from silicon values, signed readings, Wi-Fi, BLE central for the Nicla. Built: the eFuse HMAC path; no eFuse has been burned. |
 | ESP32, classic (ESP32-D0WD-V3 rev 3.1) | Rehearsal board | `soft`; also `soft` with every lockdown fuse burned, because a fingerprint key is never graded above `soft` (`LeafKeyCustody::class`) | not a production part | Verified on hardware. Published, unfixed attacks on secure boot and flash encryption on this revision make it a development board only. |
 | Raspberry Pi 5 and Compute Module 5 (BCM2712) | Small processing node | `device` (device-unique ECDSA P-256 key in OTP, used through the firmware) | `tpm` with a discrete TPM 2.0 on SPI | Verified on hardware: the leaf head signs with the OTP key through the signing broker (2026-10-14). The discrete-TPM path is built, not run on a Pi. |
-| NVIDIA Jetson Orin (AGX Orin, Orin NX, Orin Nano) and AGX Thor | Medium processing node | `tee`; `tpm` only when secure boot is fused (lock and key hash burned), the firmware TPM is provisioned, its endorsement certificate chains to a CA the operator named and is for this TPM's key, and a fresh signed quote agrees with the replayed boot log and a PCR 0 the operator pinned | `tpm` | Built from NVIDIA documentation and checked against fixtures only. Not run on a real device; the owner owns none. See `docs/leaf-devices/jetson.md`. |
+| NVIDIA Jetson Orin (AGX Orin, Orin NX, Orin Nano) and AGX Thor | Medium processing node | `tee`; `tpm` only when secure boot is fused (lock and key hash burned), the firmware TPM is provisioned, its endorsement certificate chains to a CA the operator named and is for this TPM's key, and a fresh signed quote agrees with the replayed boot log and a PCR 0 the operator pinned | `tpm` | Built from NVIDIA documentation and fixture-tested, not run on a real device. Event log, quote and EK certificate checks are also tested against a software TPM (swtpm) with real artifacts; nothing has met a Jetson firmware TPM. One command for the first device: `docs/runbooks/jetson-first-device-run.md`. See `docs/leaf-devices/jetson.md`. |
 
 ### Nicla Sense ME sensors
 
@@ -37,6 +37,12 @@ Secure Boot v2 (RSA-3072, up to three key digests with revocation), flash encryp
 |---|---|---|---|
 | ESP32-C5 (revision 1.2 or later) | Sensing and micro processing node, production | Key Manager with a PUF-derived hardware key, ECDSA peripheral, ESP-TEE | Decided; backend not built. Espressif advisory AR2026-006 (2026-07-28) affects the ECDSA secure-boot check on this chip, so the lock-down plan uses RSA secure boot. |
 | ESP32-P4 (revision 3.0 or later) with a C5 or C6 radio | Vision node | Key Manager, ECDSA, AI vector instructions, PSRAM | Decided; backend not built. Also listed in AR2026-006. |
+
+### Holoscan and its sensor bridge
+
+| Part | Position | Class it earns now | Highest class reachable | Status |
+|---|---|---|---|---|
+| NVIDIA Holoscan SDK 5.0.0 and Holoscan Sensor Bridge 2.7 (FPGA sensor-to-Ethernet boards from Lattice and Microchip, with Leopard Imaging and Tauro Technologies camera adapters) | Source of readings beside a medium or large processing node (Jetson AGX Thor, AGX Orin, IGX Thor, DGX Spark) | `soft` for a reading that comes through a bridge: the bridge is identified by serial number and MAC address and NVIDIA's documentation describes no signing or attestation | `soft` | Built: a reader for records an application's operator writes to a local socket, and the container placement rules, tested against synthetic traces and fixtures, and the Python record sink was run against the reader over a Unix socket. Holoscan and the Holoscan Sensor Bridge have not been run on a device here (TBC). Facts read from NVIDIA's Holoscan SDK 5.0 and Holoscan Sensor Bridge 2.7 documentation (docs.nvidia.com/holoscan) on 2026-10-29. |
 
 ## Researched, not built
 

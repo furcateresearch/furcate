@@ -4,20 +4,33 @@
 //! "Secure Boot", "Fuse Configuration" and "Fuse Operations"
 //! (docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/Security/).
 //!
-//! * `SecurityMode` (1 bit, also called `odm_production_mode`) is the lock:
-//!   once 1, further fuse writes are blocked.
-//! * `PublicKeyHash` (64 bytes) is the hash the BootROM checks the boot chain
-//!   against. On Orin it is the SHA-512 of the PKC public key; on Thor it is a
-//!   hash over the hashes of 16 keys.
-//! * `BootSecurityInfo` (4 bytes) selects the scheme. On Orin bits [2:0] are
-//!   the authentication scheme (`001` is RSA-3K). On Thor the scheme is chosen
-//!   at signing time, bit 13 enables the firmware TPM.
+//! * `SecurityMode` (a 4-byte fuse of which one bit is used, also called
+//!   `odm_production_mode`) is the lock: once 1, further fuse writes are
+//!   blocked (Secure Boot overview; Fuse Configuration).
+//! * `PublicKeyHash` is 64 bytes in the fuse configuration of both chips. On
+//!   Orin it is the hash of the PKC public key; on Thor it is a digest of the 16
+//!   key hashes (Secure Boot overview, Fuse Configuration).
+//! * `BootSecurityInfo` is 4 bytes. The overview page gives the bit meanings:
+//!   Orin bits [2:0] the authentication scheme, [3] secure boot encryption, [9]
+//!   OEM key valid; Thor [3] secure boot encryption, [5] revocation policy, [9]
+//!   OEM key valid, [13] firmware TPM enable. The authentication scheme values
+//!   are documented only through examples: the Fuse Configuration page gives
+//!   Orin 0x1 RSA-3K, 0x2 ECDSA P-256, 0x5 XMSS, 0x20b ECDSA P-521 with SBK and
+//!   OemK1 (low bits 0b011); the Orin Quick Start gives 0x2be1
+//!   ("Bits[2:0]=001:RSA3K") and 0x2be9 (the same with bit 3, SBK encryption),
+//!   and says newer Orin releases burn bits [8:5] in advance. On Thor the scheme
+//!   is not in this fuse; it is chosen at signing time, and the Thor Quick Start
+//!   gives 0x2220 and 0x2228 (bit 13 fTPM, bit 9 OEM key valid, bit 5
+//!   revocation, bit 3 SBK encryption).
+//! * `OdmId` is 8 bytes. `OdmInfo` is 4 bytes of which only the last two are
+//!   programmable. `OptInEnable` is a 4-byte, 1-bit fuse.
 //!
 //! Secure boot is therefore enforced only when the lock is set **and** a key
 //! hash is present. `SecurityMode` alone, or a key hash alone, is not it.
 //!
 //! The documented way to read these on a running device is
-//! `nv_fuse_read.sh <name>` (root). Its output format is not documented, so the
+//! `nv_fuse_read.sh <name>` as root, with `-l` to list the supported fuses and
+//! `boot_security_info` as the example name (Fuse Operations). Its output format is not documented, so the
 //! parser accepts one value per call, bare or as `name: value` / `name = value`,
 //! and anything else reads as "not read". The sysfs nodes some JetPack 5
 //! releases exposed (`efuse-burn`, `tegra-fuse`) are tried first; whether
@@ -28,6 +41,9 @@
 use crate::board::{SecureBoot, TegraSoc};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// `PublicKeyHash` is 64 bytes (`size="64"` in every Fuse Configuration example).
+pub const PUBLIC_KEY_HASH_HEX_DIGITS: usize = 128;
 
 /// The only fuses this module reads. None of them is secret.
 pub const READABLE: &[&str] = &[
@@ -114,8 +130,14 @@ impl Fuses {
         f
     }
 
+    /// Whether a key hash is burned. `None` when it was not read, or was read in
+    /// a width other than the documented 64 bytes (128 hex digits): a value of
+    /// another width is not shown to be the fuse, so it is not judged.
     fn key_hash_present(&self) -> Option<bool> {
-        self.public_key_hash.as_ref().map(|h| h.bytes().any(|b| b != b'0'))
+        self.public_key_hash
+            .as_ref()
+            .filter(|h| h.len() == PUBLIC_KEY_HASH_HEX_DIGITS)
+            .map(|h| h.bytes().any(|b| b != b'0'))
     }
 
     /// Whether the firmware TPM is enabled by fuse, where the fuses say so.
@@ -179,6 +201,19 @@ impl Source {
     }
 }
 
+/// The Orin authentication scheme a `BootSecurityInfo` value names, for the
+/// values the examples show: 0x1 and 0x2be1 RSA-3K, 0x2 ECDSA P-256, 0x5 XMSS,
+/// 0x20b ECDSA P-521 (bits [2:0] = 0b011). Nothing else is named.
+pub fn orin_scheme(boot_security_info: u64) -> Option<&'static str> {
+    match boot_security_info & 0b111 {
+        0b001 => Some("RSA-3K"),
+        0b010 => Some("ECDSA P-256"),
+        0b011 => Some("ECDSA P-521"),
+        0b101 => Some("XMSS"),
+        _ => None,
+    }
+}
+
 /// Is secure boot fused? Anything not established reads as not enforced.
 pub fn secure_boot(soc: TegraSoc, f: &Fuses) -> SecureBoot {
     let (Some(mode), Some(hash)) = (f.security_mode, f.key_hash_present()) else {
@@ -186,8 +221,10 @@ pub fn secure_boot(soc: TegraSoc, f: &Fuses) -> SecureBoot {
         if f.security_mode.is_none() {
             missing.push("SecurityMode");
         }
-        if f.public_key_hash.is_none() {
-            missing.push("PublicKeyHash");
+        match &f.public_key_hash {
+            None => missing.push("PublicKeyHash"),
+            Some(h) if h.len() != PUBLIC_KEY_HASH_HEX_DIGITS => missing.push("PublicKeyHash (read as a different width than 64 bytes)"),
+            Some(_) => {}
         }
         return SecureBoot::Unknown { why: format!("fuse(s) not readable here: {}", missing.join(", ")) };
     };
@@ -202,14 +239,19 @@ pub fn secure_boot(soc: TegraSoc, f: &Fuses) -> SecureBoot {
         (1, true) => match soc {
             TegraSoc::Orin => match f.boot_security_info {
                 None => SecureBoot::Unknown { why: "BootSecurityInfo not readable, authentication scheme unknown".into() },
-                Some(b) if b & 0b111 == 0b001 => SecureBoot::Enforced {
-                    detail: format!("SecurityMode 1, PublicKeyHash burned, BootSecurityInfo {b:#x} (RSA-3K)"),
-                },
-                Some(b) => SecureBoot::Configured {
-                    detail: format!(
-                        "BootSecurityInfo {b:#x}: authentication scheme bits {:03b} are not the documented RSA-3K value",
-                        b & 0b111
-                    ),
+                Some(b) => match orin_scheme(b) {
+                    Some(name) => SecureBoot::Enforced {
+                        detail: format!("SecurityMode 1, PublicKeyHash burned, BootSecurityInfo {b:#x} ({name})"),
+                    },
+                    None if b & 0b111 == 0 => SecureBoot::Configured {
+                        detail: format!("BootSecurityInfo {b:#x}: authentication scheme bits are 000, no scheme is selected"),
+                    },
+                    None => SecureBoot::Unknown {
+                        why: format!(
+                            "BootSecurityInfo {b:#x}: scheme bits {:03b} are not among the values the Fuse Configuration examples show (001, 010, 011, 101)",
+                            b & 0b111
+                        ),
+                    },
                 },
             },
             TegraSoc::Thor => SecureBoot::Enforced {
@@ -244,23 +286,48 @@ mod tests {
 
     #[test]
     fn orin_fused_with_rsa3k_is_enforced() {
-        // 0x2be1 is NVIDIA's sample "sign only" value.
-        let f = fuses("0x1", KEY, Some("0x2be1"));
-        assert!(matches!(secure_boot(TegraSoc::Orin, &f), SecureBoot::Enforced { .. }));
+        // 0x2be1 is the Orin Quick Start's "Bits[2:0]=001:RSA3K"; 0x1 the Fuse Configuration example.
+        for v in ["0x1", "0x2be1", "0x2be9"] {
+            let f = fuses("0x1", KEY, Some(v));
+            assert!(matches!(secure_boot(TegraSoc::Orin, &f), SecureBoot::Enforced { .. }), "{v}");
+        }
     }
 
     #[test]
     fn wrong_levels_are_not_enforced() {
         let z = zero();
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", &z, Some("0x2be1"))), SecureBoot::Off { .. }));
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", KEY, Some("0x2be1"))), SecureBoot::Configured { .. }));
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", &z, Some("0x2be1"))), SecureBoot::Configured { .. }));
-        // scheme bits not 001
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some("0x2be2"))), SecureBoot::Configured { .. }));
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some("0x2be0"))), SecureBoot::Configured { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", &z, Some("0x1"))), SecureBoot::Off { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("0", KEY, Some("0x1"))), SecureBoot::Configured { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", &z, Some("0x1"))), SecureBoot::Configured { .. }));
+        // scheme bits 000: no scheme selected
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some("0x200"))), SecureBoot::Configured { .. }));
         // no BootSecurityInfo on Orin
         assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, None)), SecureBoot::Unknown { .. }));
-        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("2", KEY, Some("0x2be1"))), SecureBoot::Unknown { .. }));
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("2", KEY, Some("0x1"))), SecureBoot::Unknown { .. }));
+    }
+
+    #[test]
+    fn every_documented_orin_scheme_is_enforced_and_nothing_else_is_named() {
+        // The Fuse Configuration examples: 0x1 RSA-3K, 0x2 ECDSA P-256, 0x5 XMSS, 0x20b ECDSA P-521.
+        for (bsi, name) in [("0x1", "RSA-3K"), ("0x2", "ECDSA P-256"), ("0x5", "XMSS"), ("0x20b", "ECDSA P-521")] {
+            match secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some(bsi))) {
+                SecureBoot::Enforced { detail } => assert!(detail.contains(name), "{bsi}: {detail}"),
+                other => panic!("{bsi}: {other:?}"),
+            }
+        }
+        // 0b100, 0b110, 0b111 are not in any example: not established, not refused as wrong
+        for bsi in ["0x4", "0x6", "0x7"] {
+            assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", KEY, Some(bsi))), SecureBoot::Unknown { .. }), "{bsi}");
+        }
+    }
+
+    #[test]
+    fn a_key_hash_of_the_wrong_width_is_not_taken_for_the_fuse() {
+        let short = &KEY[..64]; // 32 bytes
+        assert!(matches!(secure_boot(TegraSoc::Orin, &fuses("1", short, Some("0x1"))), SecureBoot::Unknown { .. }));
+        let long = format!("{KEY}00");
+        assert!(matches!(secure_boot(TegraSoc::Thor, &fuses("1", &long, Some("0x2228"))), SecureBoot::Unknown { .. }));
+        assert_eq!(KEY.len(), PUBLIC_KEY_HASH_HEX_DIGITS);
     }
 
     #[test]
@@ -298,7 +365,7 @@ mod tests {
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("security_mode"), "0x1\n").unwrap();
         std::fs::write(d.join("public_key"), format!("{KEY}\n")).unwrap();
-        std::fs::write(d.join("boot_security_info"), "0x2be1\n").unwrap();
+        std::fs::write(d.join("boot_security_info"), "0x1\n").unwrap();
         std::fs::write(d.join("secure_boot_key"), "deadbeef").unwrap();
         let f = Source { sysfs: vec![d.clone()], script: None }.read();
         assert!(matches!(secure_boot(TegraSoc::Orin, &f), SecureBoot::Enforced { .. }));
