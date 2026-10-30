@@ -563,3 +563,70 @@ fn mutated_commands_get_no_false_accept() {
     assert_eq!(all.control_accepts, all.controls, "a valid command was refused");
     assert!(all.baseline_accepts > 0, "the baseline should accept some of the mutants");
 }
+
+// ---- the same mutations against an approved actuate-stage gate with an executor -----------------------------------
+
+/// The pristine approved command is the only one that may reach the executor, and only once. Every mutant runs
+/// through `decide_exec` on a gate whose class is at `actuate` with an installed approval covering the actuator.
+fn approved_gate<K: KillState>(kill: K) -> Gate<K> {
+    let mut g = Gate::new(traj_policy(furcate_command::ChunkOverrun::Veto), kill, key(SITE_SEED), Chain::genesis("site-test-01", NOW - 10_000))
+        .with_actuation(act_cfg(furcate_command::Stage::Actuate));
+    g.install_approval(&valve_approval("ap-valve-1"), NOW).unwrap();
+    g
+}
+
+fn run_range_exec(lo: u64, hi: u64, base: &Value, base_bytes: &[u8], ptrs: &[String]) -> (u64, u64, u64, u64) {
+    let (mut cases, mut controls, mut control_execs, mut false_releases) = (0u64, 0u64, 0u64, 0u64);
+    for i in lo..hi {
+        let c = gen(i, base, base_bytes, ptrs);
+        let mut x = Rec::default();
+        let (decision, calls_before) = if c.kill {
+            let mut g = approved_gate(KillAll);
+            (g.decide_exec(&c.input, c.now, &mut x).decision, 0)
+        } else {
+            let mut g: Gate<furcate_command::NoKill> = approved_gate(furcate_command::NoKill);
+            if let Some(p) = &c.prior {
+                g.decide_exec(p, NOW, &mut x);
+            }
+            let before = x.calls.len();
+            (g.decide_exec(&c.input, c.now, &mut x).decision, before)
+        };
+        let calls = x.calls.len() - calls_before;
+        cases += 1;
+        if c.control {
+            controls += 1;
+            if decision == Decision::Executed && calls == 1 {
+                control_execs += 1;
+            }
+        } else if calls != 0 || decision == Decision::Executed {
+            false_releases += 1;
+        }
+    }
+    (cases, controls, control_execs, false_releases)
+}
+
+#[test]
+fn mutated_actuate_commands_never_reach_the_executor() {
+    let default_cases: u64 = if cfg!(debug_assertions) { 20_000 } else { 1_000_000 };
+    let n: u64 = std::env::var("FAULT_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
+    let base_bytes = actuate_setpoint(1);
+    let base = parse(&base_bytes);
+    let ptrs = pointers(&base);
+    let threads = 8u64;
+    let started = std::time::Instant::now();
+    let parts: Vec<(u64, u64, u64, u64)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|k| {
+                let (base, bb, ptrs) = (&base, &base_bytes, &ptrs);
+                s.spawn(move || run_range_exec(n * k / threads, n * (k + 1) / threads, base, bb, ptrs))
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let sum = |f: fn(&(u64, u64, u64, u64)) -> u64| parts.iter().map(f).sum::<u64>();
+    let (cases, controls, control_execs, false_releases) = (sum(|p| p.0), sum(|p| p.1), sum(|p| p.2), sum(|p| p.3));
+    println!("FAULT-INJECTION-EXEC cases={cases} mutants={} controls={controls} control_executions={control_execs} false_releases={false_releases} elapsed={:?}", cases - controls, started.elapsed());
+    assert_eq!(cases, n);
+    assert_eq!(false_releases, 0, "a mutated command reached the executor");
+    assert_eq!(control_execs, controls, "a pristine approved command was not released exactly once");
+}

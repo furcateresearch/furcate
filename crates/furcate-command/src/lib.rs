@@ -1,26 +1,40 @@
 //! The site-side gate for commands that a simulation platform proposes.
 //!
 //! A command is accepted only if every check passes, and every decision, refusals included, yields a signed receipt
-//! that is appended to the site ledger chain. The only mode that exists is shadow: the site records what it would do
-//! and does nothing. A request to actuate is refused with [`ErrorCode::ActuationNotApproved`], and there is no
-//! executor other than [`ShadowExecutor`]. The wire format is in docs/physical-command.md.
+//! that is appended to the site ledger chain. Per system class the site sets a [`Stage`]: `observe` (every command
+//! refused), `shadow` (the default: decided and recorded, nothing written) or `actuate`. A command is released to an
+//! [`Executor`] only through [`Gate::decide_exec`], only for a class at `actuate`, and only with an installed
+//! actuation approval that covers the actuator and command kind; anything missing or doubtful is
+//! [`ErrorCode::ActuationNotApproved`]. [`Gate::decide`] has no executor and never releases. A [`Release`] can be
+//! made only by the gate, so no write can happen without passing it.
+//!
+//! Nothing here is a safety function or an emergency stop. The machine's own safety system remains the safety
+//! function, and a stop request is advisory (docs/decisions/0009). The wire format is in docs/physical-command.md.
 //!
 //! The fault-injection test (tests/faults.rs) runs 20,000 mutated commands in a debug build and 1,000,000 in a release
 //! build; the environment variable `FAULT_CASES` sets the count explicitly. The chunk suite (tests/chunk_faults.rs)
 //! uses the same counts.
 
+pub mod actuation;
 pub mod canon;
 pub mod chunk;
 pub mod command;
+pub mod exec;
 pub mod gate;
 pub mod history;
 pub mod issue;
 pub mod policy;
 pub mod receipt;
+pub mod signer;
+pub mod state;
 pub mod update;
 
 pub use command::{Command, ErrorCode, Mode};
-pub use gate::{Gate, KillState, NoKill};
+pub use actuation::{ActuationConfig, Approval, ApprovalError, ApprovalId, Stage, APPROVAL_DOMAIN};
+pub use exec::{ExecError, Execution, Executor, Plan, Release};
+pub use gate::{Gate, KillState, NoKill, ReleaseHook};
+pub use signer::{SignError, SiteSigner};
+pub use state::{GateState, RestoreError};
 pub use chunk::{verify_stop_request, ChunkOutcome, ChunkVerdict, LimitKind, Violation};
 pub use policy::{ChunkOverrun, RequestedStop, SiteLimit, SitePolicy, TrajectoryLimit};
 pub use receipt::{verify_receipt, Decision, Receipt};
@@ -63,6 +77,3 @@ pub fn verify_ed25519(key_id: &str, domain: &str, msg: &[u8], sig_hex: &str) -> 
 pub(crate) fn is_lower_hex(s: &str) -> bool {
     s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-
-/// The only executor. It records nothing and moves nothing; a command that passed the gate is described, not run.
-pub struct ShadowExecutor;

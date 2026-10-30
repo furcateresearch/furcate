@@ -4,21 +4,21 @@ use crate::chunk::{parse_body, Trajectory};
 use crate::is_lower_hex;
 use serde_json::{Map, Value};
 
+/// What a command asks of the site. `Actuate` is honoured only for an actuator whose system class is at stage
+/// `actuate` and which an installed actuation approval covers; every other case is a refusal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Shadow,
+    Actuate,
 }
 
-/// Returned for any request to actuate. There is no actuator driver; the owner has not approved one.
-#[derive(Debug, PartialEq, Eq)]
-pub struct ActuationNotApproved;
-
 impl Mode {
-    pub fn parse(s: &str) -> Result<Mode, Option<ActuationNotApproved>> {
+    /// The mode named by a command's `mode` member, or `None` for any other text.
+    pub fn parse(s: &str) -> Option<Mode> {
         match s {
-            "shadow" => Ok(Mode::Shadow),
-            "actuate" => Err(Some(ActuationNotApproved)),
-            _ => Err(None),
+            "shadow" => Some(Mode::Shadow),
+            "actuate" => Some(Mode::Actuate),
+            _ => None,
         }
     }
 }
@@ -67,6 +67,8 @@ codes! {
     ChunkVetoed = "chunk_vetoed",
     ChunkTruncated = "chunk_truncated",
     BandReferenceMismatch = "band_reference_mismatch",
+    ObserveOnly = "observe_only",
+    ExecutionFailed = "execution_failed",
 }
 
 #[derive(Clone, Debug)]
@@ -125,16 +127,16 @@ pub struct Command {
 
 pub const MAX_ID: usize = 64;
 
-fn id_ok(s: &str) -> bool {
+pub(crate) fn id_ok(s: &str) -> bool {
     !s.is_empty() && s.len() <= MAX_ID && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"._:-".contains(&b))
 }
-fn name_ok(s: &str) -> bool {
+pub(crate) fn name_ok(s: &str) -> bool {
     !s.is_empty() && s.len() <= 32 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
-fn hex_ok(s: &str, n: usize) -> bool {
+pub(crate) fn hex_ok(s: &str, n: usize) -> bool {
     s.len() == n && is_lower_hex(s)
 }
-fn key_ok(s: &str) -> bool {
+pub(crate) fn key_ok(s: &str) -> bool {
     s.strip_prefix("ed25519:").is_some_and(|h| hex_ok(h, 64))
 }
 

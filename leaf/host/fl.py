@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 import os
 import sys
 from pathlib import Path
@@ -172,6 +173,39 @@ def cmd_info(a):
     ses.call(P.BYE)
 
 
+def cmd_rollover(a):
+    """Asks the leaf for its identity rollover record (old identifier-derived key and
+    new eFuse-HMAC key both sign), adds the operator countersignature made in the
+    operator's hardware key, and checks the result with the parent-side verifier."""
+    import fl_rollover as R
+    link = P.Serial(PORT, log=(print if a.verbose else None))
+    g, s = load_grant(KEYS["node"])
+    ses = P.Session.open(link, KEYS["node"], g, s)
+    assurance = (P.one(ses.evidence, 4, b"") or b"").decode()
+    now = int(time.time())
+    t, f = ses.call(P.ROLLOVER_REQ, P.tlv(P.T_ROLL_SEQ, a.seq, 4), P.tlv(P.T_NOT_BEFORE, now.to_bytes(8, "big")),
+                    P.tlv(P.T_NOT_AFTER, (now + a.days * 86400).to_bytes(8, "big")))
+    ses.call(P.BYE)
+    if t != P.ROLLOVER or P.one(f, P.T_OK) != b"\x01":
+        sys.exit("leaf refused: " + (P.one(f, P.T_REASON, b"?")).decode())
+    rec = P.one(f, P.T_RECORD)
+    body = rec[:R.BODY_LEN]
+    der = P.se_sign(KEYS["operator"], b"furcate-leaf rollover v1 operator\n" + body)
+    rec = rec[:-1] + bytes([len(der)]) + der
+    old_pub, new_pub = rec[4:69], rec[69:134]
+    if new_pub != ses.leaf_pub:
+        sys.exit("record successor is not the key of this session")
+    pol = R.Policy(now=now, old_id=R.leaf_id(old_pub), roster_old_level=1, proven_new_level=R.level(assurance),
+                   operator_pubs=[P.se_pub(KEYS["operator"])])
+    why = R.verify(rec, pol)
+    out = STATE / "rollover" / f"{R.leaf_id(old_pub).hex()[:32]}-to-{R.leaf_id(new_pub).hex()[:32]}.fli1"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(rec)
+    print(json.dumps({"old_id": R.leaf_id(old_pub).hex()[:32], "new_id": R.leaf_id(new_pub).hex()[:32],
+                      "assurance": assurance, "verify": why or "accepted", "record": str(out),
+                      "sha256": hashlib.sha256(rec).hexdigest()}, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -182,6 +216,10 @@ def main():
     p.add_argument("--operator-pub", action="append", help="operator public key (hex), repeatable")
     p.add_argument("--release-pub", action="append",
                    help="release public key (hex), repeatable; the order sets the signer index")
+    p = sp.add_parser("rollover")
+    p.add_argument("seq", type=int)
+    p.add_argument("--days", type=int, default=3)
+    p.add_argument("-v", "--verbose", action="store_true")
     p = sp.add_parser("grant")
     p.add_argument("node")
     p.add_argument("roles")
@@ -208,7 +246,7 @@ def main():
     p.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     {"keys": cmd_keys, "pin": cmd_pin, "grant": cmd_grant, "fw-release": cmd_fw_release,
-     "model-release": cmd_model_release, "info": cmd_info}[a.cmd](a)
+     "model-release": cmd_model_release, "info": cmd_info, "rollover": cmd_rollover}[a.cmd](a)
 
 
 if __name__ == "__main__":

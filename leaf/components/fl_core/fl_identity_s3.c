@@ -32,6 +32,8 @@
 #include "esp_timer.h"
 #include "fl_derive.h"
 #include "fl_hmac_select.h"
+#include "fl_rollover.h"
+#include "nvs.h"
 
 static const char *TAG = "fl-identity";
 
@@ -139,4 +141,68 @@ void fl_identity_evidence(fl_wbuf_t *w) {
     fl_w_bytes(w, 20, uid, sizeof uid);
     fl_w_str(w, 21, "esp32s3");
     fl_w_u8(w, 22, s_hmac ? 1 : 0);
+}
+
+// ---- identity rollover (see fl_rollover.h and docs/IDENTITY-ROLLOVER.md) ----
+
+#define ROLL_NS "fl-roll"
+#define ROLL_KEY "seq"
+
+static uint8_t s_old_priv[32];
+static bool old_sign(const uint8_t h[32], uint8_t sig[FL_SIG_LEN]) { return fl_p256_sign(s_old_priv, h, sig); }
+static bool new_sign(const uint8_t h[32], uint8_t sig[FL_SIG_LEN]) { return fl_identity_sign(h, sig); }
+
+size_t fl_identity_rollover_record(uint32_t seq, uint64_t not_before, uint64_t not_after, uint8_t *out, size_t cap,
+                                   const char **why) {
+    const char *w = NULL;
+    size_t n = 0;
+    nvs_handle_t h;
+    bool have_h = false;
+    uint32_t last = 0;
+    if (!s_ready) {
+        w = "no identity";
+        goto done;
+    }
+    if (!s_hmac) {
+        w = "no HMAC key is burned: there is no successor identity";
+        goto done;
+    }
+    if (nvs_open(ROLL_NS, NVS_READWRITE, &h) != ESP_OK) {
+        w = "cannot open the rollover counter";
+        goto done;
+    }
+    have_h = true;
+    if (nvs_get_u32(h, ROLL_KEY, &last) != ESP_OK) last = 0;
+    if (seq == 0 || seq <= last) {
+        w = "replay: sequence not newer";
+        goto done;
+    }
+    uint8_t mac[6], uid[FL_DERIVE_UID_LEN];
+    esp_efuse_mac_get_default(mac);
+    if (esp_efuse_read_field_blob(ESP_EFUSE_OPTIONAL_UNIQUE_ID, uid, 8 * FL_DERIVE_UID_LEN) != ESP_OK ||
+        !fl_derive_from_identifiers(fl_hkdf, fl_p256_scalar_ok, mac, uid, s_old_priv)) {
+        w = "cannot derive the old identity";
+        goto done;
+    }
+    fl_rollover_t r = {.seq = seq, .not_before = not_before, .not_after = not_after,
+                       .old_level = FL_LEVEL_SILICON_ID_DEV, .new_level = fl_rollover_level(fl_identity_assurance())};
+    if (!fl_p256_pub(s_old_priv, r.old_pub)) {
+        w = "cannot derive the old public key";
+        goto done;
+    }
+    memcpy(r.new_pub, s_pub, FL_PUB_LEN);
+    n = fl_rollover_build(&r, old_sign, new_sign, out, cap);
+    if (n == 0) {
+        w = "record refused (window, levels or keys)";
+        goto done;
+    }
+    if (nvs_set_u32(h, ROLL_KEY, seq) != ESP_OK || nvs_commit(h) != ESP_OK) {
+        w = "cannot store the rollover counter";
+        n = 0;
+    }
+done:
+    fl_wipe(s_old_priv, sizeof s_old_priv);
+    if (have_h) nvs_close(h);
+    if (why) *why = w;
+    return n;
 }

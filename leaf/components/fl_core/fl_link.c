@@ -346,6 +346,7 @@ static uint8_t required_role(uint8_t type) {
         return FL_ROLE_MODEL;
     case FL_MSG_REVOKE:
     case FL_MSG_CONFIG:
+    case FL_MSG_ROLLOVER_REQ:
         return FL_ROLE_CONFIG;
     case FL_MSG_SINK:
         return FL_ROLE_READ;

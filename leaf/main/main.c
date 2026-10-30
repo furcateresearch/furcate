@@ -27,6 +27,7 @@
 #endif
 #include "fl_ota.h"
 #include "fl_puf.h"
+#include "fl_rollover.h"
 #include "fl_sensors.h"
 #include "sdkconfig.h"
 #include "fl_trust.h"
@@ -50,6 +51,28 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
         return FL_MSG_INFO;
     case FL_MSG_CONFIG:
         return fl_net_config(tlv, n, r);
+    case FL_MSG_ROLLOVER_REQ: {
+        // Operator-granted (config role). The host names the sequence and the
+        // validity window; the leaf has no trusted clock of its own.
+        uint32_t seq = 0;
+        fl_field_t nb, na;
+        static uint8_t rec[FL_ROLLOVER_MAX_LEN];
+        const char *why = "malformed request";
+        size_t len = 0;
+        if (fl_r_u32(tlv, n, T_ROLL_SEQ, &seq) && fl_r_find(tlv, n, T_NOT_BEFORE, 0, &nb) && nb.n == 8 &&
+            fl_r_find(tlv, n, T_NOT_AFTER, 0, &na) && na.n == 8) {
+            uint64_t b = 0, a = 0;
+            for (int i = 0; i < 8; i++) {
+                b = b << 8 | nb.p[i];
+                a = a << 8 | na.p[i];
+            }
+            len = fl_identity_rollover_record(seq, b, a, rec, sizeof rec, &why);
+        }
+        fl_w_u8(r, T_OK, len != 0);
+        if (len) fl_w_bytes(r, T_RECORD, rec, len);
+        else fl_w_str(r, T_REASON, why);
+        return FL_MSG_ROLLOVER;
+    }
     case FL_MSG_SINK: {
         fl_field_t d;
         fl_w_u32(r, T_OFFSET, fl_r_find(tlv, n, T_DATA, 0, &d) ? (uint32_t)d.n : 0);

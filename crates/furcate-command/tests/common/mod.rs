@@ -311,3 +311,81 @@ pub fn oracle(body: &Value, lim: &TrajectoryLimit, prev_end: Option<(&[f64], &[f
     }
     None
 }
+
+// ---- actuation (stages, approvals, executor) fixtures -----------------------------------------------------------
+
+use furcate_command::{ActuationConfig, ExecError, Execution, Executor, Plan, Release, Stage, APPROVAL_DOMAIN};
+use furcate_command::issue::sign_value as sign_any;
+
+pub const APPROVER_SEED: u8 = 0x41;
+pub fn approver() -> SigningKey {
+    key(APPROVER_SEED)
+}
+
+/// valve-1 is in class hvac_valve and arm-1 in robot_arm; both classes at `stage`; one enrolled approver.
+pub fn act_cfg(stage: Stage) -> ActuationConfig {
+    ActuationConfig {
+        classes: vec![("valve-1".into(), "hvac_valve".into()), ("arm-1".into(), "robot_arm".into())],
+        stages: vec![("hvac_valve".into(), stage), ("robot_arm".into(), stage)],
+        approvers: vec![key_id(&approver())],
+    }
+}
+
+/// An unsigned approval for one class, valid from NOW-1000 for one day.
+pub fn approval_value(id: &str, class: &str, actuators: &[&str], kinds: &[&str]) -> Value {
+    json!({
+        "format": "actuation-approval", "v": 1, "approval_id": id, "tenant": "tenant-a", "site_id": "site-test-01",
+        "system_class": class, "actuator_ids": actuators, "kinds": kinds,
+        "valid_from_ms": NOW - 1000, "valid_until_ms": NOW + 86_400_000,
+        "approver": key_id(&approver()), "signature": ""
+    })
+}
+
+pub fn sign_approval(mut v: Value, k: &SigningKey) -> Vec<u8> {
+    sign_any(&mut v, APPROVAL_DOMAIN, k).unwrap();
+    bytes(&v)
+}
+
+/// The approval most tests install: both actuators of both classes need their own, so this is the valve one.
+pub fn valve_approval(id: &str) -> Vec<u8> {
+    sign_approval(approval_value(id, "hvac_valve", &["valve-1"], &["setpoint"]), &approver())
+}
+pub fn arm_approval(id: &str) -> Vec<u8> {
+    sign_approval(approval_value(id, "robot_arm", &["arm-1"], &["trajectory"]), &approver())
+}
+
+/// A gate at stage `stage` with trajectory limits (overrun policy `o`) and no approvals installed.
+pub fn act_gate(stage: Stage, o: furcate_command::ChunkOverrun) -> Gate<NoKill> {
+    traj_gate_with(o).with_actuation(act_cfg(stage))
+}
+
+pub fn actuate_setpoint(seq: u64) -> Vec<u8> {
+    let mut v = command_value(seq);
+    v["mode"] = json!("actuate");
+    finish(v, &lw(), &lw())
+}
+pub fn actuate_chunk(seq: u64, chunk: u64) -> Vec<u8> {
+    let mut v = traj_value(seq, chunk);
+    v["mode"] = json!("actuate");
+    finish_traj(v)
+}
+
+/// An executor that records every release and can be told to fail after a number of writes.
+#[derive(Default)]
+pub struct Rec {
+    pub calls: Vec<(String, String, String, Plan)>,
+    pub fail_after: Option<u64>,
+}
+impl Executor for Rec {
+    fn execute(&mut self, r: &Release) -> Result<Execution, ExecError> {
+        self.calls.push((r.command_id().into(), r.actuator_id().into(), r.system_class().into(), r.plan().clone()));
+        let n = match r.plan() {
+            Plan::Setpoint { .. } => 1,
+            Plan::Trajectory { steps, .. } => steps.len() as u64,
+        };
+        match self.fail_after {
+            Some(k) if k < n => Err(ExecError { writes_done: k, reason: "sink rejected".into() }),
+            _ => Ok(Execution { writes: n }),
+        }
+    }
+}

@@ -10,9 +10,9 @@ endif()
 #   esp32s3: key derived from the silicon identifiers, or from the eFuse HMAC key when one is burned
 #   esp32c5 / esp32p4: key held by the Key Manager / ECDSA peripheral
 if(IDF_TARGET STREQUAL "esp32")
-    set(identity_srcs "fl_identity_fingerprint.c" "fl_puf.c" "fl_puf_core.c")
+    set(identity_srcs "fl_identity_fingerprint.c" "fl_puf.c" "fl_puf_core.c" "fl_puf_escrow.c")
 elseif(IDF_TARGET STREQUAL "esp32s3")
-    set(identity_srcs "fl_identity_s3.c" "fl_derive.c" "fl_hmac_select.c")
+    set(identity_srcs "fl_identity_s3.c" "fl_derive.c" "fl_hmac_select.c" "fl_rollover.c")
 else()
     set(identity_srcs "fl_identity_hwkey.c")
 endif()

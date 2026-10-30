@@ -52,6 +52,13 @@ bool fl_puf_core_check_ok(const uint8_t secret[FL_PUF_BITS / 8], const uint8_t c
 // check value does that at the next reconstruction.
 bool fl_puf_blob_valid(const fl_puf_blob_t *b, uint32_t region_addr);
 
+// Builds a version 3 blob from existing version 2 helper data and the secret
+// rebuilt from a good reading: the adopt step for leaves enrolled before the
+// check value existed. Same helper data bit for bit, plus the address and the
+// check. False if the helper data is structurally invalid.
+bool fl_puf_core_adopt(const fl_puf_helper_t *h, const uint8_t secret[FL_PUF_BITS / 8], uint32_t region_addr,
+                       fl_puf_blob_t *out);
+
 #ifdef __cplusplus
 }
 #endif

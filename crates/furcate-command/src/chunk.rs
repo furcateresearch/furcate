@@ -272,7 +272,7 @@ impl ChunkVerdict {
 }
 
 /// Where the last accepted chunk for an actuator ended. The next chunk must start there.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EndState {
     pub q: Vec<f64>,
     pub dq: Vec<f64>,

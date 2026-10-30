@@ -81,3 +81,13 @@ bool fl_puf_blob_valid(const fl_puf_blob_t *b, uint32_t region_addr) {
     }
     return true;
 }
+
+bool fl_puf_core_adopt(const fl_puf_helper_t *h, const uint8_t secret[FL_PUF_BITS / 8], uint32_t region_addr,
+                       fl_puf_blob_t *out) {
+    memset(out, 0, sizeof *out);
+    out->magic = FL_PUF_BLOB_MAGIC;
+    out->addr = region_addr;
+    out->h = *h;
+    fl_puf_core_check(secret, out->check);
+    return fl_puf_blob_valid(out, region_addr);
+}

@@ -597,3 +597,82 @@ fn the_gate_agrees_with_an_independent_oracle_on_random_perturbations() {
     println!("CHUNK-ORACLE cases={n} clean={ok_cnt} violating={bad_cnt}");
     assert!(ok_cnt > 0 && bad_cnt > 0);
 }
+
+// ---- the same mutations against an approved actuate-stage gate with an executor -----------------------------------
+
+/// Under actuation the executor sees a chunk only when the pristine approved chunk is decided, and then all of it; a
+/// designed step-level violation under a truncating policy may release exactly the predicted prefix and nothing else.
+fn run_range_exec(lo: u64, hi: u64, base: &Value, base_bytes: &[u8]) -> (u64, u64, u64, u64, u64) {
+    let (mut cases, mut controls, mut control_execs, mut false_releases, mut prefixes) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    for i in lo..hi {
+        let c = gen(i, base, base_bytes);
+        let policy = traj_policy(if c.truncate { ChunkOverrun::Truncate { min_steps: 1 } } else { ChunkOverrun::Veto });
+        let cfg = act_cfg(furcate_command::Stage::Actuate);
+        let mut x = Rec::default();
+        let (r, before) = if c.kill {
+            let mut g = Gate::new(policy, KillAll, key(SITE_SEED), Chain::genesis("site-test-01", NOW)).with_actuation(cfg);
+            g.install_approval(&arm_approval("ap-arm-1"), NOW).unwrap();
+            (g.decide_exec(&c.input, c.now, &mut x), 0)
+        } else {
+            let mut g: Gate<NoKill> = Gate::new(policy, NoKill, key(SITE_SEED), Chain::genesis("site-test-01", NOW)).with_actuation(cfg);
+            g.install_approval(&arm_approval("ap-arm-1"), NOW).unwrap();
+            if let Some(p) = &c.prior {
+                g.decide_exec(p, NOW, &mut x);
+            }
+            let before = x.calls.len();
+            (g.decide_exec(&c.input, c.now, &mut x), before)
+        };
+        let calls = &x.calls[before..];
+        cases += 1;
+        let steps_of = |p: &furcate_command::Plan| match p {
+            furcate_command::Plan::Trajectory { steps, .. } => steps.len(),
+            _ => usize::MAX,
+        };
+        if c.control {
+            controls += 1;
+            if r.decision == Decision::Executed && calls.len() == 1 && steps_of(&calls[0].3) == N {
+                control_execs += 1;
+            }
+            continue;
+        }
+        let predicted = match (c.expect, r.verdict.as_ref()) {
+            (Some(exp), Some(v)) if c.truncate && exp.step.is_some_and(|s| s >= 1) => {
+                v.outcome == ChunkOutcome::Truncated && v.steps_accepted == exp.step.unwrap() && r.decision == Decision::Truncated
+            }
+            _ => false,
+        };
+        if predicted && calls.len() == 1 && steps_of(&calls[0].3) == r.verdict.as_ref().unwrap().steps_accepted {
+            prefixes += 1;
+        } else if !calls.is_empty() || r.decision == Decision::Executed {
+            false_releases += 1;
+        }
+    }
+    (cases, controls, control_execs, false_releases, prefixes)
+}
+
+#[test]
+fn mutated_actuate_chunks_release_nothing_but_the_predicted_prefix() {
+    let default_cases: u64 = if cfg!(debug_assertions) { 20_000 } else { 1_000_000 };
+    let n: u64 = std::env::var("FAULT_CASES").ok().and_then(|s| s.parse().ok()).unwrap_or(default_cases);
+    let mut bv = traj_value_n(1, 0, N);
+    bv["mode"] = json!("actuate");
+    let base_bytes = finish_traj(bv);
+    let base = parse(&base_bytes);
+    let threads = 8u64;
+    let started = std::time::Instant::now();
+    let parts: Vec<(u64, u64, u64, u64, u64)> = std::thread::scope(|s| {
+        let hs: Vec<_> = (0..threads)
+            .map(|k| {
+                let (base, bb) = (&base, &base_bytes);
+                s.spawn(move || run_range_exec(n * k / threads, n * (k + 1) / threads, base, bb))
+            })
+            .collect();
+        hs.into_iter().map(|h| h.join().unwrap()).collect()
+    });
+    let sum = |f: fn(&(u64, u64, u64, u64, u64)) -> u64| parts.iter().map(f).sum::<u64>();
+    let (cases, controls, control_execs, false_releases, prefixes) = (sum(|p| p.0), sum(|p| p.1), sum(|p| p.2), sum(|p| p.3), sum(|p| p.4));
+    println!("CHUNK-FAULT-INJECTION-EXEC cases={cases} mutants={} controls={controls} control_executions={control_execs} false_releases={false_releases} predicted_prefix_releases={prefixes} elapsed={:?}", cases - controls, started.elapsed());
+    assert_eq!(cases, n);
+    assert_eq!(false_releases, 0, "a mutated chunk reached the executor");
+    assert_eq!(control_execs, controls, "a pristine approved chunk was not released whole exactly once");
+}

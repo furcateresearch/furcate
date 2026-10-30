@@ -1,5 +1,6 @@
 #pragma once
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
 #include "fl_crypto.h"
@@ -20,6 +21,15 @@ bool fl_identity_sign(const uint8_t hash[32], uint8_t sig[FL_SIG_LEN]);
 // Writes the attestation evidence (TLV) for HELLO.
 void fl_identity_evidence(fl_wbuf_t *w);
 const char *fl_identity_assurance(void);
+
+// Builds the S3 identity rollover record (fl_rollover.h) for this leaf: the
+// identifier-derived key (old) and the eFuse-HMAC key (successor) both sign.
+// The operator countersignature is added by the parent. `seq` must be higher
+// than every sequence this leaf has built before (kept in NVS). Returns the
+// record length, or 0 with *why set. Only the S3 backend with a burned HMAC
+// key builds a record; every other backend refuses.
+size_t fl_identity_rollover_record(uint32_t seq, uint64_t not_before, uint64_t not_after, uint8_t *out, size_t cap,
+                                   const char **why);
 
 #ifdef __cplusplus
 }

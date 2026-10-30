@@ -25,7 +25,7 @@ On an unfused board the key is derived from values anyone with the part can read
 `Soft`: it proves the same silicon answered before, not that the answerer holds a secret. Burning an
 eFuse HMAC key (an owner decision, per device) moves it to a key the chip uses and never reveals
 (`Device`). Secure boot and flash encryption are what stop other firmware on the part from asking the
-peripheral for the same output. None of these is burned by default.
+peripheral for the same output. None of these is burned by default. On the one S3 attached here the HMAC key is burned (KEY5, 2026-10-30) and nothing else: flash encryption, secure boot and download disable are not, and wait for a spare S3 (`docs/EFUSE-REHEARSAL-S3-RESULT-2026-10-30.md` in `furcate-leaf-firmware`).
 
 ## How to attach
 

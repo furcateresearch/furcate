@@ -147,6 +147,10 @@ bool fl_p256_sign(const uint8_t priv[32], const uint8_t hash[32], uint8_t sig[FL
     return uECC_sign(priv, hash, 32, sig, uECC_secp256r1()) == 1;
 }
 
+bool fl_p256_pub_valid(const uint8_t pub[FL_PUB_LEN]) {
+    return pub[0] == 0x04 && uECC_valid_public_key(pub + 1, uECC_secp256r1());
+}
+
 bool fl_p256_verify(const uint8_t pub[FL_PUB_LEN], const uint8_t hash[32], const uint8_t sig[FL_SIG_LEN]) {
     if (pub[0] != 0x04) return false;
     return uECC_verify(pub + 1, hash, 32, sig, uECC_secp256r1()) == 1;

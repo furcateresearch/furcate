@@ -6,15 +6,19 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Decision {
-    /// Reserved. Nothing in this crate produces it: no actuator driver exists.
+    /// The whole command was written through an [`crate::Executor`] and acknowledged. Produced only by
+    /// [`crate::Gate::decide_exec`].
     Executed,
     Shadowed,
-    /// A trajectory chunk was accepted in part: the prefix before the first violating step. Shadow only, like
-    /// `Shadowed`; nothing is executed.
+    /// A trajectory chunk was accepted in part: the prefix before the first violating step. In shadow nothing is
+    /// executed; with an executor only that prefix is released and written.
     Truncated,
     Denied,
     Expired,
     Killed,
+    /// The command was released and the executor reported an error, or the release could not be completed after the
+    /// write-ahead entry. Writes may be partial; the `execution` member says how many were done.
+    Failed,
 }
 
 impl Decision {
@@ -26,6 +30,7 @@ impl Decision {
             Decision::Denied => "denied",
             Decision::Expired => "expired",
             Decision::Killed => "killed",
+            Decision::Failed => "failed",
         }
     }
 }
@@ -43,6 +48,10 @@ pub struct Receipt {
     pub verdict: Option<crate::chunk::ChunkVerdict>,
     /// Canonical bytes of the signed advisory stop request, when one is due. See `chunk::verify_stop_request`.
     pub stop_request: Option<Vec<u8>>,
+    /// Set when the site signer could not sign. The receipt is then NOT signed: `bytes` is empty and `value` carries
+    /// no signature, so nothing can mistake it for a receipt. A service answers "unavailable" and the command can be
+    /// sent again when nothing was released (see `decision` and `value["execution"]`).
+    pub signer_error: Option<String>,
 }
 
 /// The digest the ledger entry commits to: the receipt without its `ledger` and `signature` members.

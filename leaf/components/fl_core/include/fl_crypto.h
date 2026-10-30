@@ -30,6 +30,8 @@ void fl_crypto_init(void);
 bool fl_p256_pub(const uint8_t priv[32], uint8_t pub[FL_PUB_LEN]);
 bool fl_p256_keygen(uint8_t priv[32], uint8_t pub[FL_PUB_LEN]);
 bool fl_p256_sign(const uint8_t priv[32], const uint8_t hash[32], uint8_t sig[FL_SIG_LEN]);
+// True when pub is a well-formed SEC1 uncompressed point on the P-256 curve.
+bool fl_p256_pub_valid(const uint8_t pub[FL_PUB_LEN]);
 bool fl_p256_verify(const uint8_t pub[FL_PUB_LEN], const uint8_t hash[32], const uint8_t sig[FL_SIG_LEN]);
 // Accepts a DER ECDSA signature (as produced by the Secure Enclave or a TPM).
 bool fl_p256_verify_der(const uint8_t pub[FL_PUB_LEN], const uint8_t hash[32], const uint8_t *der, size_t n);
