@@ -29,11 +29,119 @@ import sys
 import time
 
 import fl_proto as P
+import fl_profiles as FP
+import fl_solo as FS
+import fl_quantity as Q
 
 SAMPLE_DOMAIN = b"furcate/leaf/sample/v2"
 UNIT_DOMAIN = b"furcate/leaf/unit/v1"
 MODULE_FIRST_INDEX = 16
 SCHEMA = "furcate-fl1-reading/1"
+DESCRIBE_SCHEMA = "furcate-leaf-describe/1"
+ROLES = {1: "read", 2: "command", 4: "model", 8: "config", 16: "ota"}  # components/fl_core/include/fl_trust.h
+
+# What an assurance class protects against and what it does not. Only classes this repository has measured are
+# listed; any other class gets no statement rather than a guess. Sources: docs/EFUSE-REHEARSAL-CLASSIC-RESULT-2026-10-29.md,
+# docs/EFUSE-REHEARSAL-S3-RESULT-2026-10-30.md, docs/CHIP-ADVISORIES-2026-10-31.md.
+ASSURANCE_NOTES = {
+    "silicon-fingerprint+secure-boot": {
+        "protects_against": ["remote and software attackers: signed boot chain, flash encryption, signed OTA only"],
+        "does_not_cover": ["physical fault injection (ESP32 V3, CVE-2023-35818)",
+                           "a key held in fuses: the identity is the silicon fingerprint"]},
+    "silicon-fingerprint/development": {
+        "protects_against": [],
+        "does_not_cover": ["everything: development lock-down, not for production"]},
+    "efuse-hmac/development": {
+        "protects_against": ["extraction of the identity key: it lives in an eFuse HMAC key block, unreadable"],
+        "does_not_cover": ["secure boot and flash encryption are not yet burned on this class",
+                           "physical attackers"]},
+}
+
+
+def parse_operator_keys(raw) -> list:
+    """Pinned operator keys from the head config ("operator_keys": ["04...", ...]): 65-byte uncompressed P-256 points."""
+    out = []
+    for k in raw or []:
+        try:
+            kb = bytes.fromhex(k)
+            if len(kb) != 65 or kb[0] != 4:
+                raise ValueError("not an uncompressed P-256 point")
+            out.append(kb)
+        except (TypeError, ValueError) as e:
+            raise SystemExit("fl-gateway: bad operator key %r: %s" % (k, e))
+    return out
+
+
+def parse_solos(raw, operator_keys=None, now=None) -> dict:
+    """Solo manifests from the head config: {"<leaf id hex or prefix>": entry}.
+
+    entry, unsigned: {"models": ["<64 hex>", ...], "allow_no_model": false}
+    entry, signed:   {"manifest": "/path/solo.json"}  (a file {"manifest": {...}, "sig": "<DER hex>"}, see fl_solo.py)
+
+    With operator keys pinned, only signed entries are accepted: an unsigned one stops startup, so pinning keys can
+    never be quietly undone by a plain entry. A signed entry must verify under a pinned key and must be for the leaf it
+    is installed under. An expired manifest is kept and allows nothing. Any malformed entry stops startup: a typo must
+    not silently widen what a leaf may run."""
+    out = {}
+    keys = operator_keys or []
+    for lid, m in (raw or {}).items():
+        try:
+            prefix = str(lid).lower()
+            bytes.fromhex(prefix)
+            if isinstance(m, dict) and "manifest" in m:
+                if not keys:
+                    raise ValueError("a signed manifest needs operator_keys in the head config")
+                with open(m["manifest"]) as fh:
+                    man = FS.verify(json.load(fh), keys)
+                if not man["leaf_id"].startswith(prefix):
+                    raise ValueError("the manifest is for leaf %s, not %s" % (man["leaf_id"][:8], prefix))
+                expired = man["not_after"] is not None and now is not None and now > man["not_after"]
+                out[man["leaf_id"]] = {"models": [] if expired else man["models"],
+                                       "allow_no_model": False if expired else man["allow_no_model"],
+                                       "signed": True, "generation": man["generation"],
+                                       "not_after": man["not_after"], "expired": bool(expired)}
+            else:
+                if keys:
+                    raise ValueError("operator keys are pinned: only signed manifests are accepted")
+                models = {x.lower() for x in m["models"]}
+                if not all(len(x) == 64 and bytes.fromhex(x) is not None for x in models):
+                    raise ValueError("a model hash is 64 hex digits")
+                out[prefix] = {"models": sorted(models), "allow_no_model": bool(m.get("allow_no_model", False)),
+                               "signed": False, "generation": None, "not_after": None, "expired": False}
+        except (KeyError, TypeError, ValueError, AttributeError, OSError) as e:
+            raise SystemExit("fl-gateway: bad solo manifest for %r: %s" % (lid, e))
+    return out
+
+
+def solo_for(solos: dict, leaf_key: str):
+    return next((v for p, v in solos.items() if leaf_key.startswith(p)), None)
+
+
+def model_permitted(solo: dict, model_hex: str, now=None) -> bool:
+    """Deny by default: the reply's model hash must be in the manifest; the all-zero hash (no model) only if allowed;
+    a manifest past its `not_after` allows nothing."""
+    na = solo.get("not_after")
+    if na is not None and now is not None and now > na:
+        return False
+    if model_hex == "00" * 32:
+        return solo["allow_no_model"]
+    return model_hex.lower() in solo["models"]
+
+
+def describe_leaf(view: dict, profile: str | None = None, solo: dict | None = None) -> dict:
+    """The capability descriptor of one leaf, from the head's own view of it (the `_leaf_view` dict)."""
+    grants = view.get("grant_roles")
+    sensors = []
+    for idx, sv in sorted((view.get("sensors") or {}).items(), key=lambda kv: int(kv[0])):
+        sensors.append({"index": int(idx), "kind": sv.get("kind"), "unit": sv.get("unit"), "source": sv.get("source"),
+                        "channel": Q.channel(sv.get("kind"), sv.get("unit"))})
+    cls = view.get("assurance")
+    return {"schema": DESCRIBE_SCHEMA, "leaf_id": view["leaf_id"], "leaf_pub": view.get("leaf_pub"),
+            "connected": view.get("connected"), "stale": view.get("stale"),
+            "assurance": cls, "assurance_note": ASSURANCE_NOTES.get(cls),
+            "roles": None if grants is None else [n for bit, n in ROLES.items() if grants & bit],
+            "chip_profile": FP.profile(profile), "solo": solo,
+            "info": view.get("info"), "sensors": sensors, "counters": view.get("counters")}
 
 
 def sample_payload(leaf_pub: bytes, generation: int, sensor: int, value_be: bytes, seq: int,
@@ -285,6 +393,7 @@ def shim_lines(answer: dict, state: dict) -> list[str]:
                 "schema": SCHEMA, "leaf_id": lid, "leaf_pub": L["leaf_pub"], "assurance": L.get("assurance"),
                 "sensor": {"index": e["sensor"], "kind": s.get("kind"), "unit": s.get("unit"),
                            "source": s.get("source")},
+                "quantity": Q.quantity(s.get("kind"), s.get("unit"), e["value"]),
                 "value": e["value"], "value_f32_be": e["value_f32_be"], "seq": e["seq"],
                 "generation": e["generation"], "model_sha256": e["model_sha256"], "signature": e["sig"],
                 "unit_binding": e["unit"], "chain": e["chain"], "cursor": e["cursor"], "rx_wall": e["rx_wall"],

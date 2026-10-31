@@ -33,6 +33,7 @@ pub mod signer;
 pub mod rot;
 pub mod leaf;
 pub mod unit_roster;
+pub mod unit_rollover;
 pub mod suite;
 
 pub use custody::{Custody, CustodyGrant, CustodyMode, CustodyRecord, CustodySettings};

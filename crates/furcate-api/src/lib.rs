@@ -15,6 +15,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 
+pub mod sources;
+pub use sources::Sources;
+
 pub type Handler = Box<dyn Fn(&Request) -> Response + Send + Sync>;
 
 fn now_s() -> u64 {
@@ -227,6 +230,12 @@ pub struct Router {
     /// Who may originate a privileged call, judged from where the connection
     /// came from and who the credential proved. See [`Router::originating`].
     origin: Option<OriginCheck>,
+    /// The addresses this machine answers at all; see [`Sources`].
+    sources: Option<Arc<Sources>>,
+    /// Refusals logged in the current minute, so a flood of them leaves a bounded trail.
+    refusal_window: std::sync::Mutex<(u64, u32)>,
+    /// Every refusal since start: connections dropped for their address, and requests refused for their credential.
+    refusals: std::sync::atomic::AtomicU64,
 }
 
 /// Whether a privileged call may come from this origin: the address the
@@ -319,6 +328,48 @@ impl Router {
     pub fn originating(mut self, check: OriginCheck) -> Self {
         self.origin = Some(check);
         self
+    }
+
+    /// Answer only the addresses in `sources`. A connection from any other address is closed before anything is read
+    /// from it or written to it, and the refusal is logged.
+    pub fn answering_only(mut self, sources: Sources) -> Self {
+        self.sources = Some(Arc::new(sources));
+        self
+    }
+
+    /// Whether a connection from `from` is answered. An unknown address (a call made in process) is.
+    pub fn answers(&self, from: Option<std::net::IpAddr>) -> bool {
+        match (&self.sources, from) {
+            (Some(s), Some(ip)) => s.answers(ip),
+            _ => true,
+        }
+    }
+
+    /// How many requests and connections this router has refused since it started.
+    pub fn refusals(&self) -> u64 {
+        self.refusals.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Count a refusal and, within a bound per minute, say so in the journal. What is written names the route, the
+    /// address and the reason, never the credential. The prefix is stable so a monitor can match on it.
+    fn refused(&self, line: String) {
+        self.refusals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        const PER_MINUTE: u32 = 30;
+        let minute = now_s() / 60;
+        let mut w = match self.refusal_window.lock() {
+            Ok(w) => w,
+            Err(p) => p.into_inner(),
+        };
+        if w.0 != minute {
+            if w.1 > PER_MINUTE {
+                eprintln!("furcate-refused: {} more refusals in the minute before were not logged", w.1 - PER_MINUTE);
+            }
+            *w = (minute, 0);
+        }
+        w.1 += 1;
+        if w.1 <= PER_MINUTE {
+            eprintln!("furcate-refused: {line}");
+        }
     }
 
     /// The order routes, for the same reason as `guarded_paths`.
@@ -429,6 +480,7 @@ impl Router {
         // Guarded or reported. An unauthenticated caller is not a caller with
         // fewer rights; it is not a caller, and the handler never runs.
         let Some(v) = &self.verifier else {
+            self.refused(format!("{} {}: this machine holds no operator key", req.method, req.path));
             return Response::refused(
                 "this machine cannot recognise anyone, so it will not act on anyone's \
                  word; enrol an operator key first",
@@ -452,6 +504,13 @@ impl Router {
                 handler(&req)
             }
             Err(r) => {
+                self.refused(format!(
+                    "{} {} from {}: {}",
+                    req.method,
+                    req.path,
+                    from.map(|f| f.to_string()).unwrap_or_else(|| "in process".into()),
+                    r.because
+                ));
                 let mut res = Response::refused(r.because);
                 res.body["structural"] = Value::Bool(r.structural);
                 res
@@ -740,6 +799,13 @@ fn accept(listener: TcpListener, router: Arc<Router>) {
             }
             let _leave = Leave(live);
             let from = stream.peer_addr().ok().map(|a| a.ip());
+            if !router.answers(from) {
+                router.refused(format!(
+                    "connection from {} closed: not an address this machine answers",
+                    from.map(|f| f.to_string()).unwrap_or_default()
+                ));
+                return;
+            }
             let response = match parse_request(&mut stream) {
                 Some(req) => router.dispatch_from(&req, from, now_s()),
                 None => Response::error(400, "malformed request"),
@@ -1528,5 +1594,66 @@ mod chunked_tests {
     #[test]
     fn a_reply_with_no_body_is_empty_not_a_panic() {
         assert_eq!(http_body(b"HTTP/1.1 204 No Content\r\n"), "");
+    }
+}
+
+#[cfg(test)]
+mod source_and_refusal_tests {
+    use super::*;
+    use furcate_authn::local::sign;
+    use furcate_authn::LocalVerifier;
+
+    fn operator() -> furcate_authn::SigningKey {
+        furcate_authn::SigningKey::from_bytes(&[3u8; 32])
+    }
+    fn stranger() -> furcate_authn::SigningKey {
+        furcate_authn::SigningKey::from_bytes(&[9u8; 32])
+    }
+
+    fn router() -> Router {
+        Router::new()
+            .route("GET", "/healthz", |_| Response::ok(json!({"ok": true})))
+            .guarded("POST", "/act", |_| Response::ok(json!({"done": true})))
+            .verified_by(Arc::new(LocalVerifier::new(Some(operator().verifying_key()))))
+    }
+
+    fn post(key: Option<&furcate_authn::SigningKey>, nonce: &str, exp: u64) -> Request {
+        Request {
+            method: "POST".into(),
+            path: "/act".into(),
+            raw_body: b"{}".to_vec(),
+            body: json!({}),
+            credential: key.map(|k| sign(k, "POST", "/act", b"{}", nonce, exp)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_stranger_gets_no_answer_and_a_member_does() {
+        let r = router().answering_only(Sources::parse(r#"{"allow": ["10.90.0.0/24"]}"#).unwrap());
+        assert!(r.answers(Some("10.90.0.4".parse().unwrap())));
+        assert!(r.answers(Some("127.0.0.1".parse().unwrap())));
+        assert!(!r.answers(Some("10.92.0.43".parse().unwrap())));
+        assert!(r.answers(None), "a call made in process has no address and is the machine's own");
+    }
+
+    #[test]
+    fn with_no_list_every_address_is_answered_as_before() {
+        assert!(Router::new().answers(Some("203.0.113.9".parse().unwrap())));
+    }
+
+    #[test]
+    fn every_kind_of_refused_control_message_is_refused_and_counted() {
+        let r = router();
+        let from = Some("203.0.113.9".parse().unwrap());
+        // The operator's own signature is accepted and not counted.
+        assert_eq!(r.dispatch_from(&post(Some(&operator()), "ok1", 100), from, 50).status, 200);
+        assert_eq!(r.refusals(), 0);
+        // Unsigned, signed by another key, expired, and a replay of the accepted message.
+        assert_eq!(r.dispatch_from(&post(None, "x", 100), from, 50).status, 403);
+        assert_eq!(r.dispatch_from(&post(Some(&stranger()), "s1", 100), from, 50).status, 403);
+        assert_eq!(r.dispatch_from(&post(Some(&operator()), "old", 40), from, 50).status, 403);
+        assert_eq!(r.dispatch_from(&post(Some(&operator()), "ok1", 100), from, 50).status, 403);
+        assert_eq!(r.refusals(), 4);
     }
 }

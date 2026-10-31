@@ -128,6 +128,22 @@ What is checked is in the crate's `README.md`. It is tested end to end against a
 that signs with a test key. It has not been run against a real leaf: that needs the leaf to receive
 the node's AUTH, which is a protocol write to the board and waits for the owner's go-ahead.
 
+## When a leaf's key changes (identity rollover)
+
+A leaf whose key moves to a new one (an ESP32-S3 after its eFuse HMAC key is burned gets a new leaf id) is not a new unit: it signs a rollover record with its old key, its new key and the operator, and the roster moves the enrolment across. The command runs on the node that holds the roster file (`/etc/furcate/leaf-link/leaves.json`):
+
+```
+furcate-leaf-link rollover --config /etc/furcate/leaf-link/leaves.json \
+    --record s3-rollover.fli1 --operator-pub <hex of the operator key the leaf pins> \
+    --proven-assurance efuse-hmac/development
+```
+
+- `--proven-assurance` is what the successor reported in a live, verified session (INFO tag 60). It comes from that session and never from the record; the record's claimed level may not exceed it.
+- The command has no dry run. Run it on a copy of the file first (`cp leaves.json /tmp/leaves-copy.json`, point `--config` at the copy, check the result loads), then on the live file. It keeps the live file as `leaves.json.before-rollover-<time>` and replaces it only if the record verifies.
+- The leaf's `key` becomes the new key with a `fuse-key` custody, and the old id is listed under `retired`, so presenting it again is refused and so is the same record twice.
+- `serve` reads the file at start: restart `furcate-leaf-link` after the rollover, and do not run it while the old identity has a live session.
+- A refusal (wrong operator, claimed level above the proven one, outside the record's window, a leaf the file does not hold, a replayed sequence) leaves the file as it was.
+
 ## What is not here
 
 - A resumable per-leaf log. After a bridge restart the bridge's log for each leaf starts again at entry 1, and the small node's witness refuses that as a repeat of entries it has already witnessed. `furcate_sense::cascade::witness::LeafLog` has no way to resume from a saved head and the witness has no reset, so neither is built; until one is, restart the small node's witness state for that leaf together with the bridge.

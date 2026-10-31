@@ -69,6 +69,9 @@ impl Verdict {
 pub struct UnitRoster {
     units: BTreeMap<String, EnrolledUnit>,
     live: BTreeSet<String>,
+    /// Identities that rolled over to a successor: old unit id -> (last
+    /// accepted sequence, successor unit id). An old id stays retired.
+    rolled: BTreeMap<String, (u32, String)>,
 }
 
 impl UnitRoster {
@@ -102,6 +105,108 @@ impl UnitRoster {
         }
         self.units.insert(unit.unit_id.clone(), unit);
         Ok(())
+    }
+
+    /// Accept an identity rollover record (see [`crate::unit_rollover`]): the
+    /// old identity, the new key and the operator all signed, so the unit moves
+    /// to its new id without being orphaned. Returns the successor unit id.
+    ///
+    /// The old unit must be enrolled and have no live session. The level the
+    /// roster holds for it comes from how its key is held. `proven_new_level`
+    /// is what the successor proved in live, verified evidence (the level of
+    /// its reported assurance); the caller takes it from that evidence, never
+    /// from the record. On success the old id is retired for good, the
+    /// successor is enrolled with the same silicon fingerprint and a fuse-held
+    /// key, and the old id maps to it.
+    pub fn accept_rollover(
+        &mut self,
+        record: &[u8],
+        now: u64,
+        proven_new_level: u8,
+        operator_pubs: &[Vec<u8>],
+        require_operator: bool,
+    ) -> Result<String, String> {
+        if record.len() < 134 {
+            return Err("malformed record".into());
+        }
+        let old_hex = hex::encode(crate::unit_rollover::leaf_id(&record[4..69]));
+        // A unit id may be the full key hash or its 16-byte prefix.
+        let old_key = [old_hex.clone(), old_hex[..32].to_string()]
+            .into_iter()
+            .find(|k| self.units.contains_key(k))
+            .ok_or_else(|| {
+                if self.rolled.contains_key(&old_hex[..32]) || self.rolled.contains_key(&old_hex) {
+                    "already rolled over: the old identity is retired".to_string()
+                } else {
+                    "old key is not the roster leaf".to_string()
+                }
+            })?;
+        if self.live.contains(&old_key) {
+            return Err("the old identity has a live session; end it first".into());
+        }
+        let old = self.units[&old_key].clone();
+        let roster_old_level = match &old.custody {
+            Some(LeafKeyCustody::Stored) | Some(LeafKeyCustody::ReadableIdentifiers) | None => 1,
+            Some(LeafKeyCustody::SramFingerprint { .. }) => 2,
+            Some(LeafKeyCustody::FuseKey { .. }) => 3,
+        };
+        let mut known: Vec<[u8; 32]> = Vec::new();
+        let new_hex = hex::encode(crate::unit_rollover::leaf_id(&record[69..134]));
+        for id in self.units.keys().filter(|k| **k != old_key) {
+            if let Ok(b) = hex::decode(id) {
+                if let Ok(a) = <[u8; 32]>::try_from(b.as_slice()) {
+                    known.push(a);
+                } else if b.len() == 16 && new_hex.starts_with(id.as_str()) {
+                    return Err("successor is another leaf".into());
+                }
+            }
+        }
+        let old_id: [u8; 32] = hex::decode(&old_hex).expect("hex").try_into().expect("32 bytes");
+        let policy = crate::unit_rollover::Policy {
+            now,
+            old_id,
+            roster_old_level,
+            proven_new_level,
+            last_seq: self.rolled.get(&old_key).map(|r| r.0).unwrap_or(0),
+            old_retired: false,
+            retired_successor_id: [0; 32],
+            known_ids: &known,
+            operator_pubs,
+            require_operator,
+        };
+        let ok = crate::unit_rollover::verify(record, &policy).map_err(|e| e.to_string())?;
+        let new_full = hex::encode(ok.new_id());
+        let new_id = if old_key.len() == 32 { new_full[..32].to_string() } else { new_full };
+        let key = SuiteKey::parse(&format!("p256:{}", hex::encode(&ok.new_pub))).map_err(|e| e.to_string())?.id();
+        let successor = EnrolledUnit {
+            unit_id: new_id.clone(),
+            fingerprint: old.fingerprint.clone(),
+            key: Some(key),
+            custody: Some(LeafKeyCustody::FuseKey { lockdown: Default::default() }),
+        };
+        self.units.remove(&old_key);
+        self.units.insert(new_id.clone(), successor);
+        self.rolled.insert(old_key, (ok.seq, new_id.clone()));
+        Ok(new_id)
+    }
+
+    /// Record that `old_unit_id` rolled over to `successor` at `seq`, as a roster loaded from the operator's file
+    /// is told what earlier rollovers happened. The old identity stays retired and the highest accepted sequence is
+    /// kept, so an old record cannot be played again.
+    pub fn retire(&mut self, old_unit_id: &str, seq: u32, successor: &str) -> Result<(), String> {
+        if self.units.contains_key(old_unit_id) {
+            return Err(format!("unit `{old_unit_id}` is retired in the same file that enrols it"));
+        }
+        if !self.units.contains_key(successor) {
+            return Err(format!("the successor `{successor}` of `{old_unit_id}` is not enrolled"));
+        }
+        self.rolled.insert(old_unit_id.to_string(), (seq, successor.to_string()));
+        Ok(())
+    }
+
+    /// The unit id a retired identity rolled over to, if it did.
+    pub fn successor_of(&self, old_unit_id: &str) -> Option<&str> {
+        self.rolled.get(old_unit_id).map(|r| r.1.as_str())
     }
 
     /// The suite a unit's enrolled key signs under, when it has a key.
@@ -194,6 +299,60 @@ mod tests {
 
     fn sensing(id: &str) -> EnrolledUnit {
         EnrolledUnit { unit_id: "nicla-1".into(), fingerprint: module(id), key: None, custody: None }
+    }
+
+    #[test]
+    fn a_rollover_moves_the_leaf_to_its_new_id_and_retires_the_old_one() {
+        // The first accepted vector of the leaf firmware repository.
+        let line = include_str!("../tests/identity-vectors.txt")
+            .lines()
+            .find(|l| l.starts_with("rollover ok-basic "))
+            .unwrap();
+        let f: std::collections::HashMap<&str, &str> = line.split_whitespace().filter_map(|x| x.split_once('=')).collect();
+        let rec = hex::decode(f["rec"]).unwrap();
+        let ops = vec![hex::decode(f["ops"]).unwrap()];
+        let now: u64 = f["now"].parse().unwrap();
+        let old_hex = f["old_id"];
+        let mut r = UnitRoster::new();
+        let mut u = micro("b58651c2", LeafKeyCustody::ReadableIdentifiers);
+        u.unit_id = old_hex.into();
+        u.key = Some(format!("p256:{}", hex::encode(&rec[4..69])));
+        r.enrol(u).unwrap();
+        // A wrong operator key is refused and changes nothing.
+        let bad = vec![ops[0].iter().map(|b| b ^ 1).collect::<Vec<u8>>()];
+        assert!(r.accept_rollover(&rec, now, 3, &bad, true).is_err());
+        assert!(r.units.contains_key(old_hex));
+        // Overclaiming the successor level is refused.
+        assert_eq!(r.accept_rollover(&rec, now, 1, &ops, true).unwrap_err(), "successor level exceeds proven");
+        let new_id = r.accept_rollover(&rec, now, 3, &ops, true).unwrap();
+        assert!(!r.units.contains_key(old_hex));
+        assert_eq!(r.successor_of(old_hex), Some(new_id.as_str()));
+        assert_eq!(r.suite_of(&new_id), Some(KeySuite::P256));
+        // The same record again: the old identity is retired for good.
+        assert!(r.accept_rollover(&rec, now, 3, &ops, true).unwrap_err().contains("retired"));
+        // The successor verifies as a device-class unit with its own key.
+        let key = format!("p256:{}", hex::encode(&rec[69..134]));
+        assert_eq!(
+            r.verify(&new_id, &s3("b58651c2"), Some(&key)),
+            Verdict::Verified { class: AssuranceClass::Device }
+        );
+    }
+
+    /// The record the real ESP32-S3 leaf produced on 2026-10-30 after the HMAC
+    /// burn (old id 6f01a05c..., new id a0e12851...), operator-signed in the
+    /// operator's Secure Enclave key. Public data only.
+    #[test]
+    fn the_real_s3_rollover_record_is_accepted_for_the_enrolled_s3_leaf() {
+        let rec = hex::decode(include_str!("../tests/s3-rollover-6f01a05c-to-a0e12851.hex").trim()).unwrap();
+        let op = hex::decode(include_str!("../tests/s3-operator-pub.hex").trim()).unwrap();
+        let not_before = u64::from_be_bytes(rec[138..146].try_into().unwrap());
+        let mut r = UnitRoster::new();
+        let mut u = micro("b58651c2", LeafKeyCustody::ReadableIdentifiers);
+        u.key = Some(format!("p256:{}", hex::encode(&rec[4..69])));
+        r.enrol(u).unwrap(); // unit id 6f01a05cb51e53f79e31b55d89fa2f2e, the 16-byte form
+        let new_id = r.accept_rollover(&rec, not_before + 60, 3, &[op], true).unwrap();
+        assert_eq!(new_id, "a0e1285173b50bd77c78c9c41f15889c");
+        assert_eq!(r.successor_of("6f01a05cb51e53f79e31b55d89fa2f2e"), Some(new_id.as_str()));
     }
 
     #[test]

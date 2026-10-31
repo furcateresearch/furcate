@@ -13,13 +13,26 @@ if(IDF_TARGET STREQUAL "esp32")
     set(identity_srcs "fl_identity_fingerprint.c" "fl_puf.c" "fl_puf_core.c" "fl_puf_escrow.c")
 elseif(IDF_TARGET STREQUAL "esp32s3")
     set(identity_srcs "fl_identity_s3.c" "fl_derive.c" "fl_hmac_select.c" "fl_rollover.c")
+elseif(IDF_TARGET STREQUAL "esp32p4")
+    # No burn-free hardware-bound key path exists on this board (docs/ESP32-P4-WAVESHARE.md section 9):
+    # the key is held in flash and graded "soft".
+    set(identity_srcs "fl_identity_p4.c")
 else()
     set(identity_srcs "fl_identity_hwkey.c")
 endif()
+# The P4 has no radio of its own (the Wi-Fi 6 radio is a separate ESP32-C6 behind esp-hosted, which the
+# tree does not carry): its link is the serial console, so the network module is the no-radio one.
+if(IDF_TARGET STREQUAL "esp32p4")
+    set(net_src "fl_net_none.c")
+    set(net_req "")
+else()
+    set(net_src "fl_net.c")
+    set(net_req esp_wifi)
+endif()
 
-idf_component_register(SRCS "fl_wire.c" "fl_crypto.c" "fl_trust.c" "fl_link.c" "fl_ota.c" "fl_net.c" "fl_request.c" "fl_http.c" "fl_gateway.c"
+idf_component_register(SRCS "fl_wire.c" "fl_crypto.c" "fl_trust.c" "fl_link.c" "fl_ota.c" ${net_src} "fl_request.c" "fl_http.c" "fl_gateway.c"
                             ${identity_srcs}
                        INCLUDE_DIRS "include" "../../provision"
                        REQUIRES mbedtls nvs_flash esp_driver_uart efuse app_update esp_timer
                                 esp_partition bootloader_support micro-ecc esp_app_format
-                                esp_wifi esp_netif esp_event lwip heap esp_hw_support esp_driver_usb_serial_jtag)
+                                ${net_req} esp_netif esp_event lwip heap esp_hw_support esp_driver_usb_serial_jtag)

@@ -140,6 +140,13 @@ static bool enroll_step(void) {
 // fl_puf_helper_import. Without it a wiped leaf enrolls afresh and gets a new id.
 static fl_puf_blob_t s_blob;
 static bool s_has_check;
+// Kept after a good boot so an operator command can adopt or trial-check helper
+// data (cleared by fl_puf_clear_trial and when the adopt completes). The secret
+// is kept only for leaves still on version 2 helper data.
+static uint8_t s_trial[REGION_BYTES];
+static bool s_trial_held;
+static uint8_t s_adopt_secret[FL_PUF_BITS / 8];
+static bool s_adopt_held;
 
 static esp_err_t load_helper(nvs_handle_t nv) {
     size_t len = sizeof s_blob;
@@ -200,6 +207,8 @@ esp_err_t fl_puf_secret(uint8_t out[FL_PUF_BITS / 8], fl_puf_stats_t *stats) {
     nvs_close(nv);
 
     fl_puf_core_reconstruct(&s_blob.h, s_reading, out, &s_stats.cells_flipped, &s_stats.bits_corrected);
+    memcpy(s_trial, s_reading, REGION_BYTES);
+    s_trial_held = true;
     memset(s_reading, 0, REGION_BYTES);
     if (s_stats.cells_flipped > MAX_FLIPPED_CELLS) {
         memset(out, 0, FL_PUF_BITS / 8);
@@ -213,7 +222,40 @@ esp_err_t fl_puf_secret(uint8_t out[FL_PUF_BITS / 8], fl_puf_stats_t *stats) {
                       "no identity");
         return ESP_ERR_INVALID_CRC;
     }
+    if (!s_has_check) {
+        memcpy(s_adopt_secret, out, sizeof s_adopt_secret);
+        s_adopt_held = true;
+    }
     if (stats) *stats = s_stats;
+    return ESP_OK;
+}
+
+bool fl_puf_has_v3(void) { return s_has_check; }
+uint32_t fl_puf_region_addr(void) { return REGION_ADDR; }
+
+const uint8_t *fl_puf_trial_reading(void) { return s_trial_held ? s_trial : NULL; }
+void fl_puf_clear_trial(void) {
+    memset(s_trial, 0, sizeof s_trial);
+    s_trial_held = false;
+}
+
+esp_err_t fl_puf_adopt(void) {
+    if (s_has_check || !s_adopt_held) return ESP_ERR_INVALID_STATE;
+    fl_puf_blob_t b;
+    if (!fl_puf_core_adopt(&s_blob.h, s_adopt_secret, REGION_ADDR, &b)) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t nv;
+    esp_err_t e = nvs_open("fl-puf", NVS_READWRITE, &nv);
+    if (e != ESP_OK) return e;
+    // helper2 stays: an image from before version 3 can still read it.
+    e = nvs_set_blob(nv, "helper3", &b, sizeof b);
+    if (e == ESP_OK) e = nvs_set_u32(nv, "addr", REGION_ADDR);
+    if (e == ESP_OK) e = nvs_commit(nv);
+    nvs_close(nv);
+    if (e != ESP_OK) return e;
+    s_blob = b;
+    s_has_check = true;
+    memset(s_adopt_secret, 0, sizeof s_adopt_secret);
+    s_adopt_held = false;
     return ESP_OK;
 }
 

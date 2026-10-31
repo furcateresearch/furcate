@@ -206,6 +206,69 @@ def cmd_rollover(a):
                       "sha256": hashlib.sha256(rec).hexdigest()}, indent=1))
 
 
+def _escrow_session(a):
+    link = P.Serial(PORT, log=(print if a.verbose else None))
+    g, s = load_grant(KEYS["node"])
+    ses = P.Session.open(link, KEYS["node"], g, s)
+    return ses, P.one(ses.evidence, 1, b"")  # evidence tag 1 is the eFuse MAC
+
+
+def _escrow_dir() -> Path:
+    d = STATE / "escrow"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _escrow_finish(ses, t, f, what):
+    ses.call(P.BYE)
+    ok = t == P.ESCROW and P.one(f, P.T_OK) == b"\x01"
+    print(json.dumps({"op": what, "ok": ok, "reason": (P.one(f, P.T_REASON, b"") or b"").decode() or None,
+                      "detail": (P.one(f, P.T_DETAIL, b"") or b"").decode() or None}, indent=1))
+    return ok, f
+
+
+def cmd_escrow_export(a):
+    """Asks the classic leaf for its helper data export, checks the leaf's signature and
+    keeps the message under ~/.furcate-leaf/escrow/."""
+    import fl_puf_escrow as E
+    ses, mac = _escrow_session(a)
+    t, f = ses.call(P.ESCROW_EXPORT_REQ)
+    ok, f = _escrow_finish(ses, t, f, "escrow-export")
+    if not ok:
+        sys.exit(1)
+    msg = P.one(f, P.T_RECORD)
+    why, leaf_id, mac2, blob = E.verify_export(msg, ses.leaf_pub, 0x3FFDF000)
+    if why:
+        sys.exit("export refused by the parent check: " + why)
+    out = _escrow_dir() / f"{leaf_id.hex()[:32]}.fhx1"
+    out.write_bytes(msg)
+    print(json.dumps({"leaf_id": leaf_id.hex()[:32], "mac": mac2.hex(), "blob_digest": E.blob_digest(blob).hex(),
+                      "message_sha256": hashlib.sha256(msg).hexdigest(), "file": str(out)}, indent=1))
+
+
+def cmd_escrow_adopt(a):
+    import fl_puf_escrow as E
+    ses, mac = _escrow_session(a)
+    body = b"FHA1" + mac + ses.leaf_id + a.seq.to_bytes(4, "big")
+    der = P.se_sign(KEYS["operator"], body)
+    t, f = ses.call(P.ESCROW_ADOPT, P.tlv(P.T_RECORD, body + bytes([len(der)]) + der))
+    ok, _ = _escrow_finish(ses, t, f, "escrow-adopt")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_escrow_restore(a):
+    import fl_puf_escrow as E
+    msg = Path(a.export_file).read_bytes()
+    blob = msg[E.EXPORT_BODY + 64:]
+    ses, mac = _escrow_session(a)
+    replace = bytes.fromhex(a.replace_id) if a.replace_id else ses.leaf_id
+    body = b"FHR1" + mac + replace + msg[4:36] + E.blob_digest(blob) + a.seq.to_bytes(4, "big")
+    der = P.se_sign(KEYS["operator"], body)
+    t, f = ses.call(P.ESCROW_RESTORE, P.tlv(P.T_RECORD, body + bytes([len(der)]) + der + blob))
+    ok, _ = _escrow_finish(ses, t, f, "escrow-restore")
+    sys.exit(0 if ok else 1)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -219,6 +282,16 @@ def main():
     p = sp.add_parser("rollover")
     p.add_argument("seq", type=int)
     p.add_argument("--days", type=int, default=3)
+    p.add_argument("-v", "--verbose", action="store_true")
+    p = sp.add_parser("escrow-export")
+    p.add_argument("-v", "--verbose", action="store_true")
+    p = sp.add_parser("escrow-adopt")
+    p.add_argument("seq", type=int)
+    p.add_argument("-v", "--verbose", action="store_true")
+    p = sp.add_parser("escrow-restore")
+    p.add_argument("export_file")
+    p.add_argument("seq", type=int)
+    p.add_argument("--replace-id", help="64 hex digits: the enrolment this command may replace (default: the leaf's current id)")
     p.add_argument("-v", "--verbose", action="store_true")
     p = sp.add_parser("grant")
     p.add_argument("node")
@@ -246,7 +319,7 @@ def main():
     p.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args()
     {"keys": cmd_keys, "pin": cmd_pin, "grant": cmd_grant, "fw-release": cmd_fw_release,
-     "model-release": cmd_model_release, "info": cmd_info, "rollover": cmd_rollover}[a.cmd](a)
+     "model-release": cmd_model_release, "info": cmd_info, "rollover": cmd_rollover, "escrow-export": cmd_escrow_export, "escrow-adopt": cmd_escrow_adopt, "escrow-restore": cmd_escrow_restore}[a.cmd](a)
 
 
 if __name__ == "__main__":

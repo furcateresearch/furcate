@@ -267,6 +267,9 @@ pub const CONTROL_PORTS: &[&str] = &["7616", "7617"];
 /// Returns the file contents. Writing it, and reloading the server, belong to
 /// the caller — the same split the advisor uses, so this stays a pure
 /// function that a test can read.
+/// What a site tells browsers about TLS when it declares nothing of its own: one year.
+pub const DEFAULT_HSTS: &str = "max-age=31536000";
+
 pub fn render(edge: &Edge, hosts: &[Vhost]) -> String {
     let mut out = String::new();
     out.push_str("# Rendered by `furcate deploy`. Do not edit.\n");
@@ -400,6 +403,15 @@ pub fn render(edge: &Edge, hosts: &[Vhost]) -> String {
         // Checked again here even though the deploy checked it: this function
         // writes the file, and a hand-edited headers.json is exactly the input
         // nobody re-validated.
+        // Every site answers over TLS, so every site tells browsers to keep it so. A site that declares its own
+        // Strict-Transport-Security for all its paths replaces this one. No `includeSubDomains` and no `preload`:
+        // the first covers names the site does not own, the second cannot be taken back.
+        let declares_hsts = h.headers.iter().any(|hd| {
+            hd.path.is_none() && hd.name.eq_ignore_ascii_case("Strict-Transport-Security") && hd.check().is_ok()
+        });
+        if !declares_hsts {
+            out.push_str(&format!("\theader {{\n\t\tStrict-Transport-Security \"{DEFAULT_HSTS}\"\n\t\tdefer\n\t}}\n"));
+        }
         for hd in h.headers.iter().filter(|hd| hd.check().is_ok()) {
             let matcher = hd.path.as_deref().map(|p| format!(" {p}")).unwrap_or_default();
             out.push_str(&format!(
@@ -932,9 +944,28 @@ mod tests {
     }
 
     #[test]
-    fn a_site_that_declares_no_headers_renders_no_header_directive() {
+    fn a_site_that_declares_no_headers_renders_only_the_default_transport_security() {
         let c = render(&edge(), &[static_host(), selves_host()]);
-        assert!(!c.contains("header"));
+        assert_eq!(c.matches("Strict-Transport-Security \"max-age=31536000\"").count(), 2, "one per site");
+        assert!(!c.contains("Cache-Control"));
+        assert!(!c.contains("includeSubDomains") && !c.contains("preload"));
+    }
+
+    #[test]
+    fn a_site_that_declares_its_own_transport_security_is_not_given_a_second() {
+        let mut h = static_host();
+        h.headers = vec![header(None, "strict-transport-security", "max-age=63072000")];
+        let c = render(&edge(), &[h]);
+        assert_eq!(c.matches("max-age=").count(), 1);
+        assert!(c.contains("max-age=63072000") && !c.contains("max-age=31536000"));
+    }
+
+    #[test]
+    fn a_header_declared_for_one_path_does_not_stand_in_for_the_site_wide_one() {
+        let mut h = static_host();
+        h.headers = vec![header(Some("/assets/*"), "Strict-Transport-Security", "max-age=1")];
+        let c = render(&edge(), &[h]);
+        assert!(c.contains("max-age=31536000") && c.contains("max-age=1"));
     }
 
     /// The defect this guards: a site with a custom domain also answers on

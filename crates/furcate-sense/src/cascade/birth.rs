@@ -2,7 +2,7 @@
 //! was made in a simulated world.
 //!
 //! A record binds the artefact hashes to their digital lineage and to the head
-//! of a hash-chained experience ledger. It is signed by a Living Worlds signer
+//! of a hash-chained experience ledger. It is signed by a service signer
 //! the node has enrolled. The contract is held by the producer; the codes are
 //! in this module, and `tests/fixtures/birth-record.golden.json` is the
 //! byte-identical vector both sides verify.
@@ -110,7 +110,7 @@ impl std::fmt::Display for BirthRefusal {
 }
 impl std::error::Error for BirthRefusal {}
 
-/// What the verifying node holds. `signers` are the Living Worlds signer keys it has enrolled
+/// What the verifying node holds. `signers` are the service signer keys it has enrolled
 /// (`ed25519:<hex>`); nothing in a record can add to them.
 pub struct BirthContext<'a> {
     pub signers: &'a [String],

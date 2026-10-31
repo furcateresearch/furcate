@@ -114,6 +114,11 @@ pub fn load(v: &Value) -> Result<Loaded, String> {
         };
         sources.push(Source { leaf_unit: unit_id, chip, chip_channels: channels(leaf.get("channels"))?, module });
     }
+    // Identities that have rolled over to a successor, written by `apply_rollover`. They stay retired.
+    for r in v.get("retired").and_then(Value::as_array).into_iter().flatten() {
+        let seq = r.get("seq").and_then(Value::as_u64).ok_or("a `retired` entry has no `seq`")? as u32;
+        roster.retire(text(r, "unit")?, seq, text(r, "successor")?)?;
+    }
     Ok(Loaded {
         bridge_id: text(v, "bridge_id")?.to_string(),
         ceiling: class(text(v, "ceiling")?)?,
@@ -121,6 +126,48 @@ pub fn load(v: &Value) -> Result<Loaded, String> {
         roster,
         sources,
     })
+}
+
+/// Carry out an identity rollover on the operator's file: the leaf named by the record's old key takes its new key,
+/// now held in a fuse, and the old identity is written down as retired so the same record cannot be applied twice.
+///
+/// `record` is the leaf's rollover record, which the old key, the new key and the operator each signed.
+/// `operator_pubs` are the operator keys the site trusts (uncompressed P-256). `proven_level` is what the successor
+/// showed in a live, verified session, never what the record says of itself. Nothing is changed on any refusal.
+/// Returns the successor's unit id.
+pub fn apply_rollover(v: &mut Value, record: &[u8], now: u64, proven_level: u8, operator_pubs: &[Vec<u8>]) -> Result<String, String> {
+    if record.len() < 146 {
+        return Err("malformed record".into());
+    }
+    let mut roster = load(v)?.roster;
+    let new_id = roster.accept_rollover(record, now, proven_level, operator_pubs, true)?;
+    let old_id = hex::encode(furcate_identity::unit_rollover::leaf_id(&record[4..69]));
+    let seq = u32::from_be_bytes(record[134..138].try_into().expect("four bytes"));
+    let new_key = format!("p256:{}", hex::encode(&record[69..134]));
+    let leaves = v.get_mut("leaves").and_then(Value::as_array_mut).ok_or("`leaves` is missing")?;
+    let leaf = leaves
+        .iter_mut()
+        .find(|l| {
+            l.get("key")
+                .and_then(Value::as_str)
+                .and_then(|k| k.strip_prefix("p256:"))
+                .and_then(|k| hex::decode(k).ok())
+                .is_some_and(|k| hex::encode(Sha256::digest(&k)) == old_id)
+        })
+        .ok_or("the leaf is enrolled under a form of its key this file does not write")?;
+    leaf["key"] = Value::String(new_key);
+    leaf["custody"] = serde_json::json!({"kind": "fuse-key"});
+    let entry = serde_json::json!({"unit": old_id, "seq": seq, "successor": new_id});
+    match v.get_mut("retired").and_then(Value::as_array_mut) {
+        Some(a) => a.push(entry),
+        None => v["retired"] = Value::Array(vec![entry]),
+    }
+    // The file as changed must itself load, with the successor enrolled and the old identity gone.
+    let after = load(v)?;
+    if after.roster.successor_of(&old_id).is_none() {
+        return Err("the rolled file does not record the retirement".into());
+    }
+    Ok(new_id)
 }
 
 #[cfg(test)]
@@ -169,5 +216,74 @@ mod tests {
     fn a_leaf_enrolled_twice_is_refused() {
         let e = load(&json!({"bridge_id": "b", "ceiling": "soft", "leaves": [leaf(), leaf()]}));
         assert!(e.is_err());
+    }
+}
+
+#[cfg(test)]
+mod rollover_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn record() -> Vec<u8> {
+        hex::decode(include_str!("../../furcate-identity/tests/s3-rollover-6f01a05c-to-a0e12851.hex").trim()).unwrap()
+    }
+    fn operator() -> Vec<u8> {
+        hex::decode(include_str!("../../furcate-identity/tests/s3-operator-pub.hex").trim()).unwrap()
+    }
+    fn file() -> Value {
+        let rec = record();
+        json!({"bridge_id": "furcate:node:b", "ceiling": "device", "leaves": [{
+            "name": "s3-leaf", "key": format!("p256:{}", hex::encode(&rec[4..69])),
+            "custody": {"kind": "readable-identifiers"},
+            "mac": "44b176b05724", "otp": "0102030405060708", "revision": "0002",
+            "channels": {"0": "chip.tmp"}}]})
+    }
+    fn when() -> u64 {
+        u64::from_be_bytes(record()[138..146].try_into().unwrap()) + 60
+    }
+
+    #[test]
+    fn the_real_s3_record_moves_the_leaf_in_the_operators_file_and_cannot_be_played_twice() {
+        let mut v = file();
+        let new_id = apply_rollover(&mut v, &record(), when(), 3, &[operator()]).unwrap();
+        // The file now enrols the successor key, held in a fuse, and loads.
+        assert_eq!(v["leaves"][0]["custody"]["kind"], "fuse-key");
+        assert_eq!(v["retired"][0]["successor"], new_id.as_str());
+        let l = load(&v).unwrap();
+        assert_eq!(l.sources[0].leaf_unit, new_id);
+        // The same record again: refused, and the file is unchanged.
+        let before = v.clone();
+        let e = apply_rollover(&mut v, &record(), when(), 3, &[operator()]).unwrap_err();
+        assert_ne!(e, "");
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn a_record_the_operator_did_not_sign_changes_nothing() {
+        let mut v = file();
+        let before = v.clone();
+        let mut wrong = operator();
+        wrong[10] ^= 1;
+        assert!(apply_rollover(&mut v, &record(), when(), 3, &[wrong]).is_err());
+        // Altered after signing.
+        let mut tampered = record();
+        tampered[140] ^= 1;
+        assert!(apply_rollover(&mut v, &tampered, when(), 3, &[operator()]).is_err());
+        // The successor claiming more than it proved.
+        assert!(apply_rollover(&mut v, &record(), when(), 1, &[operator()]).is_err());
+        // Outside the record's window.
+        assert!(apply_rollover(&mut v, &record(), 1, 3, &[operator()]).is_err());
+        assert_eq!(v, before, "no refusal may leave the file half changed");
+    }
+
+    #[test]
+    fn the_old_key_is_not_enrolled_again_after_it_retired() {
+        let mut v = file();
+        let rec = record();
+        apply_rollover(&mut v, &rec, when(), 3, &[operator()]).unwrap();
+        // Putting the old leaf back by hand next to its own retirement is refused when the file loads.
+        v["leaves"].as_array_mut().unwrap().push(file()["leaves"][0].clone());
+        let e = load(&v).err().unwrap();
+        assert!(e.contains("retired") || e.contains("enrolled"), "{e}");
     }
 }

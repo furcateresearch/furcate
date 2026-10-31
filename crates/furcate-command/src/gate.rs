@@ -128,6 +128,11 @@ impl<K: KillState, S: SiteSigner> Gate<K, S> {
     pub fn site_key_id(&self) -> String {
         self.signer.key_id()
     }
+    /// The stop-request source this gate asks, for a service that reports on it.
+    pub fn kill_state(&self) -> &K {
+        &self.kill
+    }
+
     pub fn chain(&self) -> &Chain {
         &self.chain
     }

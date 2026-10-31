@@ -116,6 +116,23 @@ pub struct FirewallConfig {
     pub lan_services: bool,
     #[serde(default)]
     pub open: Vec<Opening>,
+    /// Whether ssh is reachable on every interface (the default) or only on
+    /// the overlay and from the known sources below. A node on a network it
+    /// does not control sets this to `false`.
+    #[serde(default = "default_true")]
+    pub ssh_on_lan: bool,
+    /// Interfaces on which only `known_sources` are accepted, on every port.
+    /// Anything else arriving on them is dropped without an answer.
+    #[serde(default)]
+    pub known_interfaces: Vec<String>,
+    /// Addresses (or prefixes) of the devices that may reach this node on the
+    /// `known_interfaces`: the controller, the cluster, the leaves.
+    #[serde(default)]
+    pub known_sources: Vec<String>,
+    /// When `true`, the LAN interfaces get no ICMP answer (no ping reply, no
+    /// unreachable); neighbour discovery still works.
+    #[serde(default)]
+    pub quiet_lan: bool,
 }
 
 impl FirewallConfig {
@@ -126,7 +143,7 @@ impl FirewallConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
-        for name in self.lan.iter().chain(std::iter::once(&self.overlay_interface)).chain(&self.leaf_link) {
+        for name in self.lan.iter().chain(std::iter::once(&self.overlay_interface)).chain(&self.leaf_link).chain(&self.known_interfaces) {
             interface_name(name)?;
         }
         if self.lan.contains(&self.overlay_interface) {
@@ -136,6 +153,12 @@ impl FirewallConfig {
             if !self.lan.contains(i) {
                 return Err(format!("the leaf link may open only on LAN interfaces, and {i} is not one"));
             }
+        }
+        for s in &self.known_sources {
+            source_address(s)?;
+        }
+        if !self.known_interfaces.is_empty() && self.known_sources.is_empty() {
+            return Err("known_interfaces without known_sources would accept nothing on them".to_string());
         }
         if self.overlay_port == Some(0) || self.announce_port == 0 {
             return Err("port 0 is not a port".to_string());
@@ -165,6 +188,24 @@ fn interface_name(name: &str) -> Result<(), String> {
     }
 }
 
+/// An IPv4 or IPv6 address, optionally with a prefix length, and nothing nft
+/// would read as anything else.
+fn source_address(s: &str) -> Result<bool, String> {
+    let (addr, len) = match s.split_once('/') {
+        Some((a, l)) => (a, Some(l)),
+        None => (s, None),
+    };
+    let ip: std::net::IpAddr = addr.parse().map_err(|_| format!("{s:?} is not an address"))?;
+    if let Some(l) = len {
+        let max = if ip.is_ipv4() { 32 } else { 128 };
+        match l.parse::<u8>() {
+            Ok(n) if n <= max => {}
+            _ => return Err(format!("{s:?} has no valid prefix length")),
+        }
+    }
+    Ok(ip.is_ipv4())
+}
+
 fn set_of(names: &[String]) -> String {
     let quoted: Vec<String> = names.iter().map(|n| format!("\"{n}\"")).collect();
     format!("{{ {} }}", quoted.join(", "))
@@ -188,16 +229,44 @@ pub fn render(config: &FirewallConfig, overlay_port: u16) -> String {
     let _ = writeln!(r, "\t\tiif \"lo\" accept");
     let _ = writeln!(r, "\t\tct state established,related accept");
     let _ = writeln!(r, "\t\tct state invalid drop");
+    // Neighbour discovery is how a link works at all; the rest of ICMP is an
+    // answer, which a quiet LAN does not give.
+    let nd = "nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert";
+    let quiet = if config.quiet_lan && !config.lan.is_empty() { format!("iifname != {lan} ") } else { String::new() };
     let _ = writeln!(
         r,
-        "\t\ticmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} accept"
+        "\t\t{quiet}icmp type {{ echo-request, destination-unreachable, time-exceeded, parameter-problem }} accept"
     );
-    let _ = writeln!(
-        r,
-        "\t\ticmpv6 type {{ echo-request, destination-unreachable, packet-too-big, time-exceeded, \
-         parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert }} accept"
-    );
-    let _ = writeln!(r, "\t\ttcp dport {SSH_PORT} accept comment \"ssh\"");
+    if quiet.is_empty() {
+        let _ = writeln!(
+            r,
+            "\t\ticmpv6 type {{ echo-request, destination-unreachable, packet-too-big, time-exceeded, \
+             parameter-problem, {nd} }} accept"
+        );
+    } else {
+        let _ = writeln!(r, "\t\ticmpv6 type {{ {nd} }} accept");
+        let _ = writeln!(
+            r,
+            "\t\t{quiet}icmpv6 type {{ echo-request, destination-unreachable, packet-too-big, time-exceeded, \
+             parameter-problem }} accept"
+        );
+    }
+    if !config.known_interfaces.is_empty() {
+        let ifs = set_of(&config.known_interfaces);
+        let v4: Vec<&str> = config.known_sources.iter().map(String::as_str).filter(|s| source_address(s) == Ok(true)).collect();
+        let v6: Vec<&str> = config.known_sources.iter().map(String::as_str).filter(|s| source_address(s) == Ok(false)).collect();
+        if !v4.is_empty() {
+            let _ = writeln!(r, "\t\tiifname {ifs} ip saddr {{ {} }} accept comment \"known sources\"", v4.join(", "));
+        }
+        if !v6.is_empty() {
+            let _ = writeln!(r, "\t\tiifname {ifs} ip6 saddr {{ {} }} accept comment \"known sources\"", v6.join(", "));
+        }
+    }
+    if config.ssh_on_lan {
+        let _ = writeln!(r, "\t\ttcp dport {SSH_PORT} accept comment \"ssh\"");
+    } else {
+        let _ = writeln!(r, "\t\tiifname \"{ov}\" tcp dport {SSH_PORT} accept comment \"ssh on the overlay\"");
+    }
     let _ = writeln!(r, "\t\tudp dport {overlay_port} accept comment \"overlay wireguard\"");
     if !config.lan.is_empty() {
         let _ = writeln!(r, "\t\tiifname {lan} udp dport {} accept comment \"overlay announce\"", config.announce_port);
@@ -321,6 +390,38 @@ mod tests {
         let closed = FirewallConfig::parse(r#"{"lan": ["eth0"], "model_gateway": null, "lan_services": false}"#).unwrap();
         let r = render(&closed, 41000);
         assert!(!r.contains("8750") && !r.contains("5353") && !r.contains("dport { 68, 546 }"));
+    }
+
+    #[test]
+    fn a_node_on_a_public_network_answers_only_its_known_sources() {
+        let c = FirewallConfig::parse(
+            r#"{"lan": ["wlan0"], "leaf_link": ["wlan0"], "ssh_on_lan": false, "quiet_lan": true,
+                "known_interfaces": ["tailscale0"],
+                "known_sources": ["10.92.0.61", "fd7a:115c:a1e0::da39:f83e", "10.91.0.0/24"]}"#,
+        )
+        .unwrap();
+        let r = render(&c, 51820);
+        assert!(!r.contains("tcp dport 22 accept comment \"ssh\""), "ssh is not open on every interface:\n{r}");
+        assert!(r.contains("iifname \"fur0\" tcp dport 22 accept"));
+        assert!(r.contains("iifname { \"tailscale0\" } ip saddr { 10.92.0.61, 10.91.0.0/24 } accept"));
+        assert!(r.contains("iifname { \"tailscale0\" } ip6 saddr { fd7a:115c:a1e0::da39:f83e } accept"));
+        assert!(r.contains("iifname != { \"wlan0\" } icmp type { echo-request"));
+        assert!(r.contains("icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept"));
+        assert!(r.contains("iifname { \"wlan0\" } tcp dport 7781 accept comment \"leaf link\""));
+        // The defaults change nothing for a node that does not ask.
+        let d = render(&FirewallConfig::parse(r#"{"lan": ["wlan0"]}"#).unwrap(), 51820);
+        assert!(d.contains("tcp dport 22 accept comment \"ssh\"") && !d.contains("saddr") && !d.contains("iifname !="));
+    }
+
+    #[test]
+    fn known_sources_are_addresses_and_need_an_interface() {
+        for bad in [
+            r#"{"lan": [], "known_interfaces": ["tailscale0"], "known_sources": ["host.example"]}"#,
+            r#"{"lan": [], "known_interfaces": ["tailscale0"], "known_sources": ["10.0.0.0/33"]}"#,
+            r#"{"lan": [], "known_interfaces": ["tailscale0"]}"#,
+        ] {
+            assert!(FirewallConfig::parse(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

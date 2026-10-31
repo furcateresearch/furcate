@@ -1,7 +1,7 @@
-# Sending verified readings to Living Worlds: the physical batch
+# Sending verified readings to a consumer: the physical batch
 
 This page is the producer side. A large processing node holds readings that reached it through the cascade
-described in [`leaf-tier.md`](leaf-tier.md). When a consumer outside Furcate (Living Worlds is the first) wants to use
+described in [`leaf-tier.md`](leaf-tier.md). When a consumer outside Furcate (a simulation service is the first) wants to use
 them, the large node assembles a **physical batch**: the verified readings, the chain of rungs each one passed, the
 witnessed log that shows nothing was dropped, one signature by the site key. The consumer checks the arithmetic itself
 with no Furcate code. Its side of the contract, with the full wire format, canonical JSON rules and refusal codes, is
@@ -44,7 +44,7 @@ sensing node (joint states, currents) plus an actuator set on the same rungs.
         |                                                    |
         |  physical-batch (push, outbound only)              |  physical-command, shadow first,
         v                                                    |  polled by the site (planned)
-  [ Living Worlds core ]  verifies signature, log, level;    |
+  [ consuming service ]  verifies signature, log, level;    |
         |  stores; feeds the twin loop and calibration       |
         v                                                    |
   [ interface layer ]  simulate, train, plan; validate in the band ---+
@@ -53,8 +53,8 @@ sensing node (joint states, currents) plus an actuator set on the same rungs.
              and a signed model or calibration update goes down the cascade, refused unsigned.
 ```
 
-The site is the only party that talks to Living Worlds, and only outward: it pushes batches and polls for commands, so
-no inbound connection to a site is needed. Living Worlds proposes; the site's signed policy decides; a kill order at the
+The site is the only party that talks to the consumer, and only outward: it pushes batches and polls for commands, so
+no inbound connection to a site is needed. The consumer proposes; the site's signed policy decides; a kill order at the
 site dominates anything proposed.
 
 ## What the large node does

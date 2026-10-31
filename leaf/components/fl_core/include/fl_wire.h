@@ -36,10 +36,16 @@ enum {
     FL_MSG_CONFIG = 0x61,  // operator-signed site configuration (fl_net.h)
     FL_MSG_ROLLOVER_REQ = 0x62,  // operator-granted: build the identity rollover record (fl_identity.h)
     FL_MSG_ROLLOVER = 0x63,      // the record
+    FL_MSG_ESCROW_EXPORT_REQ = 0x64,  // classic ESP32: ask for the signed helper data export (fl_puf_escrow.h)
+    FL_MSG_ESCROW = 0x65,             // reply to the three escrow commands
+    FL_MSG_ESCROW_ADOPT = 0x66,       // operator command FHA1: write version 3 helper data from version 2
+    FL_MSG_ESCROW_RESTORE = 0x67,     // operator command FHR1: put escrowed helper data back
     FL_MSG_SINK = 0x70,    // throughput test: the leaf counts the bytes and answers
     FL_MSG_GATEWAY_ASK = 0x71,  // signed request to the cell's model gateway (fl_gateway.h)
     FL_MSG_SENSE_REQ = 0x72,  // ask for signed readings of the leaf's own sensors (fl_sensors.h)
     FL_MSG_SENSE = 0x73,      // the readings
+    FL_MSG_SPOOL_REQ = 0x74,  // list, read or seal the SD spool (fl_spool.h)
+    FL_MSG_SPOOL = 0x75,      // the answer
     FL_MSG_BYE = 0x7F,
 };
 

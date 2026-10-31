@@ -91,11 +91,11 @@ to the head of the Raspberry Pi (small processing node), then to the next rung a
   timestamp; the gyroscope scale is the library default (a check tool exists, the capture so far had no
   motion). The ESP32-S3 joins 2.4 GHz only.
 
-### The path from sensor to Living Worlds, and where each part stands
+### The path from sensor to a consumer, and where each part stands
 
 ```
 sensing node --(BLE or I2C)--> micro processing node --(FL1 over Wi-Fi or serial)--> furcate-leaf-link
-   --(JSON frames, unix socket)--> small processing node --> next rung --> batch exporter --> Living Worlds
+   --(JSON frames, unix socket)--> small processing node --> next rung --> batch exporter --> consumer
 ```
 
 | Part | Built | Tested without a board | Needs a board or an owner decision |

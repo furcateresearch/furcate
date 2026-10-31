@@ -169,22 +169,28 @@ static void send_msg(const uint8_t *m, size_t n) {
 }
 
 // Reads one frame line; returns decoded length, 0 on timeout, -1 on junk.
+// A line that is only partly in when the deadline passes is kept for the next call: the serve loop
+// reads in one-second windows, and a request that straddled a window edge used to lose its front
+// half, so the leaf never answered it (seen on the P4 when a head polled on an exact 5 s cadence).
+static size_t s_rx_n;  // bytes of the line being read
 static int recv_msg(uint8_t *out, size_t cap, int64_t deadline_us) {
-    size_t n = 0;
+    size_t n = s_rx_n;
     while (esp_timer_get_time() < deadline_us) {
         uint8_t c;
         int k = rx_byte(&c);
-        if (k < 0) return 0;
+        if (k < 0) break;
         if (k == 0) continue;
         if (c == '\r') continue;
         if (c == '\n') {
-            if (n > 4 && memcmp(s_line, "FL1:", 4) == 0) return fl_b64_decode(s_line + 4, n - 4, out, cap);
-            n = 0;
+            size_t len = n;
+            n = s_rx_n = 0;
+            if (len > 4 && memcmp(s_line, "FL1:", 4) == 0) return fl_b64_decode(s_line + 4, len - 4, out, cap);
             continue;
         }
         if (n < sizeof s_line) s_line[n++] = (char)c;
         else n = 0;
     }
+    s_rx_n = n;
     return 0;
 }
 
@@ -226,12 +232,14 @@ static void refuse(const char *why) {
 }
 
 static void end_session(void) {
+    s_rx_n = 0;
     fl_wipe(&s_ses, sizeof s_ses);
 }
 
 // Runs one handshake attempt. Returns true when a session is up.
 static bool handshake(void) {
     uint8_t eph_priv[32], eph_pub[FL_PUB_LEN], nonce[32];
+    s_rx_n = 0;  // a half line from before is not part of the answer to this HELLO
     fl_p256_keygen(eph_priv, eph_pub);
     esp_fill_random(nonce, sizeof nonce);
 
@@ -334,6 +342,7 @@ static uint8_t required_role(uint8_t type) {
     switch (type) {
     case FL_MSG_INFO_REQ:
     case FL_MSG_SENSE_REQ:
+    case FL_MSG_SPOOL_REQ:
     case FL_MSG_BYE:
         return FL_ROLE_READ;
     case FL_MSG_INFER:
@@ -347,6 +356,9 @@ static uint8_t required_role(uint8_t type) {
     case FL_MSG_REVOKE:
     case FL_MSG_CONFIG:
     case FL_MSG_ROLLOVER_REQ:
+    case FL_MSG_ESCROW_EXPORT_REQ:
+    case FL_MSG_ESCROW_ADOPT:
+    case FL_MSG_ESCROW_RESTORE:
         return FL_ROLE_CONFIG;
     case FL_MSG_SINK:
         return FL_ROLE_READ;
@@ -400,7 +412,10 @@ static void serve(fl_cmd_handler_t handler) {
         }
         if (type == FL_MSG_BYE) break;
         fl_w_init(&r, reply, sizeof reply, 0);
+        int64_t t_handler = esp_timer_get_time();
         uint8_t rt = handler(type, s_plain + 1, pl - 1, &s_ses.grant, &r);
+        if (esp_timer_get_time() - t_handler > 1000000)
+            ESP_LOGW(TAG, "command 0x%02x took %d ms", type, (int)((esp_timer_get_time() - t_handler) / 1000));
         if (rt && !r.overflow) {
             reply[0] = rt;
             send_sealed(reply, r.len);

@@ -954,6 +954,16 @@ pub fn run() -> anyhow::Result<()> {
         signing.clone(),
         trust,
     );
+    // Who this machine answers at all. Without the file it answers any address that can reach it, as before; with it,
+    // a connection from any other address is closed unread and the refusal is logged.
+    let router = match furcate_api::Sources::load(&furcate_paths::config("control-sources.json")) {
+        Ok(Some(sources)) => {
+            eprintln!("furcated: answering only the addresses in control-sources.json (and loopback)");
+            router.answering_only(sources)
+        }
+        Ok(None) => router,
+        Err(e) => return Err(anyhow::anyhow!("control-sources.json: {e}")),
+    };
 
     register_local_sensors(Arc::clone(&agent), &node_id);
     // Passkey SSH sessions on this machine are anchored in its chain. The

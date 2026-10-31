@@ -177,6 +177,12 @@ impl KillOrder {
         self
     }
 
+    /// Whether the operator key made this order. A reader that only needs to know that an order is genuine, and has no
+    /// plan to execute it, asks this and nothing else.
+    pub fn verify(&self, key: &VerifyingKey) -> bool {
+        self.signature_valid(key)
+    }
+
     fn signature_valid(&self, key: &VerifyingKey) -> bool {
         let Some(hexsig) = &self.signature else {
             return false;

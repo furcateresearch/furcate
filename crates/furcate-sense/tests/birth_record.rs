@@ -1,6 +1,6 @@
-//! The birth record, checked against the vector the Living Worlds side produced, byte for byte.
+//! The birth record, checked against the vector the producing side made, byte for byte.
 //!
-//! `tests/fixtures/birth-record.golden.json` is made by the producer's test (livingworlds-core,
+//! `tests/fixtures/birth-record.golden.json` is made by the producer's test (the producer's
 //! tests/birth-record.test.ts) and signed by a test key whose seed is public: 32 bytes of 0x42. This side
 //! shares no code with it, so the vector is what stops the two drifting. The hash below is pinned in both
 //! tests; changing one copy of the file without the other fails one of them.

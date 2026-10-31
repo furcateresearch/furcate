@@ -159,6 +159,8 @@ class Gateway:
         self.hub = P._Hub(link) if a.cmd == "head" and link.startswith("listen://") else None
         self.link = None if self.hub else P.Serial(link)
         self.node = "node"
+        self.profiles = {str(k).lower(): v for k, v in (config.get("profiles") or {}).items()}
+        self.solos = S.parse_solos(config.get("solos"), S.parse_operator_keys(config.get("operator_keys")), time.time())
         self.enrol = S.Enrolment.build(config, a.leaf, a.grant)
         self.grant_override = None
         self.last_grant = None
@@ -298,10 +300,14 @@ class Head:
         b = self.bufs.setdefault(s.key, S.LeafBuffer(self.capacity))
         ev = P.one(ses.evidence, 4)
         s.assurance = ev.decode(errors="replace") if ev else None
+        info = None
         try:
             t, f = ses.call(P.INFO_REQ, timeout=15)
             if t == P.INFO:
                 s.sensors = S.parse_sensors(f)
+                d = info_dict(f)
+                info = {k: d[k] for k in ("fw_seq", "min_fw_seq", "release_threshold", "min_generation", "running",
+                                          "transport", "arena_used")}
                 a = P.one(f, 60)
                 if a:
                     s.assurance = a.decode(errors="replace")
@@ -309,7 +315,8 @@ class Head:
             self._drop(s)
             return False
         b.meta.update(leaf_pub=ses.leaf_pub.hex(), assurance=s.assurance,
-                      sensors={str(k): v for k, v in s.sensors.items()}, grant_roles=s.grant_used[0][4 + 65])
+                      sensors={str(k): v for k, v in s.sensors.items()}, grant_roles=s.grant_used[0][4 + 65],
+                      info=info)
         self.log({"session": "open", "leaf_id": s.key, "handshake_s": round(ses.timings["handshake_s"], 3)})
         s.last_info = self.mono()
         return True
@@ -330,6 +337,10 @@ class Head:
             b.last_refusal = dict(r, role_needed=P.u(need))
             return None
         entries, rej, facts = S.verify_reply(s.ses.leaf_pub, f)
+        solo = S.solo_for(self.gw.solos, s.key)
+        if solo is not None and entries and not S.model_permitted(solo, facts["model_sha256"], self.wall()):
+            rej = rej + [("model_not_permitted", e["sensor"], e["seq"]) for e in entries]
+            entries = []
         for reason, _, _ in rej:
             b.count_reject(reason)
         if rej:
@@ -342,7 +353,8 @@ class Head:
         try:
             t, f = s.ses.call(P.SENSE_REQ, timeout=20)
         except (TimeoutError, ConnectionError) as e:
-            self.log({"link": repr(e), "leaf_id": s.key})
+            # What the leaf itself logged just before explains most stalls (serial links keep those lines).
+            self.log({"link": repr(e), "leaf_id": s.key, "leaf_log": list(getattr(s.link, "lines", []))[-8:]})
             self._drop(s)
             return
         self.ingest(s, t, f)
@@ -402,8 +414,20 @@ class Head:
 
     def control(self, req: dict) -> dict:
         op = req.get("op")
-        if op not in ("info", "sense", "infer", "ask", "bye", "leaves"):
+        if op not in ("info", "sense", "infer", "ask", "bye", "leaves", "describe"):
             return {"ok": False, "error": f"unknown op {op!r}"}
+        if op == "describe":
+            keys = sorted(self.bufs)
+            if req.get("leaf"):
+                p = str(req["leaf"]).lower()
+                keys = [k for k in keys if k.startswith(p)]
+                if not keys:
+                    return {"ok": False, "op": op, "error": f"no leaf {p!r} is known"}
+            return {"ok": True, "op": op, "epoch": self.epoch,
+                    "leaves": {k: S.describe_leaf(self._leaf_view(k, 0, 1, None),
+                                                  next((v for p, v in self.gw.profiles.items() if k.startswith(p)), None),
+                                                  S.solo_for(self.gw.solos, k))
+                               for k in keys}}
         if op == "leaves":
             return {"ok": True, "op": op, "epoch": self.epoch, "refused": dict(self.refused),
                     "leaves": {k: {kk: vv for kk, vv in self._leaf_view(k, 0, 1, None).items()

@@ -209,6 +209,38 @@ fn directory(args: &Args) -> Result<()> {
     Ok(())
 }
 
+/// `furcate-leaf-link rollover --config FILE --record FILE --operator-pub HEX[,HEX..] --proven-assurance NAME`
+///
+/// Moves an enrolled leaf to the identity it rolled over to, in the operator's file. Run by the person who holds the
+/// operator key's public half; the record carries the operator's signature already (made by the key itself, in its
+/// secure enclave), so the machine this runs on holds no secret. The file is replaced only if the record verifies.
+fn rollover(args: &Args) -> Result<()> {
+    let path = args.need("--config")?;
+    let mut v = read_json(path)?;
+    let raw = std::fs::read(args.need("--record")?).context("read the record")?;
+    let record = match std::str::from_utf8(&raw).ok().and_then(|t| hex::decode(t.trim()).ok()) {
+        Some(b) => b,
+        None => raw,
+    };
+    let ops: Vec<Vec<u8>> = args
+        .need("--operator-pub")?
+        .split(',')
+        .map(|h| hex::decode(h.trim()).context("--operator-pub is hex of an uncompressed P-256 key"))
+        .collect::<Result<_>>()?;
+    let level = furcate_identity::unit_rollover::level(args.need("--proven-assurance")?);
+    if level == 0 {
+        bail!("--proven-assurance is not a known assurance string");
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs();
+    let new_id = furcate_leaf_link::config::apply_rollover(&mut v, &record, now, level, &ops).map_err(anyhow::Error::msg)?;
+    let tmp = format!("{path}.new");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&v)?)?;
+    std::fs::copy(path, format!("{path}.before-rollover-{now}")).context("keep the file as it was")?;
+    std::fs::rename(&tmp, path)?;
+    println!("rolled over: the leaf is now {new_id}; the old identity is retired in {path}");
+    Ok(())
+}
+
 fn unit_fingerprint(args: &Args) -> Result<()> {
     let addr = args.need("--i2c-addr")?;
     let addr = u8::from_str_radix(addr.trim_start_matches("0x"), 16).context("--i2c-addr is a hex byte such as 0x55")?;
@@ -226,6 +258,7 @@ fn main() -> Result<()> {
         Some("enrol") => enrol(&args),
         Some("directory") => directory(&args),
         Some("unit-fingerprint") => unit_fingerprint(&args),
-        _ => bail!("usage: furcate-leaf-link serve|enrol|directory|unit-fingerprint ... (see the crate documentation)"),
+        Some("rollover") => rollover(&args),
+        _ => bail!("usage: furcate-leaf-link serve|enrol|directory|unit-fingerprint|rollover ... (see the crate documentation)"),
     }
 }

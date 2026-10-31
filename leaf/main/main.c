@@ -28,12 +28,136 @@
 #include "fl_ota.h"
 #include "fl_puf.h"
 #include "fl_rollover.h"
+#if CONFIG_IDF_TARGET_ESP32
+#include "esp_mac.h"
+#include "fl_pinned_keys.h"
+#include "fl_puf_escrow.h"
+#include "nvs.h"
+#endif
 #include "fl_sensors.h"
 #include "sdkconfig.h"
 #include "fl_trust.h"
 #include "nvs_flash.h"
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "fl_spool.h"
+#endif
 
 static const char *TAG = "furcate-leaf";
+
+#if defined(FL_ONESHOT_S5B) && CONFIG_IDF_TARGET_ESP32
+#include "esp_efuse.h"
+#include "esp_efuse_table.h"
+#include "esp_flash_encrypt.h"
+#include "esp_secure_boot.h"
+// Stage S5b of the classic ESP32 lock-down, done from the running signed app because
+// UART_DOWNLOAD_DIS (S6) already closed the ROM loader: the two burns ESP-IDF's own
+// release-mode bootloader makes after the cell count is at its maximum.
+//   DISABLE_DL_ENCRYPT       the UART download mode may not encrypt flash (the last of the
+//                            three DISABLE_DL_* bits that esp_get_flash_encryption_mode()
+//                            reads to report RELEASE)
+//   WR_DIS bit 3 (DIS_CACHE) write-protects MAC, MAC_CRC, DISABLE_APP_CPU, DISABLE_BT,
+//                            DIS_CACHE and VOL_LEVEL_HP_INV so none can be set later by accident
+// It touches nothing else (not the SECURE_VERSION group, not FLASH_CRYPT_CNT) and
+// does nothing unless every precondition holds. Idempotent.
+static void oneshot_s5b(void) {
+    uint8_t cnt = 0;
+    esp_efuse_read_field_blob(ESP_EFUSE_FLASH_CRYPT_CNT, &cnt, 7);
+    bool dl_dec = esp_efuse_read_field_bit(ESP_EFUSE_DISABLE_DL_DECRYPT);
+    bool dl_cache = esp_efuse_read_field_bit(ESP_EFUSE_DISABLE_DL_CACHE);
+    bool dl_enc = esp_efuse_read_field_bit(ESP_EFUSE_DISABLE_DL_ENCRYPT);
+    bool wr3 = esp_efuse_read_field_bit(ESP_EFUSE_WR_DIS_DIS_CACHE);
+    ESP_LOGW(TAG, "S5b before: FLASH_CRYPT_CNT 0x%02x, DL_DECRYPT %d, DL_CACHE %d, DL_ENCRYPT %d, WR_DIS bit3 %d, mode %d",
+             cnt, dl_dec, dl_cache, dl_enc, wr3, (int)esp_get_flash_encryption_mode());
+    if (cnt != 0x7f || !dl_dec || !dl_cache || !esp_secure_boot_enabled() || !esp_efuse_is_flash_encryption_enabled()) {
+        ESP_LOGE(TAG, "S5b: preconditions not met; nothing burned");
+        return;
+    }
+    if (!dl_enc) esp_efuse_write_field_bit(ESP_EFUSE_DISABLE_DL_ENCRYPT);
+    if (!wr3) esp_efuse_write_field_bit(ESP_EFUSE_WR_DIS_DIS_CACHE);
+    ESP_LOGW(TAG, "S5b after: DL_ENCRYPT %d, WR_DIS bit3 %d, mode %d (2 = RELEASE, 1 = DEVELOPMENT)",
+             esp_efuse_read_field_bit(ESP_EFUSE_DISABLE_DL_ENCRYPT), esp_efuse_read_field_bit(ESP_EFUSE_WR_DIS_DIS_CACHE),
+             (int)esp_get_flash_encryption_mode());
+}
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32
+// Helper data escrow (classic ESP32): export, adopt, restore. Rules and message
+// formats: docs/PUF-ESCROW.md. The three commands need the config role.
+static uint32_t escrow_seq_get(void) {
+    nvs_handle_t h;
+    uint32_t v = 0;
+    if (nvs_open("fl-escrow", NVS_READONLY, &h) == ESP_OK) {
+        if (nvs_get_u32(h, "seq", &v) != ESP_OK) v = 0;
+        nvs_close(h);
+    }
+    return v;
+}
+
+static bool escrow_seq_set(uint32_t v) {
+    nvs_handle_t h;
+    if (nvs_open("fl-escrow", NVS_READWRITE, &h) != ESP_OK) return false;
+    bool ok = nvs_set_u32(h, "seq", v) == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
+static bool leaf_sign_cb(const uint8_t hash[32], uint8_t sig[FL_SIG_LEN]) { return fl_identity_sign(hash, sig); }
+
+static uint8_t escrow_result(fl_wbuf_t *r, const char *why, const char *ok_note) {
+    fl_w_u8(r, T_OK, why == NULL);
+    if (why) fl_w_str(r, T_REASON, why);
+    else if (ok_note) fl_w_str(r, T_DETAIL, ok_note);
+    return FL_MSG_ESCROW;
+}
+
+static uint8_t escrow_op(uint8_t type, const uint8_t *tlv, size_t n, fl_wbuf_t *r) {
+    if (!fl_identity_ready()) return escrow_result(r, "no identity this boot", NULL);
+    if (type == FL_MSG_ESCROW_EXPORT_REQ) {
+        fl_puf_blob_t b;
+        if (fl_puf_helper_export(&b) != ESP_OK)
+            return escrow_result(r, "no version 3 helper data: adopt first", NULL);
+        static uint8_t msg[FL_ESC_EXPORT_BODY_LEN + FL_SIG_LEN + FL_PUF_BLOB_WIRE_LEN];
+        uint8_t mac[6];
+        esp_efuse_mac_get_default(mac);
+        size_t len = fl_puf_escrow_export_build(&b, fl_identity_id(), mac, leaf_sign_cb, msg, sizeof msg);
+        if (len == 0) return escrow_result(r, "cannot build the export", NULL);
+        fl_w_u8(r, T_OK, 1);
+        fl_w_bytes(r, T_RECORD, msg, len);
+        return FL_MSG_ESCROW;
+    }
+    fl_field_t rec;
+    if (!fl_r_find(tlv, n, T_RECORD, 0, &rec)) return escrow_result(r, "malformed command", NULL);
+    fl_escrow_dev_t d = {0};
+    esp_efuse_mac_get_default(d.mac);
+    d.region_addr = fl_puf_region_addr();
+    d.enrolled = fl_puf_enrolled();
+    d.has_v3 = fl_puf_has_v3();
+    d.id_valid = fl_identity_ready();
+    memcpy(d.id, fl_identity_id(), 32);
+    d.cells_flipped = fl_puf_stats()->cells_flipped;
+    d.last_seq = escrow_seq_get();
+    d.trial_reading = fl_puf_trial_reading();
+    d.operator_pubs = FL_PINNED_OPERATOR;
+    d.n_operators = FL_PINNED_OPERATOR_COUNT;
+    uint32_t seq = 0;
+    if (type == FL_MSG_ESCROW_ADOPT) {
+        const char *why = fl_puf_escrow_check_adopt(rec.p, rec.n, &d, &seq);
+        if (why) return escrow_result(r, why, NULL);
+        if (fl_puf_adopt() != ESP_OK) return escrow_result(r, "adopt failed", NULL);
+        if (!escrow_seq_set(seq)) return escrow_result(r, "adopted, but the sequence was not stored", NULL);
+        fl_puf_clear_trial();
+        return escrow_result(r, NULL, "version 3 helper data written; helper2 kept");
+    }
+    static fl_puf_blob_t blob;
+    const char *why = fl_puf_escrow_check_restore(rec.p, rec.n, &d, &blob, &seq);
+    if (why) return escrow_result(r, why, NULL);
+    if (fl_puf_forget() != ESP_OK || fl_puf_helper_import(&blob) != ESP_OK)
+        return escrow_result(r, "restore failed: reset and check the identity", NULL);
+    escrow_seq_set(seq);
+    fl_puf_clear_trial();
+    return escrow_result(r, NULL, "helper data restored; reset the leaf to use it");
+}
+#endif
 
 static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant_t *g, fl_wbuf_t *r) {
     switch (type) {
@@ -73,6 +197,12 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
         else fl_w_str(r, T_REASON, why);
         return FL_MSG_ROLLOVER;
     }
+#if CONFIG_IDF_TARGET_ESP32
+    case FL_MSG_ESCROW_EXPORT_REQ:
+    case FL_MSG_ESCROW_ADOPT:
+    case FL_MSG_ESCROW_RESTORE:
+        return escrow_op(type, tlv, n, r);
+#endif
     case FL_MSG_SINK: {
         fl_field_t d;
         fl_w_u32(r, T_OFFSET, fl_r_find(tlv, n, T_DATA, 0, &d) ? (uint32_t)d.n : 0);
@@ -90,6 +220,10 @@ static uint8_t handle(uint8_t type, const uint8_t *tlv, size_t n, const fl_grant
         return fl_models_infer(tlv, n, r);
     case FL_MSG_SENSE_REQ:
         return fl_sensors_read(r);
+#if CONFIG_IDF_TARGET_ESP32P4
+    case FL_MSG_SPOOL_REQ:
+        return fl_spool_request(tlv, n, g, r);
+#endif
     case FL_MSG_GATEWAY_ASK:
         return fl_gateway_ask(tlv, n, r);
     case FL_MSG_OTA_OFFER:
@@ -122,6 +256,9 @@ void app_main(void) {
         nvs_flash_init();
     }
     fl_link_console_init();
+#if defined(FL_ONESHOT_S5B) && CONFIG_IDF_TARGET_ESP32
+    oneshot_s5b();
+#endif
     fl_crypto_init();
     ESP_LOGI(TAG, "Furcate leaf node, firmware %s (seq %d)", FL_FW_VERSION, FL_FW_SEQ);
 
@@ -154,6 +291,9 @@ void app_main(void) {
         id_ok = fl_identity_init() == ESP_OK;
     }
     fl_sensors_init();
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (id_ok) fl_spool_start();  // the signed readings go to the SD card; needs the identity key for its seals
+#endif
     if (id_ok) {
         ESP_LOGI(TAG, "identity %s, assurance %s, transport serial, models %s", fl_identity_id_hex(),
                  fl_identity_assurance(), models_ok ? "ready" : "unavailable");
