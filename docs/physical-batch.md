@@ -78,9 +78,9 @@ The level of a reading is the lowest class of any rung, computed here by the sam
 
 | What | Where |
 |---|---|
-| Exporter, canonical JSON, batch signing | `crates/open/furcate-sense/src/cascade/physical.rs` |
-| Test that runs the recorded sensing-node capture through the cascade and writes the batch | `crates/open/furcate-sense/tests/physical_batch.rs` |
-| Golden vector (batch plus expected hash, level and key) | `crates/open/furcate-sense/tests/fixtures/physical-batch.golden.json` |
+| Exporter, canonical JSON, batch signing | `crates/furcate-sense/src/cascade/physical.rs` |
+| Test that runs the recorded sensing-node capture through the cascade and writes the batch | `crates/furcate-sense/tests/physical_batch.rs` |
+| Golden vector (batch plus expected hash, level and key) | `crates/furcate-sense/tests/fixtures/physical-batch.golden.json` |
 
 The golden vector is generated from the byte-exact recorded capture, with a sensing-node identifier synthesised from a
 made-up serial, and a test key whose seed is public (32 bytes of `0x5a`). It carries no real device identifier and the key

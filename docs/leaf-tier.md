@@ -62,8 +62,8 @@ of what each micro processing node emitted so drops, repeats, reordering and del
 a model on received embeddings with the model id and hash recorded in the chain, and escalates what
 its policy will not stand behind with its own rung appended. Anything unverified is refused and
 recorded. It is a `furcated-lite` worker; the library is `furcate_sense::cascade` and the program is
-`furcate-small`. See `crates/open/furcate-sense/docs/small-processing-node.md`; the sensing node
-below it is described in `crates/open/furcate-sense/docs/nicla-sense-me.md`.
+`furcate-small`. See `crates/furcate-sense/docs/small-processing-node.md`; the sensing node
+below it is described in `crates/furcate-sense/docs/nicla-sense-me.md`.
 
 Built and tested: the checks above, the reference model (a nearest-centroid model, no accuracy
 claimed), the escalation policy and the next-rung check, end to end on a recorded capture. The link

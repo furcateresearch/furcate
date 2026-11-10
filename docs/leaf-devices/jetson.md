@@ -2,7 +2,7 @@
 
 **Status, exactly: built from NVIDIA documentation and checked against fixtures only. Not run on a real device; the owner owns none.** Nothing on this page was observed on a Jetson. Every "confirmed" below means confirmed against NVIDIA's published text, not against hardware.
 
-Open code: `crates/open/furcate-host/src/tegra_fuse.rs` (fuse reader) and `board.rs`; `crates/open/furcate-identity/src/backends/{firmware_tpm,ek_bind,optee,select}.rs`. The event-log, quote, evidence, deploy, safety and bring-up code is in the enterprise tree.
+Open code: `crates/furcate-host/src/tegra_fuse.rs` (fuse reader) and `board.rs`; `crates/furcate-identity/src/backends/{firmware_tpm,ek_bind,optee,select}.rs`. The event-log, quote, evidence, deploy, safety and bring-up code is in the enterprise tree.
 
 ## What NVIDIA documents (read 2026-10-29)
 

@@ -1,6 +1,6 @@
 # furcate-command
 
-The site-side gate for commands that a simulation platform proposes. One command in, one signed and chained receipt out. The wire format, the gate order and every error code are in `docs/physical-command.md`; the decision behind actuation is `docs/decisions/0012-actuation-approval-and-release.md`.
+The site-side gate for commands that a simulation platform proposes. One command in, one signed and chained receipt out. The wire format, the gate order and every error code are in `docs/physical-command.md`.
 
 ## Not a safety function
 

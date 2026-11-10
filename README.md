@@ -71,9 +71,30 @@ Status is updated as each piece is proven on hardware.
 | `leaf/` | leaf firmware and its host side: identity, the signed link, on-device models, OTA, and the gateway that leaves attach to |
 | `docs/` | decisions, interfaces and architecture; start at [docs/README.md](docs/README.md) |
 
+## Supported platforms
+
+Furcate runs on macOS, Windows and Linux. Furcate OS runs on x86, Arm and embedded hardware. Furcate OS is Linux-based.
+
+| Layer | Platform | Status |
+|---|---|---|
+| Software | macOS, Windows and Linux hosts | Supported |
+| Software | Furcate OS, Linux-based | Supported |
+| Hardware | Servers and workstations: Dell, HPE, Cisco, Fujitsu | Supported |
+| Hardware | Accelerator hosts: NVIDIA | Supported |
+| Hardware | Edge boards: Raspberry Pi | Supported |
+| Hardware | Embedded devices: ESP | Supported |
+| Silicon | x86-64: Intel, AMD | Supported |
+| Silicon | Arm (aarch64) | Supported |
+| Silicon | Embedded microcontrollers: ESP | Supported |
+| Hardware | Servers and workstations: HP Inc., Lenovo, Supermicro | On request |
+| Hardware | Edge AI modules: NVIDIA; compute modules | On request |
+| Silicon | Qualcomm, Rockchip, RISC-V | On request |
+
+Other platforms: supported in a day. Tell us the hardware. Vendor and product names are trademarks of their respective owners, used to describe compatibility only; no endorsement or partnership is implied.
+
 ## Build
 
-Furcate is Linux only. You need a recent stable Rust toolchain.
+You need a recent stable Rust toolchain.
 
 ```
 cargo build --release -p furcated -p furcatectl

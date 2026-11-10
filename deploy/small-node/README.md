@@ -1,7 +1,7 @@
 # Small processing node: deploying it on a board
 
 What it is and what it checks is in
-`crates/open/furcate-sense/docs/small-processing-node.md`.
+`crates/furcate-sense/docs/small-processing-node.md`.
 This page is how to put the program on a Raspberry Pi 5 running Furcate and
 check it.
 
@@ -33,7 +33,7 @@ Copy the binary to the host you deploy from, then:
 ```
 deploy/small-node/deploy.sh --released ./furcate-small <sha256 printed above> \
     ssh JUMP-HOST ssh -o BatchMode=yes furcate@BOARD-ADDRESS
-deploy/small-node/verify.sh crates/open/furcate-sense/tests/fixtures/nicla-standalone-usb.txt \
+deploy/small-node/verify.sh crates/furcate-sense/tests/fixtures/nicla-standalone-usb.txt \
     ssh JUMP-HOST ssh -o BatchMode=yes furcate@BOARD-ADDRESS
 ```
 
